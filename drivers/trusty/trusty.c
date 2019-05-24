@@ -491,8 +491,8 @@ static void trusty_init_smc(int vmm_id)
 	} else if (vmm_id == VMM_ID_ACRN) {
 		smc = smc_acrn;
 	} else {
-		pr_err("%s: No smc supports VMM[%d](sig:%s)!",
-				__func__, vmm_id, vmm_signature[vmm_id]);
+		pr_err("%s: No smc supports VMM[%d]!",
+				__func__, vmm_id);
 		BUG();
 	}
 }
