@@ -1062,7 +1062,7 @@ static int sh_cmt_probe(struct platform_device *pdev)
 	struct sh_cmt_device *cmt = platform_get_drvdata(pdev);
 	int ret;
 
-	if (!is_early_platform_device(pdev)) {
+	if (!is_sh_early_platform_device(pdev)) {
 		pm_runtime_set_active(&pdev->dev);
 		pm_runtime_enable(&pdev->dev);
 	}
@@ -1082,7 +1082,7 @@ static int sh_cmt_probe(struct platform_device *pdev)
 		pm_runtime_idle(&pdev->dev);
 		return ret;
 	}
-	if (is_early_platform_device(pdev))
+	if (is_sh_early_platform_device(pdev))
 		return 0;
 
  out:
@@ -1120,7 +1120,7 @@ static void __exit sh_cmt_exit(void)
 }
 
 #ifdef CONFIG_SUPERH
-early_platform_init("earlytimer", &sh_cmt_device_driver);
+sh_early_platform_init("earlytimer", &sh_cmt_device_driver);
 #endif
 
 subsys_initcall(sh_cmt_init);
