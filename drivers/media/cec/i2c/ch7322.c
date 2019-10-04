@@ -555,7 +555,7 @@ static int ch7322_probe(struct i2c_client *client)
 
 err_notifier:
 	if (notifier)
-		cec_notifier_cec_adap_unregister(notifier);
+		cec_notifier_cec_adap_unregister(notifier, ch7322->cec);
 err_cec:
 	cec_delete_adapter(ch7322->cec);
 err_mutex:
