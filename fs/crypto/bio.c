@@ -109,60 +109,87 @@ out:
  * Return: 0 on success; -errno on failure.
  */
 int fscrypt_zeroout_range(const struct inode *inode, pgoff_t lblk,
-				sector_t pblk, unsigned int len)
+			  sector_t pblk, unsigned int len)
 {
 	const unsigned int blockbits = inode->i_blkbits;
 	const unsigned int blocksize = 1 << blockbits;
-	const bool inlinecrypt = fscrypt_inode_uses_inline_crypto(inode);
-	struct page *ciphertext_page;
+	const unsigned int blocks_per_page_bits = PAGE_SHIFT - blockbits;
+	const unsigned int blocks_per_page = 1 << blocks_per_page_bits;
+	struct page *pages[16]; /* write up to 16 pages at a time */
+	unsigned int nr_pages;
+	unsigned int i;
+	unsigned int offset;
 	struct bio *bio;
-	int ret, err = 0;
+	int ret, err;
 
-	if (inlinecrypt) {
-		ciphertext_page = ZERO_PAGE(0);
-	} else {
-		ciphertext_page = fscrypt_alloc_bounce_page(GFP_NOWAIT);
-		if (!ciphertext_page)
-			return -ENOMEM;
+	if (len == 0)
+		return 0;
+
+	if (fscrypt_inode_uses_inline_crypto(inode))
+		return fscrypt_zeroout_range_inlinecrypt(inode, lblk, pblk,
+							 len);
+
+	BUILD_BUG_ON(ARRAY_SIZE(pages) > BIO_MAX_PAGES);
+	nr_pages = min_t(unsigned int, ARRAY_SIZE(pages),
+			 (len + blocks_per_page - 1) >> blocks_per_page_bits);
+
+	/*
+	 * We need at least one page for ciphertext.  Allocate the first one
+	 * from a mempool, with __GFP_DIRECT_RECLAIM set so that it can't fail.
+	 *
+	 * Any additional page allocations are allowed to fail, as they only
+	 * help performance, and waiting on the mempool for them could deadlock.
+	 */
+	for (i = 0; i < nr_pages; i++) {
+		pages[i] = fscrypt_alloc_bounce_page(i == 0 ? GFP_NOFS :
+						     GFP_NOWAIT | __GFP_NOWARN);
+		if (!pages[i])
+			break;
 	}
+	nr_pages = i;
+	if (WARN_ON(nr_pages <= 0))
+		return -EINVAL;
 
-	while (len--) {
-		if (!inlinecrypt) {
-			err = fscrypt_crypt_block(inode, FS_ENCRYPT, lblk,
-						  ZERO_PAGE(0), ciphertext_page,
-						  blocksize, 0, GFP_NOFS);
-			if (err)
-				goto errout;
-		}
+	/* This always succeeds since __GFP_DIRECT_RECLAIM is set. */
+	bio = bio_alloc(GFP_NOFS, nr_pages);
 
-		bio = bio_alloc(GFP_NOWAIT, 1);
-		if (!bio) {
-			err = -ENOMEM;
-			goto errout;
-		}
-		fscrypt_set_bio_crypt_ctx(bio, inode, lblk, GFP_NOIO);
-
+	do {
 		bio_set_dev(bio, inode->i_sb->s_bdev);
 		bio->bi_iter.bi_sector = pblk << (blockbits - 9);
 		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
-		ret = bio_add_page(bio, ciphertext_page, blocksize, 0);
-		if (WARN_ON(ret != blocksize)) {
-			/* should never happen! */
-			bio_put(bio);
-			err = -EIO;
-			goto errout;
-		}
+
+		i = 0;
+		offset = 0;
+		do {
+			err = fscrypt_crypt_block(inode, FS_ENCRYPT, lblk,
+						  ZERO_PAGE(0), pages[i],
+						  blocksize, offset, GFP_NOFS);
+			if (err)
+				goto out;
+			lblk++;
+			pblk++;
+			len--;
+			offset += blocksize;
+			if (offset == PAGE_SIZE || len == 0) {
+				ret = bio_add_page(bio, pages[i++], offset, 0);
+				if (WARN_ON(ret != offset)) {
+					err = -EIO;
+					goto out;
+				}
+				offset = 0;
+			}
+		} while (i != nr_pages && len != 0);
+
 		err = submit_bio_wait(bio);
-		bio_put(bio);
 		if (err)
-			goto errout;
-		lblk++;
-		pblk++;
-	}
+			goto out;
+		bio_reset(bio);
+	} while (len != 0);
 	err = 0;
-errout:
-	if (!inlinecrypt)
-		fscrypt_free_bounce_page(ciphertext_page);
+out:
+	bio_put(bio);
+	for (i = 0; i < nr_pages; i++)
+		fscrypt_free_bounce_page(pages[i]);
 	return err;
 }
 EXPORT_SYMBOL(fscrypt_zeroout_range);
