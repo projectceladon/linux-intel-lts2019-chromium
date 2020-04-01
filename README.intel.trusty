@@ -1,0 +1,13 @@
+=============================
+Trusty driver for kernel 5.2
+=============================
+
+Description
+----------------------------------------------------------------------------------
+Trusty driver is originated from Google which is responsible for IPC communication
+between normal world OS(Linux) and secure world OS(Trusty OS). 
+Trusty is compatible with ARM and Intel processors. On ARM systems, Trusty uses
+ARMs Trustzone to virtualize the main processor and create a secure trusted
+execution environment. Simliar support is also available on Intel x86 platform
+using Intels Virtualization Technology.
+----------------------------------------------------------------------------------
