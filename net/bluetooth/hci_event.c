@@ -35,15 +35,13 @@
 #include "a2mp.h"
 #include "amp.h"
 #include "smp.h"
+#include "msft.h"
 
 #define ZERO_KEY "\x00\x00\x00\x00\x00\x00\x00\x00" \
 		 "\x00\x00\x00\x00\x00\x00\x00\x00"
 
 /* Minimum encryption key length, value adopted from BLE (7 bytes) */
 #define MIN_ENC_KEY_LEN 7
-
-/* Intel manufacturer ID  and specific events */
-#define MAUFACTURER_ID_INTEL      0x0002
 
 /* Handle HCI Event packets */
 
@@ -2647,8 +2645,16 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, struct sk_buff *skb)
 	if (ev->status) {
 		hci_connect_cfm(conn, ev->status);
 		hci_conn_del(conn);
-	} else if (ev->link_type != ACL_LINK)
+	} else if (ev->link_type == SCO_LINK) {
+		switch (conn->setting & SCO_AIRMODE_MASK) {
+		case SCO_AIRMODE_CVSD:
+			if (hdev->notify)
+				hdev->notify(hdev, HCI_NOTIFY_ENABLE_SCO_CVSD);
+			break;
+		}
+
 		hci_connect_cfm(conn, ev->status);
+	}
 
 unlock:
 	hci_dev_unlock(hdev);
@@ -3909,49 +3915,6 @@ static void hci_num_comp_blocks_evt(struct hci_dev *hdev, struct sk_buff *skb)
 	queue_work(hdev->workqueue, &hdev->tx_work);
 }
 
-static void hci_vendor_evt(struct hci_dev *hdev, struct sk_buff *skb)
-{
-	u8 evt_id;
-	u16 i;
-	u8 *b;
-	char line[HCI_MAX_EVENT_SIZE * 3 + 1] = {0x00,};
-
-	if (hdev->manufacturer == MAUFACTURER_ID_INTEL) {
-		if (skb->len < 1)
-			return;
-
-		BT_INFO("Manufacturer ID 0x%04X:", hdev->manufacturer);
-
-		evt_id = *((u8 *)skb->data);
-		skb_pull(skb, sizeof(evt_id));
-
-		switch (evt_id) {
-		case HCI_EV_INTEL_BOOT_UP:
-		case HCI_EV_INTEL_FATAL_EXCEPTION:
-		case HCI_EV_INTEL_DEBUG_EXCEPTION:
-			if (skb->len < 1) {
-				BT_WARN("Evt ID:%02X", evt_id);
-				return;
-			}
-			b = (u8 *)skb->data;
-			for (i = 0; i < skb->len && i < HCI_MAX_EVENT_SIZE; ++i)
-				sprintf(line + strlen(line), " %02X", b[i]);
-			BT_WARN("Evt ID: %02X data:%s", evt_id, line);
-			break;
-		default:
-			if (skb->len < 1) {
-				BT_ERR("Unknown Evt ID:%02x", evt_id);
-				return;
-			}
-			b = (u8 *)skb->data;
-			for (i = 0; i < skb->len && i < HCI_MAX_EVENT_SIZE; ++i)
-				sprintf(line + strlen(line), " %02X", b[i]);
-			BT_ERR("Unknown Evt ID: %02X data:%s", evt_id, line);
-			break;
-		}
-	}
-}
-
 static void hci_mode_change_evt(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	struct hci_ev_mode_change *ev = (void *) skb->data;
@@ -4414,9 +4377,17 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev,
 		break;
 	}
 
-	if (ev->air_mode == SCO_AIRMODE_TRANSP) {
+	bt_dev_dbg(hdev, "SCO connected with air mode: %02x", ev->air_mode);
+
+	switch (conn->setting & SCO_AIRMODE_MASK) {
+	case SCO_AIRMODE_CVSD:
 		if (hdev->notify)
-			hdev->notify(hdev, HCI_NOTIFY_AIR_MODE_TRANSP);
+			hdev->notify(hdev, HCI_NOTIFY_ENABLE_SCO_CVSD);
+		break;
+	case SCO_AIRMODE_TRANSP:
+		if (hdev->notify)
+			hdev->notify(hdev, HCI_NOTIFY_ENABLE_SCO_TRANSP);
+		break;
 	}
 
 	hci_connect_cfm(conn, ev->status);
@@ -6228,7 +6199,7 @@ void hci_event_packet(struct hci_dev *hdev, struct sk_buff *skb)
 		break;
 
 	case HCI_EV_VENDOR:
-		hci_vendor_evt(hdev, skb);
+		msft_vendor_evt(hdev, skb);
 		break;
 
 	default:

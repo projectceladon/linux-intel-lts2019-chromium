@@ -11,9 +11,10 @@
  * Intel TCSS (Type-C Sub System)
  */
 
+#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_data/cros_ec_proto.h>
+#include <linux/platform_data/cros_usbpd_notify.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/usb/typec_dp.h>
@@ -109,6 +110,9 @@ static int cros_ec_pd_get_num_ports(struct cros_ec_tcss_info *info)
 				 NULL, 0, &resp, sizeof(resp));
 	if (ret < 0)
 		return ret;
+
+	if (resp.num_ports > IOM_MAX_PORTS)
+		return -EINVAL;
 
 	info->num_ports = resp.num_ports;
 
@@ -277,8 +281,14 @@ u8 cros_ec_tcss_get_next_state_req(struct cros_ec_tcss_data *port_data,
 	u8 ret =
 	    tcss_mode_states[prev_port_data->conn_mode][port_data->conn_mode];
 
+	/* Handle HPD in Disconnect Mode */
+	if (port_data->conn_mode == PMC_IPC_DISCONNECT_MODE) {
+		if (prev_port_data->conn_mode == PMC_IPC_ALT_MODE &&
+			port_data->mux_info.hpd_lvl !=
+			prev_port_data->mux_info.hpd_lvl)
+			ret |= TO_REQ(PMC_IPC_HPD_REQ_RES);
 	/* Handle HPD in Alternate Mode */
-	if (ret & TO_REQ(PMC_IPC_ALTMODE_REQ_RES)) {
+	} else if (ret & TO_REQ(PMC_IPC_ALTMODE_REQ_RES)) {
 		if (prev_port_data->conn_mode == PMC_IPC_ALT_MODE) {
 			/* Alternate mode HPD/IRQ changed */
 			if (port_data->mux_info.hpd_irq ||
@@ -336,16 +346,41 @@ static void cros_ec_tcss_altmode_req(struct tcss_mux *mux_data, u8 *tcss_req)
 			PMC_IPC_ALTMODE_REQ_MODE_CABLE_GEN_SHIFT);
 }
 
+static bool cros_ec_tcss_port_connected(u8 port, void __iomem *status_reg)
+{
+	void __iomem *reg = status_reg + (IOM_REG_LEN * port);
+
+	return !!(ioread32(reg) & IOM_PORT_STATUS_CONNECTED);
+}
+
 static int cros_ec_tcss_req(struct cros_ec_tcss_info *info, int req_type,
 			    u8 port, struct tcss_mux *mux_data)
 {
 	struct cros_ec_tcss_data *tcss_info = &info->tcss[port];
+	bool retry_pmc_cmd = true, pmc_cmd_sts_0, pmc_cmd_sts_1;
 	struct device *dev = info->dev;
 	u32 write_size, tcss_res = 0;
-	bool retry_pmc_cmd = true;
 	u8 tcss_req[8] = { 0 };
-	u8 pmc_cmd_sts;
+	bool connected;
 	int ret;
+
+	/*
+	 * Duplicate connect (e.g firmware does TCSS mux configuration during
+	 * boot with devices connected to Type-C ports and kernel tries to
+	 * configure again) and disconnect requests are not supported in
+	 * TCSS mux configuration by IOM. Hence, bail out on duplicate
+	 * requests with success.
+	 */
+	connected = cros_ec_tcss_port_connected(port, info->iom_port_status);
+	dev_dbg(info->dev, "port %u connected status %u\n", port, connected);
+
+	if (req_type == PMC_IPC_DIS_REQ_RES && !connected) {
+		dev_dbg(info->dev, "port %u already disconnected\n", port);
+		return 0;
+	} else if (req_type == PMC_IPC_CONN_REQ_RES && connected) {
+		dev_dbg(info->dev, "port %u already connected\n", port);
+		return 0;
+	}
 
 	tcss_req[0] = req_type | tcss_info->usb3_port << EC_USB3_PORT_SHIFT;
 
@@ -406,25 +441,26 @@ retry_pmc_ipc_cmd:
 		if ((tcss_res & PMC_IPC_CONN_RES_USB2_PORT_MASK) !=
 		    (tcss_info->usb2_port << PMC_IPC_CONN_RES_USB2_PORT_SHIFT))
 			goto err;
-		pmc_cmd_sts = (tcss_res & PMC_IPC_CONN_DIS_RES_STATUS_MASK) >>
-				PMC_IPC_CONN_DIS_RES_STATUS_SHIFT;
+		pmc_cmd_sts_0 = !!(tcss_res & PMC_IPC_CONN_DIS_RES_STATUS_0);
+		pmc_cmd_sts_1 = !!(tcss_res & PMC_IPC_CONN_DIS_RES_STATUS_1);
 		break;
 	case PMC_IPC_SFMODE_REQ_RES:
 	case PMC_IPC_ALTMODE_REQ_RES:
 	case PMC_IPC_HPD_REQ_RES:
-		pmc_cmd_sts = (tcss_res &
-			PMC_IPC_SAFE_ALT_HPD_RES_STATUS_MASK) >>
-				PMC_IPC_SAFE_ALT_HPD_RES_STATUS_SHIFT;
+		pmc_cmd_sts_0 =
+			!!(tcss_res & PMC_IPC_SAFE_ALT_HPD_RES_STATUS_0);
+		pmc_cmd_sts_1 =
+			!!(tcss_res & PMC_IPC_SAFE_ALT_HPD_RES_STATUS_1);
 		break;
 	default:
 		dev_err(dev, "Invalid req type to PMC = %d", req_type);
 		goto err;
 	}
 
-	if (pmc_cmd_sts == TCSS_STATUS_SUCCESS)
+	if (!pmc_cmd_sts_0)
 		return 0;
 
-	if (pmc_cmd_sts == TCSS_STATUS_UNSUCCESS_RETRY && retry_pmc_cmd) {
+	if (!pmc_cmd_sts_1 && retry_pmc_cmd) {
 		retry_pmc_cmd = false;
 		dev_warn(dev, "PMC IPC CMD retry: port=%d, req=%d\n",
 				port, req_type);
@@ -442,8 +478,8 @@ static int cros_ec_tcss_detect_cable(struct cros_ec_tcss_info *info,
 {
 	struct cros_ec_tcss_data *tcss_info;
 	struct cros_ec_tcss_data port_data;
+	int ret, i, index;
 	u8 next_seq;
-	int ret, i;
 
 	if (!info)
 		return -EIO;
@@ -476,9 +512,18 @@ static int cros_ec_tcss_detect_cable(struct cros_ec_tcss_info *info,
 		 port_data.mux_info.tbt_usb4_cable_gen);
 
 	for (i = 0; i < ARRAY_SIZE(tcss_requests); i++) {
-		if (next_seq & tcss_requests[i]) {
+		/*
+		 * Check if low priority mux request needs to be sent first
+		 * in the below scenarios
+		 * 1. Display PLLs needs to be cleared when the HPD is set
+		 * 2. USB fallback state transition happens
+		 */
+		index = port_data.conn_mode < tcss_info->conn_mode ?
+				(ARRAY_SIZE(tcss_requests) - 1 - i) : i;
+
+		if (next_seq & tcss_requests[index]) {
 			ret = cros_ec_tcss_req(info,
-					       (ffs(tcss_requests[i]) - 1),
+					       (ffs(tcss_requests[index]) - 1),
 					       port, &port_data.mux_info);
 			if (ret)
 				break;
@@ -529,10 +574,10 @@ static int cros_ec_tcss_remove(struct platform_device *pdev)
 {
 	struct cros_ec_tcss_info *info = platform_get_drvdata(pdev);
 
-	blocking_notifier_chain_unregister(&info->ec->event_notifier,
-					   &info->notifier);
+	cros_usbpd_unregister_notify(&info->notifier);
 	cancel_work_sync(&info->bh_work);
 	mutex_destroy(&info->lock);
+	iounmap(info->iom_port_status);
 
 	return 0;
 }
@@ -581,13 +626,20 @@ static int cros_ec_tcss_probe(struct platform_device *pdev)
 	mutex_init(&info->lock);
 	INIT_WORK(&info->bh_work, cros_ec_tcss_bh_work);
 
+	info->iom_port_status = ioremap(IOM_PORT_STATUS_ADDR,
+					IOM_PORT_STATUS_LEN);
+
+	if (!info->iom_port_status) {
+		dev_err(dev, "failed to map iom port status register\n");
+		goto destroy_mutex;
+	}
+
 	/* Get Port detection events from the EC */
 	info->notifier.notifier_call = cros_ec_tcss_event;
-	ret = blocking_notifier_chain_register(&info->ec->event_notifier,
-					       &info->notifier);
+	ret = cros_usbpd_register_notify(&info->notifier);
 	if (ret < 0) {
 		dev_err(dev, "failed to register notifier\n");
-		goto destroy_mutex;
+		goto iom_iounmap;
 	}
 
 	mutex_lock(&info->lock);
@@ -608,13 +660,14 @@ static int cros_ec_tcss_probe(struct platform_device *pdev)
 	}
 	mutex_unlock(&info->lock);
 
-return 0;
+	return 0;
 
 remove_tcss:
 	mutex_unlock(&info->lock);
-	blocking_notifier_chain_unregister(&info->ec->event_notifier,
-					   &info->notifier);
+	cros_usbpd_unregister_notify(&info->notifier);
 	cancel_work_sync(&info->bh_work);
+iom_iounmap:
+	iounmap(info->iom_port_status);
 destroy_mutex:
 	mutex_destroy(&info->lock);
 
@@ -651,16 +704,9 @@ static const struct dev_pm_ops tcss_cros_ec_dev_pm_ops = {
 #define DEV_PM_OPS     NULL
 #endif /* CONFIG_PM_SLEEP */
 
-static const struct of_device_id cros_ec_tcss_of_match[] = {
-	{.compatible = "google,extcon-tcss-cros-ec"},
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(of, cros_ec_tcss_of_match);
-
 static struct platform_driver tcss_cros_ec_driver = {
 	.driver = {
 		   .name = "extcon-tcss-cros-ec",
-		   .of_match_table = cros_ec_tcss_of_match,
 		   .pm = DEV_PM_OPS,
 	},
 	.remove = cros_ec_tcss_remove,

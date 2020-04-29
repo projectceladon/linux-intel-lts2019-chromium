@@ -106,6 +106,7 @@ config NET_FC
 config IFB
 	tristate "Intermediate Functional Block support"
 	depends on NET_CLS_ACT
+	select NET_REDIRECT
 	---help---
 	  This is an intermediate driver that allows sharing of
 	  resources.
@@ -387,6 +388,8 @@ source "drivers/net/ethernet/Kconfig"
 source "drivers/net/fddi/Kconfig"
 
 source "drivers/net/hippi/Kconfig"
+
+source "drivers/net/ipa/Kconfig"
 
 config NET_SB1000
 	tristate "General Instruments Surfboard 1000"

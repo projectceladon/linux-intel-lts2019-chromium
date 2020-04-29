@@ -45,6 +45,8 @@ struct lpc_driver_ops {
 
 static struct lpc_driver_ops cros_ec_lpc_ops = { };
 
+static struct platform_device *pdev_extcon;
+
 /*
  * A generic instance of the read function of struct lpc_driver_ops, used for
  * the LPC EC.
@@ -327,12 +329,6 @@ static void cros_ec_lpc_acpi_notify(acpi_handle device, u32 value, void *data)
 						ec_dev);
 		} while (ec_has_more_events);
 
-	/*
-	 * Unconditionally call the notifier chain, so the USB MUX
-	 * events are posted to listeners
-	 */
-	blocking_notifier_call_chain(&ec_dev->event_notifier, 0, ec_dev);
-
 	if (value == ACPI_NOTIFY_DEVICE_WAKE)
 		pm_system_wakeup();
 }
@@ -431,6 +427,11 @@ static int cros_ec_lpc_probe(struct platform_device *pdev)
 				 status);
 	}
 
+	/* Revert this after we introduce Type C connector class driver. */
+	pdev_extcon = platform_device_register_data(dev, "extcon-tcss-cros-ec",
+						    PLATFORM_DEVID_NONE, NULL,
+						    0);
+
 	return 0;
 }
 
@@ -438,6 +439,8 @@ static int cros_ec_lpc_remove(struct platform_device *pdev)
 {
 	struct cros_ec_device *ec_dev = platform_get_drvdata(pdev);
 	struct acpi_device *adev;
+
+	platform_device_unregister(pdev_extcon);
 
 	adev = ACPI_COMPANION(&pdev->dev);
 	if (adev)

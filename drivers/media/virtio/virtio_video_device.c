@@ -17,6 +17,7 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <linux/dma-buf.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-dma-sg.h>
@@ -49,7 +50,72 @@ int virtio_video_queue_setup(struct vb2_queue *vq, unsigned int *num_buffers,
 	return 0;
 }
 
-int virtio_video_buf_init(struct vb2_buffer *vb)
+static int virtio_video_get_dma_buf_id(struct virtio_video_device *vvd,
+			  struct vb2_buffer *vb, uuid_t *uuid)
+{
+	/**
+	 * For multiplanar formats, we assume all planes are on one DMA buffer.
+	 */
+	struct dma_buf *dma_buf = dma_buf_get(vb->planes[0].m.fd);
+
+	return dma_buf_get_uuid(dma_buf, uuid);
+}
+
+static int virtio_video_send_resource_create_object(struct vb2_buffer *vb,
+						    uint32_t resource_id,
+						    uuid_t uuid)
+{
+	struct virtio_video_stream *stream = vb2_get_drv_priv(vb->vb2_queue);
+	struct virtio_video *vv = to_virtio_vd(stream->video_dev)->vv;
+	struct virtio_video_buffer *virtio_vb = to_virtio_vb(vb);
+	struct vb2_buffer *cur_vb;
+	struct virtio_video_object_entry *ent;
+	int queue_type;
+	int ret;
+	bool *destroyed;
+
+	if (V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type)) {
+		queue_type = VIRTIO_VIDEO_QUEUE_TYPE_INPUT;
+		destroyed = &stream->src_destroyed;
+	} else {
+		queue_type = VIRTIO_VIDEO_QUEUE_TYPE_OUTPUT;
+		destroyed = &stream->dst_destroyed;
+	}
+
+	ent = kcalloc(1, sizeof(*ent), GFP_KERNEL);
+	uuid_copy((uuid_t *) &ent->uuid, &uuid);
+
+	ret = virtio_video_cmd_resource_create_object(vv, stream->stream_id,
+						      resource_id,
+						      queue_type,
+						      vb->num_planes,
+						      vb->planes, ent);
+	if (ret) {
+		kfree(ent);
+		return ret;
+	}
+
+	/**
+	 * If the given uuid was previously used in another entry, invalidate
+	 * it because the uuid must be tied with only one resource_id.
+	 */
+	list_for_each_entry(cur_vb, &vb->vb2_queue->queued_list,
+			    queued_entry) {
+		struct virtio_video_buffer *cur_vvb =
+			to_virtio_vb(cur_vb);
+
+		if (uuid_equal(&uuid, &cur_vvb->uuid))
+			cur_vvb->uuid = uuid_null;
+	}
+
+	virtio_vb->resource_id = resource_id;
+	virtio_vb->uuid = uuid;
+	*destroyed = false;
+
+	return 0;
+}
+
+static int virtio_video_buf_init_guest_pages(struct vb2_buffer *vb)
 {
 	int ret = 0;
 	unsigned int i, j;
@@ -109,11 +175,10 @@ int virtio_video_buf_init(struct vb2_buffer *vb)
 					ents[i].addr, ents[i].length);
 	}
 
-	ret = virtio_video_cmd_resource_create(vv, stream->stream_id,
-					       resource_id,
-					       to_virtio_queue_type(queue_type),
-					       ents, vb->num_planes,
-					       num_ents);
+	ret = virtio_video_cmd_resource_create_page(
+		vv, stream->stream_id, resource_id,
+		to_virtio_queue_type(queue_type), vb->num_planes, num_ents,
+		ents);
 	if (ret) {
 		virtio_video_resource_id_put(vvd->vv, resource_id);
 		kfree(ents);
@@ -125,6 +190,82 @@ int virtio_video_buf_init(struct vb2_buffer *vb)
 	virtio_vb->resource_id = resource_id;
 
 	return 0;
+}
+
+static int virtio_video_buf_init_virtio_object(struct vb2_buffer *vb)
+{
+	struct virtio_video_stream *stream = vb2_get_drv_priv(vb->vb2_queue);
+	struct virtio_video_buffer *virtio_vb = to_virtio_vb(vb);
+	struct virtio_video_device *vvd = to_virtio_vd(stream->video_dev);
+	struct virtio_video *vv = vvd->vv;
+	int ret;
+	uint32_t resource_id;
+	uuid_t uuid;
+
+	ret = virtio_video_get_dma_buf_id(vvd, vb, &uuid);
+	if (ret) {
+		v4l2_err(&vv->v4l2_dev, "failed to get DMA-buf handle");
+		return ret;
+	}
+	virtio_video_resource_id_get(vv, &resource_id);
+
+	ret = virtio_video_send_resource_create_object(vb, resource_id, uuid);
+	if (ret) {
+		virtio_video_resource_id_put(vv, resource_id);
+		return ret;
+	}
+
+	virtio_vb->queued = false;
+
+	return 0;
+}
+
+int virtio_video_buf_init(struct vb2_buffer *vb)
+{
+	struct virtio_video_stream *stream = vb2_get_drv_priv(vb->vb2_queue);
+	struct virtio_video_device *vvd = to_virtio_vd(stream->video_dev);
+	struct virtio_video *vv = vvd->vv;
+
+	switch (vv->res_type) {
+	case RESOURCE_TYPE_GUEST_PAGES:
+		return virtio_video_buf_init_guest_pages(vb);
+	case RESOURCE_TYPE_VIRTIO_OBJECT:
+		return virtio_video_buf_init_virtio_object(vb);
+	default:
+		return -EINVAL;
+	}
+}
+
+int virtio_video_buf_prepare(struct vb2_buffer *vb)
+{
+	struct virtio_video_stream *stream = vb2_get_drv_priv(vb->vb2_queue);
+	struct virtio_video_buffer *virtio_vb = to_virtio_vb(vb);
+	struct virtio_video_device *vvd = to_virtio_vd(stream->video_dev);
+	struct virtio_video *vv = vvd->vv;
+	uuid_t uuid;
+	int ret;
+
+	if (vv->res_type != RESOURCE_TYPE_VIRTIO_OBJECT)
+		return 0;
+
+	ret = virtio_video_get_dma_buf_id(vvd, vb, &uuid);
+	if (ret) {
+		v4l2_err(&vv->v4l2_dev, "failed to get DMA-buf handle");
+		return ret;
+	}
+
+	/**
+	 * If a user gave a different object as a buffer from the previous
+	 * one, send RESOURCE_CREATE again to register the object.
+	 */
+	if (!uuid_equal(&uuid, &virtio_vb->uuid)) {
+		ret = virtio_video_send_resource_create_object(
+			vb, virtio_vb->resource_id, uuid);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
 }
 
 void virtio_video_buf_cleanup(struct vb2_buffer *vb)
@@ -474,12 +615,23 @@ static int virtio_video_queue_free(struct virtio_video *vv,
 {
 	int ret;
 	uint32_t queue_type = to_virtio_queue_type(type);
+	const bool *destroyed = V4L2_TYPE_IS_OUTPUT(type) ?
+		&stream->src_destroyed : &stream->dst_destroyed;
 
 	ret = virtio_video_cmd_resource_destroy_all(vv, stream,
 						    queue_type);
-	if (ret)
+	if (ret) {
 		v4l2_warn(&vv->v4l2_dev,
 			  "failed to destroy resources\n");
+		return ret;
+	}
+
+	ret = wait_event_timeout(vv->wq, *destroyed, 5 * HZ);
+	if (ret == 0) {
+		v4l2_err(&vv->v4l2_dev, "timed out waiting for resource destruction for %s\n",
+			 V4L2_TYPE_IS_OUTPUT(type) ? "OUTPUT" : "CAPTURE");
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -744,6 +896,8 @@ static int virtio_video_device_open(struct file *file)
 	stream->video_dev = video_dev;
 	stream->stream_id = stream_id;
 	stream->state = STREAM_STATE_IDLE;
+	stream->src_destroyed = true;
+	stream->dst_destroyed = true;
 
 	ret = virtio_video_cmd_get_params(vv, stream,
 					  VIRTIO_VIDEO_QUEUE_TYPE_INPUT);

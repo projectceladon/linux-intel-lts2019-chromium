@@ -73,10 +73,18 @@
 #define PMC_IPC_CONN_RES_USB2_PORT_MASK			GENMASK(11, 8)
 #define PMC_IPC_CONN_RES_USB2_PORT_SHIFT		0x08
 
-#define PMC_IPC_CONN_DIS_RES_STATUS_MASK		GENMASK(17, 16)
-#define PMC_IPC_CONN_DIS_RES_STATUS_SHIFT		16
-#define PMC_IPC_SAFE_ALT_HPD_RES_STATUS_MASK		GENMASK(9, 8)
-#define PMC_IPC_SAFE_ALT_HPD_RES_STATUS_SHIFT		8
+#define PMC_IPC_CONN_DIS_RES_STATUS_0			BIT(16)
+#define PMC_IPC_CONN_DIS_RES_STATUS_1			BIT(17)
+#define PMC_IPC_SAFE_ALT_HPD_RES_STATUS_0		BIT(8)
+#define PMC_IPC_SAFE_ALT_HPD_RES_STATUS_1		BIT(9)
+
+/* IOM PORT STATUS */
+#define IOM_PORT_STATUS_ADDR				0xfbc10560
+#define IOM_PORT_STATUS_LEN				16
+#define IOM_PORT_STATUS_CONNECTED			BIT(31)
+#define IOM_MAX_PORTS					4
+/* Register length in bytes */
+#define IOM_REG_LEN					4
 
 /*
  * TBT Cable Speed Support
@@ -102,14 +110,6 @@ enum pmc_ipc_conn_mode {
 	PMC_IPC_SAFE_MODE,
 	PMC_IPC_ALT_MODE,
 	PMC_IPC_TOTAL_MODES,
-};
-
-/* TCSS result status */
-enum tcss_res_status {
-	TCSS_STATUS_SUCCESS = 0,
-	TCSS_STATUS_UNSUCCESS,
-	TCSS_STATUS_UNSUCCESS_RETRY,
-	TCSS_STATUS_FATAL,
 };
 
 /* TCSS Multiplexing data for a Type-C port */
@@ -152,6 +152,7 @@ struct cros_ec_tcss_info {
 	struct intel_scu_ipc_dev *scu;
 	/* Synchronize cable detection logic across callers */
 	struct mutex lock;
+	void __iomem *iom_port_status;
 };
 
 static const u8 tcss_requests[] = {

@@ -2220,7 +2220,11 @@ static void intel_ddi_get_power_domains(struct intel_encoder *encoder,
 		return;
 
 	dig_port = enc_to_dig_port(&encoder->base);
-	intel_display_power_get(dev_priv, dig_port->ddi_io_power_domain);
+
+	if (!intel_phy_is_tc(dev_priv, phy) ||
+	    dig_port->tc_mode != TC_PORT_TBT_ALT)
+		intel_display_power_get(dev_priv,
+					dig_port->ddi_io_power_domain);
 
 	/*
 	 * AUX power is only needed for (e)DP mode, and for HDMI mode on TC
@@ -3962,6 +3966,7 @@ static void intel_enable_ddi(struct intel_encoder *encoder,
 	if (conn_state->content_protection ==
 	    DRM_MODE_CONTENT_PROTECTION_DESIRED)
 		intel_hdcp_enable(to_intel_connector(conn_state->connector),
+				  crtc_state->cpu_transcoder,
 				  (u8)conn_state->hdcp_content_type);
 }
 
@@ -4065,7 +4070,9 @@ static void intel_ddi_update_pipe(struct intel_encoder *encoder,
 	if (conn_state->content_protection ==
 	    DRM_MODE_CONTENT_PROTECTION_DESIRED ||
 	    content_protection_type_changed)
-		intel_hdcp_enable(connector, (u8)conn_state->hdcp_content_type);
+		intel_hdcp_enable(connector,
+				  crtc_state->cpu_transcoder,
+				  (u8)conn_state->hdcp_content_type);
 }
 
 static void
