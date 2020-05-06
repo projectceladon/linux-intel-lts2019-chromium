@@ -15,6 +15,7 @@
 #include "tx.h"
 #include "debug.h"
 #include "bf.h"
+#include "vndcmd.h"
 
 unsigned int rtw_fw_lps_deep_mode;
 EXPORT_SYMBOL(rtw_fw_lps_deep_mode);
@@ -317,15 +318,15 @@ void rtw_get_channel_params(struct cfg80211_chan_def *chandef,
 	case NL80211_CHAN_WIDTH_20_NOHT:
 	case NL80211_CHAN_WIDTH_20:
 		bandwidth = RTW_CHANNEL_WIDTH_20;
-		primary_chan_idx = 0;
+		primary_chan_idx = RTW_SC_DONT_CARE;
 		break;
 	case NL80211_CHAN_WIDTH_40:
 		bandwidth = RTW_CHANNEL_WIDTH_40;
 		if (primary_freq > center_freq) {
-			primary_chan_idx = 1;
+			primary_chan_idx = RTW_SC_20_UPPER;
 			center_chan -= 2;
 		} else {
-			primary_chan_idx = 2;
+			primary_chan_idx = RTW_SC_20_LOWER;
 			center_chan += 2;
 		}
 		break;
@@ -333,10 +334,10 @@ void rtw_get_channel_params(struct cfg80211_chan_def *chandef,
 		bandwidth = RTW_CHANNEL_WIDTH_80;
 		if (primary_freq > center_freq) {
 			if (primary_freq - center_freq == 10) {
-				primary_chan_idx = 1;
+				primary_chan_idx = RTW_SC_20_UPPER;
 				center_chan -= 2;
 			} else {
-				primary_chan_idx = 3;
+				primary_chan_idx = RTW_SC_20_UPMOST;
 				center_chan -= 6;
 			}
 			/* assign the center channel used
@@ -345,10 +346,10 @@ void rtw_get_channel_params(struct cfg80211_chan_def *chandef,
 			cch_by_bw[RTW_CHANNEL_WIDTH_40] = center_chan + 4;
 		} else {
 			if (center_freq - primary_freq == 10) {
-				primary_chan_idx = 2;
+				primary_chan_idx = RTW_SC_20_LOWER;
 				center_chan += 2;
 			} else {
-				primary_chan_idx = 4;
+				primary_chan_idx = RTW_SC_20_LOWEST;
 				center_chan += 6;
 			}
 			/* assign the center channel used
@@ -909,10 +910,15 @@ void rtw_core_stop(struct rtw_dev *rtwdev)
 	clear_bit(RTW_FLAG_RUNNING, rtwdev->flags);
 	clear_bit(RTW_FLAG_FW_RUNNING, rtwdev->flags);
 
+	mutex_unlock(&rtwdev->mutex);
+
+	cancel_work_sync(&rtwdev->c2h_work);
 	cancel_delayed_work_sync(&rtwdev->watch_dog_work);
 	cancel_delayed_work_sync(&coex->bt_relink_work);
 	cancel_delayed_work_sync(&coex->bt_reenable_work);
 	cancel_delayed_work_sync(&coex->defreeze_work);
+
+	mutex_lock(&rtwdev->mutex);
 
 	rtw_power_off(rtwdev);
 }
@@ -1113,7 +1119,6 @@ static int rtw_chip_parameter_setup(struct rtw_dev *rtwdev)
 	}
 
 	hal->chip_version = rtw_read32(rtwdev, REG_SYS_CFG1);
-	hal->fab_version = BIT_GET_VENDOR_ID(hal->chip_version) >> 2;
 	hal->cut_version = BIT_GET_CHIP_VER(hal->chip_version);
 	hal->mp_chip = (hal->chip_version & BIT_RTL_ID) ? 0 : 1;
 	if (hal->chip_version & BIT_RF_TYPE_ID) {
@@ -1127,11 +1132,6 @@ static int rtw_chip_parameter_setup(struct rtw_dev *rtwdev)
 		hal->antenna_tx = BB_PATH_A;
 		hal->antenna_rx = BB_PATH_A;
 	}
-
-	if (hal->fab_version == 2)
-		hal->fab_version = 1;
-	else if (hal->fab_version == 1)
-		hal->fab_version = 2;
 
 	efuse->physical_size = chip->phy_efuse_size;
 	efuse->logical_size = chip->log_efuse_size;
@@ -1389,15 +1389,12 @@ int rtw_core_init(struct rtw_dev *rtwdev)
 
 	rtwdev->sec.total_cam_num = 32;
 	rtwdev->hal.current_channel = 1;
+	rtwdev->dm_info.fix_rate = U8_MAX;
 	set_bit(RTW_BC_MC_MACID, rtwdev->mac_id_map);
 	if (!(BIT(rtw_fw_lps_deep_mode) & chip->lps_deep_mode_supported))
 		rtwdev->lps_conf.deep_mode = LPS_DEEP_MODE_NONE;
 	else
 		rtwdev->lps_conf.deep_mode = rtw_fw_lps_deep_mode;
-
-	mutex_lock(&rtwdev->mutex);
-	rtw_add_rsvd_page(rtwdev, RSVD_BEACON, false);
-	mutex_unlock(&rtwdev->mutex);
 
 	rtw_stats_init(rtwdev);
 
@@ -1441,8 +1438,9 @@ void rtw_core_deinit(struct rtw_dev *rtwdev)
 	skb_queue_purge(&rtwdev->tx_report.queue);
 	spin_unlock_irqrestore(&rtwdev->tx_report.q_lock, flags);
 
-	list_for_each_entry_safe(rsvd_pkt, tmp, &rtwdev->rsvd_page_list, list) {
-		list_del(&rsvd_pkt->list);
+	list_for_each_entry_safe(rsvd_pkt, tmp, &rtwdev->rsvd_page_list,
+				 build_list) {
+		list_del(&rsvd_pkt->build_list);
 		kfree(rsvd_pkt);
 	}
 
@@ -1454,6 +1452,7 @@ EXPORT_SYMBOL(rtw_core_deinit);
 
 int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	int max_tx_headroom = 0;
 	int ret;
 
@@ -1482,6 +1481,8 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 				     BIT(NL80211_IFTYPE_AP) |
 				     BIT(NL80211_IFTYPE_ADHOC) |
 				     BIT(NL80211_IFTYPE_MESH_POINT);
+	hw->wiphy->available_antennas_tx = hal->antenna_tx;
+	hw->wiphy->available_antennas_rx = hal->antenna_rx;
 
 	hw->wiphy->flags |= WIPHY_FLAG_SUPPORTS_TDLS |
 			    WIPHY_FLAG_TDLS_EXTERNAL_SETUP;
@@ -1498,6 +1499,7 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 	SET_IEEE80211_PERM_ADDR(hw, rtwdev->efuse.addr);
 
 	rtw_regd_init(rtwdev, rtw_regd_notifier);
+	rtw_register_vndcmd(hw);
 
 	ret = ieee80211_register_hw(hw);
 	if (ret) {
@@ -1505,8 +1507,11 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 		return ret;
 	}
 
-	if (regulatory_hint(hw->wiphy, rtwdev->regd.alpha2))
-		rtw_err(rtwdev, "regulatory_hint fail\n");
+	if (!rtwdev->efuse.country_worldwide) {
+		ret = regulatory_hint(hw->wiphy, rtwdev->efuse.country_code);
+		if (ret)
+			rtw_warn(rtwdev, "failed to hint regulatory:%d\n", ret);
+	}
 
 	rtw_debugfs_init(rtwdev);
 

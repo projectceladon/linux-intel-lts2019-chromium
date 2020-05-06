@@ -110,7 +110,7 @@ enum suspend_tasks {
 enum suspended_state {
 	BT_RUNNING = 0,
 	BT_SUSPEND_DISCONNECT,
-	BT_SUSPEND_COMPLETE,
+	BT_SUSPEND_CONFIGURE_WAKE,
 };
 
 struct hci_conn_hash {
@@ -227,8 +227,8 @@ struct adv_info {
  * - the default min/max intervals, and
  * - the valid range of min/max intervals.
  */
-#define HCI_DEFAULT_LE_ADV_MIN_INTERVAL	0x0800
-#define HCI_DEFAULT_LE_ADV_MAX_INTERVAL	0x0800
+#define HCI_DEFAULT_LE_ADV_MIN_INTERVAL	0x0122
+#define HCI_DEFAULT_LE_ADV_MAX_INTERVAL	0x0122
 #define HCI_VALID_LE_ADV_MIN_INTERVAL	0x0020
 #define HCI_VALID_LE_ADV_MAX_INTERVAL	0x4000
 #define ADV_DURATION_MIN_GRACE_PERIOD	5
@@ -531,6 +531,7 @@ struct hci_dev {
 	int (*set_diag)(struct hci_dev *hdev, bool enable);
 	int (*set_bdaddr)(struct hci_dev *hdev, const bdaddr_t *bdaddr);
 	void (*cmd_timeout)(struct hci_dev *hdev);
+	bool (*prevent_wake)(struct hci_dev *hdev);
 };
 
 #define HCI_PHY_HANDLE(handle)	(handle & 0xff)

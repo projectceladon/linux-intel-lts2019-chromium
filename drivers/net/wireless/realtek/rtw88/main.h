@@ -99,6 +99,16 @@ enum rtw_bandwidth {
 	RTW_CHANNEL_WIDTH_10	= 6,
 };
 
+enum rtw_sc_offset {
+	RTW_SC_DONT_CARE	= 0,
+	RTW_SC_20_UPPER		= 1,
+	RTW_SC_20_LOWER		= 2,
+	RTW_SC_20_UPMOST	= 3,
+	RTW_SC_20_LOWEST	= 4,
+	RTW_SC_40_UPPER		= 9,
+	RTW_SC_40_LOWER		= 10,
+};
+
 enum rtw_net_type {
 	RTW_NET_NO_LINK		= 0,
 	RTW_NET_AD_HOC		= 1,
@@ -386,6 +396,13 @@ enum rtw_wow_flags {
 	RTW_WOW_FLAG_MAX,
 };
 
+enum rtw_sar_sources {
+	RTW_SAR_SOURCE_NONE,
+	RTW_SAR_SOURCE_VNDCMD,
+	RTW_SAR_SOURCE_ACPI_STATIC,
+	RTW_SAR_SOURCE_ACPI_DYNAMIC,
+};
+
 /* the power index is represented by differences, which cck-1s & ht40-1s are
  * the base values, so for 1s's differences, there are only ht20 & ofdm
  */
@@ -505,6 +522,18 @@ struct rtw_hw_reg {
 	u32 mask;
 };
 
+struct rtw_reg_domain {
+	u32 addr;
+	u32 mask;
+#define RTW_REG_DOMAIN_MAC32	0
+#define RTW_REG_DOMAIN_MAC16	1
+#define RTW_REG_DOMAIN_MAC8	2
+#define RTW_REG_DOMAIN_RF_A	3
+#define RTW_REG_DOMAIN_RF_B	4
+#define RTW_REG_DOMAIN_NL	0xFF
+	u8 domain;
+};
+
 struct rtw_backup_info {
 	u8 len;
 	u32 reg;
@@ -552,6 +581,9 @@ struct rtw_tx_pkt_info {
 	bool short_gi;
 	bool report;
 	bool rts;
+	bool dis_qselseq;
+	bool en_hwseq;
+	u8 hw_ssn_sel;
 };
 
 struct rtw_rx_pkt_stat {
@@ -742,6 +774,7 @@ struct rtw_vif {
 	u8 bssid[ETH_ALEN];
 	u8 port;
 	u8 bcn_ctrl;
+	struct list_head rsvd_page_list;
 	struct ieee80211_tx_queue_params tx_params[IEEE80211_NUM_ACS];
 	const struct rtw_vif_port *conf;
 
@@ -772,8 +805,9 @@ struct rtw_chip_ops {
 	void (*set_tx_power_index)(struct rtw_dev *rtwdev);
 	int (*rsvd_page_dump)(struct rtw_dev *rtwdev, u8 *buf, u32 offset,
 			      u32 size);
-	void (*set_antenna)(struct rtw_dev *rtwdev, u8 antenna_tx,
-			    u8 antenna_rx);
+	int (*set_antenna)(struct rtw_dev *rtwdev,
+			   u32 antenna_tx,
+			   u32 antenna_rx);
 	void (*cfg_ldo25)(struct rtw_dev *rtwdev, bool enable);
 	void (*false_alarm_statistics)(struct rtw_dev *rtwdev);
 	void (*phy_calibration)(struct rtw_dev *rtwdev);
@@ -948,10 +982,10 @@ struct rtw_wow_param {
 };
 
 struct rtw_intf_phy_para_table {
-	struct rtw_intf_phy_para *usb2_para;
-	struct rtw_intf_phy_para *usb3_para;
-	struct rtw_intf_phy_para *gen1_para;
-	struct rtw_intf_phy_para *gen2_para;
+	const struct rtw_intf_phy_para *usb2_para;
+	const struct rtw_intf_phy_para *usb3_para;
+	const struct rtw_intf_phy_para *gen1_para;
+	const struct rtw_intf_phy_para *gen2_para;
 	u8 n_usb2_para;
 	u8 n_usb3_para;
 	u8 n_gen1_para;
@@ -1048,13 +1082,13 @@ struct rtw_chip_info {
 
 	/* init values */
 	u8 sys_func_en;
-	struct rtw_pwr_seq_cmd **pwr_on_seq;
-	struct rtw_pwr_seq_cmd **pwr_off_seq;
-	struct rtw_rqpn *rqpn_table;
-	struct rtw_page_table *page_table;
-	struct rtw_intf_phy_para_table *intf_table;
+	const struct rtw_pwr_seq_cmd **pwr_on_seq;
+	const struct rtw_pwr_seq_cmd **pwr_off_seq;
+	const struct rtw_rqpn *rqpn_table;
+	const struct rtw_page_table *page_table;
+	const struct rtw_intf_phy_para_table *intf_table;
 
-	struct rtw_hw_reg *dig;
+	const struct rtw_hw_reg *dig;
 	u32 rf_base_addr[2];
 	u32 rf_sipi_addr[2];
 
@@ -1096,6 +1130,7 @@ struct rtw_chip_info {
 	u8 bt_afh_span_bw40;
 	u8 afh_5g_num;
 	u8 wl_rf_para_num;
+	u8 coex_info_hw_regs_num;
 	const u8 *bt_rssi_step;
 	const u8 *wl_rssi_step;
 	const struct coex_table_para *table_nsant;
@@ -1105,6 +1140,7 @@ struct rtw_chip_info {
 	const struct coex_rf_para *wl_rf_para_tx;
 	const struct coex_rf_para *wl_rf_para_rx;
 	const struct coex_5g_afh_map *afh_5g;
+	const struct rtw_reg_domain *coex_info_hw_regs;
 };
 
 enum rtw_coex_bt_state_cnt {
@@ -1151,6 +1187,7 @@ struct rtw_coex_rfe {
 struct rtw_coex_dm {
 	bool cur_ps_tdma_on;
 	bool cur_wl_rx_low_gain_en;
+	bool ignore_wl_act;
 
 	u8 reason;
 	u8 bt_rssi_state[4];
@@ -1231,6 +1268,9 @@ struct rtw_coex_stat {
 
 	u32 bt_supported_version;
 	u32 bt_supported_feature;
+	u32 patch_ver;
+	u16 bt_reg_vendor_ae;
+	u16 bt_reg_vendor_ac;
 	s8 bt_rssi;
 	u8 kt_ver;
 	u8 gnt_workaround_state;
@@ -1373,6 +1413,7 @@ struct rtw_dm_info {
 	u8 cck_gi_u_bnd;
 	u8 cck_gi_l_bnd;
 
+	u8 fix_rate;
 	u8 tx_rate;
 	u8 thermal_avg[RTW_RF_PATH_MAX];
 	u8 thermal_meter_k;
@@ -1414,6 +1455,7 @@ struct rtw_efuse {
 	u8 addr[ETH_ALEN];
 	u8 channel_plan;
 	u8 country_code[2];
+	bool country_worldwide;
 	u8 rf_board_option;
 	u8 rfe_option;
 	u8 power_track_type;
@@ -1500,7 +1542,7 @@ struct rtw_fifo_conf {
 	u16 rsvd_cpu_instr_addr;
 	u16 rsvd_fw_txbuf_addr;
 	u16 rsvd_csibuf_addr;
-	struct rtw_rqpn *rqpn;
+	const struct rtw_rqpn *rqpn;
 };
 
 struct rtw_fw_state {
@@ -1513,11 +1555,14 @@ struct rtw_fw_state {
 	u16 h2c_version;
 };
 
+struct rtw_sar {
+	enum rtw_sar_sources source;
+};
+
 struct rtw_hal {
 	u32 rcr;
 
 	u32 chip_version;
-	u8 fab_version;
 	u8 cut_version;
 	u8 mp_chip;
 	u8 oem_id;
@@ -1536,8 +1581,8 @@ struct rtw_hal {
 	u8 sec_ch_offset;
 	u8 rf_type;
 	u8 rf_path_num;
-	u8 antenna_tx;
-	u8 antenna_rx;
+	u32 antenna_tx;
+	u32 antenna_rx;
 	u8 bfee_sts_cap;
 
 	/* protect tx power section */
@@ -1558,6 +1603,10 @@ struct rtw_hal {
 			  [RTW_CHANNEL_WIDTH_MAX]
 			  [RTW_RATE_SECTION_MAX]
 			  [RTW_MAX_CHANNEL_NUM_5G];
+	s8 tx_pwr_sar_2g[RTW_REGD_MAX][RTW_RF_PATH_MAX][RTW_RATE_SECTION_MAX]
+			[RTW_MAX_CHANNEL_NUM_2G];
+	s8 tx_pwr_sar_5g[RTW_REGD_MAX][RTW_RF_PATH_MAX][RTW_RATE_SECTION_MAX]
+			[RTW_MAX_CHANNEL_NUM_5G];
 	s8 tx_pwr_tbl[RTW_RF_PATH_MAX]
 		     [DESC_RATE_MAX];
 };
@@ -1629,6 +1678,8 @@ struct rtw_dev {
 
 	struct rtw_fw_state wow_fw;
 	struct rtw_wow_param wow;
+
+	struct rtw_sar sar;
 
 	/* hci related data, must be last */
 	u8 priv[0] __aligned(sizeof(void *));
