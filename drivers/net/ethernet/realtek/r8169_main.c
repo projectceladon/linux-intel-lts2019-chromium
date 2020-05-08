@@ -4208,6 +4208,12 @@ DECLARE_RTL_COND(rtl_txcfg_empty_cond)
 	return RTL_R32(tp, TxConfig) & TXCFG_EMPTY;
 }
 
+static void rtl_enable_rxdvgate(struct rtl8169_private *tp)
+{
+	RTL_W32(tp, MISC, RTL_R32(tp, MISC) | RXDV_GATED_EN);
+	fsleep(2000);
+}
+
 static void rtl8169_hw_reset(struct rtl8169_private *tp)
 {
 	/* Disable interrupts */
@@ -6868,7 +6874,7 @@ static void rtl_hw_init_8168g(struct rtl8169_private *tp)
 {
 	tp->ocp_base = OCP_STD_PHY_BASE;
 
-	RTL_W32(tp, MISC, RTL_R32(tp, MISC) | RXDV_GATED_EN);
+	rtl_enable_rxdvgate(tp);
 
 	if (!rtl_udelay_loop_wait_high(tp, &rtl_txcfg_empty_cond, 100, 42))
 		return;
@@ -6894,7 +6900,7 @@ static void rtl_hw_init_8125(struct rtl8169_private *tp)
 {
 	tp->ocp_base = OCP_STD_PHY_BASE;
 
-	RTL_W32(tp, MISC, RTL_R32(tp, MISC) | RXDV_GATED_EN);
+	rtl_enable_rxdvgate(tp);
 
 	if (!rtl_udelay_loop_wait_high(tp, &rtl_rxtx_empty_cond, 100, 42))
 		return;
