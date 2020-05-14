@@ -140,7 +140,7 @@ static void i915_error_vprintf(struct drm_i915_error_state_buf *e,
 	e->bytes += len;
 }
 
-static void i915_error_puts(struct drm_i915_error_state_buf *e, const char *str)
+void i915_error_puts(struct drm_i915_error_state_buf *e, const char *str)
 {
 	unsigned len;
 
@@ -173,6 +173,26 @@ i915_error_printer(struct drm_i915_error_state_buf *e)
 	};
 	return p;
 }
+
+#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
+static bool __i915_error_ok(struct drm_i915_error_state_buf *e)
+{
+	if (!e->err && WARN(e->bytes > (e->size - 1), "overflow")) {
+		e->err = -ENOSPC;
+		return false;
+	}
+
+	if (e->bytes == e->size - 1 || e->err)
+		return false;
+
+	return true;
+}
+
+bool i915_error_ok(struct drm_i915_error_state_buf *e)
+{
+	return __i915_error_ok(e);
+}
+#endif
 
 /* single threaded page allocator with a reserved stash for emergencies */
 static void pool_fini(struct pagevec *pv)
@@ -890,6 +910,21 @@ ssize_t i915_gpu_state_copy_to_buffer(struct i915_gpu_state *error,
 	return count;
 }
 
+#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
+int i915_obj_state_buf_init(struct drm_i915_error_state_buf *ebuf, size_t count)
+{
+	memset(ebuf, 0, sizeof(*ebuf));
+
+	ebuf->buf = kmalloc(count, GFP_KERNEL);
+
+	if (ebuf->buf == NULL)
+		return -ENOMEM;
+
+	ebuf->size = count;
+	return 0;
+}
+#endif
+
 static void i915_error_object_free(struct drm_i915_error_object *obj)
 {
 	int page;
@@ -902,7 +937,6 @@ static void i915_error_object_free(struct drm_i915_error_object *obj)
 
 	kfree(obj);
 }
-
 
 static void cleanup_params(struct i915_gpu_state *error)
 {
