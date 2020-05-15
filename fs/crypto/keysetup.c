@@ -183,7 +183,7 @@ static int setup_per_mode_enc_key(struct fscrypt_info *ci,
 		return 0;
 	}
 
-	mutex_lock(&mode_key_setup_mutex);
+	mutex_lock(&fscrypt_mode_key_setup_mutex);
 
 	if (fscrypt_is_key_prepared(prep_key, ci))
 		goto done_unlock;
@@ -234,7 +234,7 @@ done_unlock:
 	ci->ci_key = *prep_key;
 	err = 0;
 out_unlock:
-	mutex_unlock(&mode_key_setup_mutex);
+	mutex_unlock(&fscrypt_mode_key_setup_mutex);
 	return err;
 }
 
@@ -296,9 +296,10 @@ static int fscrypt_setup_v2_file_key(struct fscrypt_info *ci,
 	int err;
 
 	if (mk->mk_secret.is_hw_wrapped &&
-	    !(ci->ci_policy.v2.flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64)) {
+	    !(ci->ci_policy.v2.flags & (FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64 |
+					FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32))) {
 		fscrypt_warn(ci->ci_inode,
-			     "Hardware-wrapped keys are only supported with IV_INO_LBLK_64 policies");
+			     "Hardware-wrapped keys are only supported with IV_INO_LBLK policies");
 		return -EINVAL;
 	}
 
