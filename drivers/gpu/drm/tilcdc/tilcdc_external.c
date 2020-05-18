@@ -8,6 +8,7 @@
 #include <linux/of_graph.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_of.h>
 
 #include "tilcdc_drv.h"
@@ -94,7 +95,7 @@ int tilcdc_attach_bridge(struct drm_device *ddev, struct drm_bridge *bridge)
 
 	priv->external_encoder->possible_crtcs = BIT(0);
 
-	ret = drm_bridge_attach(priv->external_encoder, bridge, NULL);
+	ret = drm_bridge_attach(priv->external_encoder, bridge, NULL, 0);
 	if (ret) {
 		dev_err(ddev->dev, "drm_bridge_attach() failed %d\n", ret);
 		return ret;

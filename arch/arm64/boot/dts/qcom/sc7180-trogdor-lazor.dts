@@ -19,7 +19,7 @@ ap_h1_spi: &spi0 {};
 	compatible = "google,lazor", "qcom,sc7180";
 
 	panel: panel {
-		compatible = "boe,nv133fhmn62";
+		compatible = "boe,nv133fhm-n62";
 		power-supply = <&pp3300_dx_edp>;
 		backlight = <&backlight>;
 		no-hpd; /* TODO: Remove? */
@@ -52,6 +52,10 @@ ap_ts_pen_1v8: &i2c4 {
 
 		vdd-supply = <&pp3300_ts>;
 	};
+};
+
+&sn65dsi86_out {
+	lane-polarities = <1 0>;
 };
 
 /* PINCTRL - modifications to sc7180-trogdor.dtsi */
@@ -189,7 +193,5 @@ ap_ts_pen_1v8: &i2c4 {
 			  "AP_TS_PEN_I2C_SDA",
 			  "AP_TS_PEN_I2C_SCL",
 			  "DP_HOT_PLUG_DET",
-			  "EC_IN_RW_ODL",
-			  "",
-			  "";
+			  "EC_IN_RW_ODL";
 };

@@ -58,6 +58,13 @@ ap_ts_pen_1v8: &i2c4 {
 	};
 };
 
+&sdhc_1 {
+	// HACK: due to b/155826689 we are temporarily overriding the
+	// compatible string which will cause us to restore the DLL config
+	// at runtime resume.
+	compatible = "qcom,sdm845-sdhci", "qcom,sdhci-msm-v5";
+};
+
 &sdhc_2 {
 	status = "okay";
 };
@@ -187,7 +194,5 @@ ap_ts_pen_1v8: &i2c4 {
 			  "AP_TS_PEN_I2C_SDA",
 			  "AP_TS_PEN_I2C_SCL",
 			  "DP_HOT_PLUG_DET",
-			  "EC_IN_RW_ODL",
-			  "",
-			  "";
+			  "EC_IN_RW_ODL";
 };

@@ -276,6 +276,14 @@ static int vdec_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	const struct venus_format *fmt;
 	struct v4l2_format format;
 	u32 pixfmt_out = 0, pixfmt_cap = 0;
+	struct vb2_queue *q;
+
+	q = v4l2_m2m_get_vq(inst->m2m_ctx, f->type);
+	if (!q)
+		return -EINVAL;
+
+	if (vb2_is_busy(q))
+		return -EBUSY;
 
 	orig_pixmp = *pixmp;
 
@@ -906,7 +914,7 @@ static int vdec_start_capture(struct venus_inst *inst)
 		return 0;
 
 reconfigure:
-	ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT);
+	ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT, true);
 	if (ret)
 		return ret;
 
@@ -1044,7 +1052,7 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 put_power:
 	vdec_pm_put(inst, false);
 error:
-	venus_helper_buffers_done(inst, VB2_BUF_STATE_QUEUED);
+	venus_helper_buffers_done(inst, q->type, VB2_BUF_STATE_QUEUED);
 	mutex_unlock(&inst->lock);
 	return ret;
 }
@@ -1063,22 +1071,24 @@ static int vdec_stop_capture(struct venus_inst *inst)
 
 	switch (inst->codec_state) {
 	case VENUS_DEC_STATE_DECODING:
-		ret = hfi_session_flush(inst, HFI_FLUSH_ALL);
+		ret = hfi_session_flush(inst, HFI_FLUSH_ALL, true);
 		/* fallthrough */
 	case VENUS_DEC_STATE_DRAIN:
 		vdec_cancel_dst_buffers(inst);
 		inst->codec_state = VENUS_DEC_STATE_STOPPED;
 		break;
 	case VENUS_DEC_STATE_DRC:
-		ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT);
-		vdec_cancel_dst_buffers(inst);
+		WARN_ON(1);
+		fallthrough;
+	case VENUS_DEC_STATE_DRC_FLUSH_DONE:
 		inst->codec_state = VENUS_DEC_STATE_CAPTURE_SETUP;
-		INIT_LIST_HEAD(&inst->registeredbufs);
 		venus_helper_free_dpb_bufs(inst);
 		break;
 	default:
-		return 0;
+		break;
 	}
+
+	INIT_LIST_HEAD(&inst->registeredbufs);
 
 	return ret;
 }
@@ -1091,12 +1101,12 @@ static int vdec_stop_output(struct venus_inst *inst)
 	case VENUS_DEC_STATE_DECODING:
 	case VENUS_DEC_STATE_DRAIN:
 	case VENUS_DEC_STATE_STOPPED:
-		ret = hfi_session_flush(inst, HFI_FLUSH_ALL);
+		ret = hfi_session_flush(inst, HFI_FLUSH_ALL, true);
 		inst->codec_state = VENUS_DEC_STATE_SEEK;
 		break;
 	case VENUS_DEC_STATE_INIT:
 	case VENUS_DEC_STATE_CAPTURE_SETUP:
-		ret = hfi_session_flush(inst, HFI_FLUSH_INPUT);
+		ret = hfi_session_flush(inst, HFI_FLUSH_INPUT, true);
 		break;
 	default:
 		break;
@@ -1117,7 +1127,7 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 	else
 		ret = vdec_stop_output(inst);
 
-	venus_helper_buffers_done(inst, VB2_BUF_STATE_ERROR);
+	venus_helper_buffers_done(inst, q->type, VB2_BUF_STATE_ERROR);
 
 	if (ret)
 		goto unlock;
@@ -1234,6 +1244,13 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
 		vb->timestamp = timestamp_us * NSEC_PER_USEC;
 		vbuf->sequence = inst->sequence_cap++;
 
+		if (inst->last_buf == vb) {
+			inst->last_buf = NULL;
+			vbuf->flags |= V4L2_BUF_FLAG_LAST;
+			vb2_set_plane_payload(vb, 0, 0);
+			vb->timestamp = 0;
+		}
+
 		if (vbuf->flags & V4L2_BUF_FLAG_LAST) {
 			const struct v4l2_event ev = { .type = V4L2_EVENT_EOS };
 
@@ -1242,6 +1259,9 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
 			if (inst->codec_state == VENUS_DEC_STATE_DRAIN)
 				inst->codec_state = VENUS_DEC_STATE_STOPPED;
 		}
+
+		if (!bytesused)
+			state = VB2_BUF_STATE_ERROR;
 	} else {
 		vbuf->sequence = inst->sequence_out++;
 	}
@@ -1308,6 +1328,25 @@ static void vdec_event_change(struct venus_inst *inst,
 		}
 	}
 
+	/*
+	 * The assumption is that the firmware have to return the last buffer
+	 * before this event is received in the v4l2 driver. Also the firmware
+	 * itself doesn't mark the last decoder output buffer with HFI EOS flag.
+	 */
+
+	if (!sufficient && inst->codec_state == VENUS_DEC_STATE_DRC) {
+		struct vb2_v4l2_buffer *last;
+		int ret;
+
+		last = v4l2_m2m_last_dst_buf(inst->m2m_ctx);
+		if (last)
+			inst->last_buf = &last->vb2_buf;
+
+		ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT, false);
+		if (ret)
+			dev_dbg(dev, "flush output error %d\n", ret);
+	}
+
 	inst->reconfig = true;
 	v4l2_event_queue_fh(&inst->fh, &ev);
 	wake_up(&inst->reconf_wait);
@@ -1348,9 +1387,16 @@ static void vdec_event_notify(struct venus_inst *inst, u32 event,
 	}
 }
 
+static void vdec_flush_done(struct venus_inst *inst)
+{
+	if (inst->codec_state == VENUS_DEC_STATE_DRC)
+		inst->codec_state = VENUS_DEC_STATE_DRC_FLUSH_DONE;
+}
+
 static const struct hfi_inst_ops vdec_hfi_ops = {
 	.buf_done = vdec_buf_done,
 	.event_notify = vdec_event_notify,
+	.flush_done = vdec_flush_done,
 };
 
 static void vdec_inst_init(struct venus_inst *inst)

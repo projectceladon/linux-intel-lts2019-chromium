@@ -537,6 +537,7 @@ edp_brij_i2c: &i2c2 {
 			port@1 {
 				reg = <1>;
 				sn65dsi86_out: endpoint {
+					data-lanes = <0 1>;
 					remote-endpoint = <&panel_in_edp>;
 				};
 			};
@@ -613,10 +614,6 @@ hp_i2c: &i2c9 {
 
 &sdhc_1 {
 	status = "okay";
-
-	// CQE is currently causing I/O hangs.  See b/153142831
-	// Hack it out while the problem is being investigated.
-	/delete-property/supports-cqe;
 
 	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&sdc1_on>;

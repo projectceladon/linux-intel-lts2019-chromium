@@ -4737,7 +4737,7 @@ static void drm_parse_hdmi_forum_vsdb(struct drm_connector *connector,
 		if (scdc->supported) {
 			scdc->scrambling.supported = true;
 
-			/* Few sinks support scrambling for cloks < 340M */
+			/* Few sinks support scrambling for clocks < 340M */
 			if ((hf_vsdb[6] & 0x8))
 				scdc->scrambling.low_rates = true;
 		}
@@ -5038,7 +5038,7 @@ static struct drm_display_mode *drm_mode_displayid_detailed(struct drm_device *d
 	struct drm_display_mode *mode;
 	unsigned pixel_clock = (timings->pixel_clock[0] |
 				(timings->pixel_clock[1] << 8) |
-				(timings->pixel_clock[2] << 16));
+				(timings->pixel_clock[2] << 16)) + 1;
 	unsigned hactive = (timings->hactive[0] | timings->hactive[1] << 8) + 1;
 	unsigned hblank = (timings->hblank[0] | timings->hblank[1] << 8) + 1;
 	unsigned hsync = (timings->hsync[0] | (timings->hsync[1] & 0x7f) << 8) + 1;
