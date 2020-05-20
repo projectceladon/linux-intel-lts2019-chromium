@@ -51,6 +51,10 @@ DEFINE_MUTEX(drm_global_mutex);
 
 #define MAX_DRM_OPEN_COUNT		128
 
+#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
+EXPORT_SYMBOL(drm_global_mutex);
+#endif
+
 /**
  * DOC: file operations
  *
