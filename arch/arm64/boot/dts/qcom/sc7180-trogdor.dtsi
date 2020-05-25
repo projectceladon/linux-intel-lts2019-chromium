@@ -13,8 +13,61 @@
 #include "pm6150.dtsi"
 #include "pm6150l.dtsi"
 
+/*
+ * Reserved memory changes
+ *
+ * Delete all unused memory nodes and define the peripheral memory regions
+ * required by the board dts.
+ *
+ */
+
+/delete-node/ &hyp_mem;
+/delete-node/ &xbl_mem;
+/delete-node/ &aop_mem;
+/delete-node/ &sec_apps_mem;
+/delete-node/ &tz_mem;
+
+/* Increase the size from 2MB to 8MB */
+&rmtfs_mem {
+	reg = <0x0 0x84400000 0x0 0x800000>;
+};
+
 / {
+
+	reserved-memory {
+		atf_mem: memory@80b00000 {
+			reg = <0x0 0x80b00000 0x0 0x100000>;
+			no-map;
+		};
+
+		mpss_mem: memory@86000000 {
+			reg = <0x0 0x86000000 0x0 0x8c00000>;
+			no-map;
+		};
+
+		camera_mem: memory@8ec00000 {
+			reg = <0x0 0x8ec00000 0x0 0x500000>;
+			no-map;
+		};
+
+		venus_mem: memory@8f600000 {
+			reg = <0 0x8f600000 0 0x500000>;
+			no-map;
+		};
+
+		wlan_mem: memory@94100000 {
+			reg = <0x0 0x94100000 0x0 0x200000>;
+			no-map;
+		};
+
+		mba_mem: memory@94400000 {
+			reg = <0x0 0x94400000 0x0 0x200000>;
+			no-map;
+		};
+	};
+
 	aliases {
+		bluetooth0 = &bluetooth;
 		hsuart0 = &uart3;
 		serial0 = &uart8;
 	};
@@ -509,6 +562,8 @@ edp_brij_i2c: &i2c2 {
 		reg = <0x2d>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&edp_brij_en>, <&edp_brij_irq>;
+		gpio-controller;
+		#gpio-cells = <2>;
 
 		interrupt-parent = <&tlmm>;
 		interrupts = <11 IRQ_TYPE_LEVEL_HIGH>;
@@ -592,6 +647,17 @@ hp_i2c: &i2c9 {
 	};
 };
 
+&ipa {
+	status = "okay";
+
+	/*
+	 * Trogdor doesn't have QHEE (Qualcomm's EL2 blob), so the
+	 * modem needs to cover certain init steps (GSI init), and
+	 * the AP needs to wait for it.
+	 */
+	modem-init;
+};
+
 &mdp {
 	status = "okay";
 };
@@ -610,6 +676,17 @@ hp_i2c: &i2c9 {
 
 &qupv3_id_1 {
 	status = "okay";
+};
+
+&remoteproc_mpss {
+	status = "okay";
+	compatible = "qcom,sc7180-mss-pil";
+	iommus = <&apps_smmu 0x460 0x1>, <&apps_smmu 0x444 0x3>;
+	memory-region = <&mba_mem &mpss_mem>;
+
+	/* This gets overridden for SKUs with LTE support. */
+	firmware-name = "sc7180-mss/google-trogdor-nolte/mba.mbn",
+			"sc7180-mss/google-trogdor-nolte/modem.mdt";
 };
 
 &sdhc_1 {
@@ -688,6 +765,19 @@ ap_spi_fp: &spi10 {
 	status = "okay";
 	vdda-phy-supply = <&vdda_usb_ss_dp_1p2>;
 	vdda-pll-supply = <&vdda_usb_ss_dp_core>;
+};
+
+&wifi {
+	status = "okay";
+
+	vdd-0.8-cx-mx-supply = <&vdd_cx_wlan>;
+	vdd-1.8-xo-supply = <&pp1800_l1c>;
+	vdd-1.3-rfa-supply = <&pp1300_l2c>;
+	vdd-3.3-ch0-supply = <&pp3300_l11c>;
+	/* TODO: Binding and driver doesn't turn on ch1 supply? */
+	wifi-firmware {
+		iommus = <&apps_smmu 0xc2 0x1>;
+	};
 };
 
 /* PINCTRL - additions to nodes defined in sdm845.dtsi */

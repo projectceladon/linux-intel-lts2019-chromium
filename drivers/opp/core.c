@@ -782,11 +782,8 @@ static int _set_required_opps(struct device *dev,
 	if (!required_opp_tables)
 		return 0;
 
-	_of_lazy_link_required_tables(opp_table);
-
 	/* Single genpd case */
-	if (!genpd_virt_devs && required_opp_tables[0]
-			     && required_opp_tables[0]->is_genpd) {
+	if (!genpd_virt_devs) {
 		pstate = likely(opp) ? opp->required_opps[0]->pstate : 0;
 		ret = dev_pm_genpd_set_performance_state(dev, pstate);
 		if (ret) {
@@ -805,15 +802,10 @@ static int _set_required_opps(struct device *dev,
 	mutex_lock(&opp_table->genpd_virt_dev_lock);
 
 	for (i = 0; i < opp_table->required_opp_count; i++) {
+		pstate = likely(opp) ? opp->required_opps[i]->pstate : 0;
+
 		if (!genpd_virt_devs[i])
 			continue;
-
-		if (!opp->required_opps[i]) {
-			ret = -ENODEV;
-			break;
-		}
-
-		pstate = likely(opp) ? opp->required_opps[i]->pstate : 0;
 
 		ret = dev_pm_genpd_set_performance_state(genpd_virt_devs[i], pstate);
 		if (ret) {
@@ -1973,64 +1965,6 @@ void dev_pm_opp_detach_genpd(struct opp_table *opp_table)
 EXPORT_SYMBOL_GPL(dev_pm_opp_detach_genpd);
 
 /**
- * dev_pm_opp_xlate_opp() - Find required OPP for src_table OPP.
- * @src_table: OPP table which has dst_table as one of its required OPP table.
- * @dst_table: Required OPP table of the src_table.
- * @pstate: OPP of the src_table.
- *
- * This function returns the OPP (present in @dst_table) pointed out by the
- * "required-opps" property of the OPP (present in @src_table).
- *
- * The callers are required to call dev_pm_opp_put() for the returned OPP after
- * use.
- *
- * Return: destination table OPP on success, otherwise NULL on errors.
- */
-struct dev_pm_opp *dev_pm_opp_xlate_opp(struct opp_table *src_table,
-					struct opp_table *dst_table,
-					struct dev_pm_opp *src_opp)
-{
-	struct dev_pm_opp *opp, *dest_opp = NULL;
-	int i;
-
-	if (!src_table || !dst_table || !src_opp)
-		return NULL;
-
-	_of_lazy_link_required_tables(src_table);
-
-	for (i = 0; i < src_table->required_opp_count; i++) {
-		if (src_table->required_opp_tables[i]
-		    && src_table->required_opp_tables[i]->np == dst_table->np)
-			break;
-	}
-
-	if (unlikely(i == src_table->required_opp_count)) {
-		pr_err("%s: Couldn't find matching OPP table (%p: %p)\n",
-		       __func__, src_table, dst_table);
-		return NULL;
-	}
-
-	mutex_lock(&src_table->lock);
-
-	list_for_each_entry(opp, &src_table->opp_list, node) {
-		if (opp == src_opp) {
-			dest_opp = opp->required_opps[i];
-			dev_pm_opp_get(dest_opp);
-			goto unlock;
-		}
-	}
-
-	pr_err("%s: Couldn't find matching OPP (%p: %p)\n", __func__, src_table,
-	       dst_table);
-
-unlock:
-	mutex_unlock(&src_table->lock);
-
-	return dest_opp;
-}
-EXPORT_SYMBOL_GPL(dev_pm_opp_xlate_opp);
-
-/**
  * dev_pm_opp_xlate_performance_state() - Find required OPP's pstate for src_table.
  * @src_table: OPP table which has dst_table as one of its required OPP table.
  * @dst_table: Required OPP table of the src_table.
@@ -2064,8 +1998,6 @@ int dev_pm_opp_xlate_performance_state(struct opp_table *src_table,
 	if (!src_table->required_opp_count)
 		return pstate;
 
-	_of_lazy_link_required_tables(src_table);
-
 	for (i = 0; i < src_table->required_opp_count; i++) {
 		if (src_table->required_opp_tables[i]->np == dst_table->np)
 			break;
@@ -2081,16 +2013,15 @@ int dev_pm_opp_xlate_performance_state(struct opp_table *src_table,
 
 	list_for_each_entry(opp, &src_table->opp_list, node) {
 		if (opp->pstate == pstate) {
-			if (opp->required_opps[i])
-				dest_pstate = opp->required_opps[i]->pstate;
-			break;
+			dest_pstate = opp->required_opps[i]->pstate;
+			goto unlock;
 		}
 	}
 
-	if (dest_pstate < 0)
-		pr_err("%s: Couldn't find matching OPP (%p: %p)\n", __func__,
-		       src_table, dst_table);
+	pr_err("%s: Couldn't find matching OPP (%p: %p)\n", __func__, src_table,
+	       dst_table);
 
+unlock:
 	mutex_unlock(&src_table->lock);
 
 	return dest_pstate;
