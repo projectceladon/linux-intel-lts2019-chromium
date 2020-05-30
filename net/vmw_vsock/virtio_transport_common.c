@@ -1077,6 +1077,14 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 
 	lock_sock(sk);
 
+	/* Check if sk has been released before lock_sock */
+	if (sk->sk_shutdown == SHUTDOWN_MASK) {
+		(void)virtio_transport_reset_no_sock(t, pkt);
+		release_sock(sk);
+		sock_put(sk);
+		goto free_pkt;
+	}
+
 	space_available = virtio_transport_space_update(sk, pkt);
 
 	/* Update CID in case it has changed after a transport reset event */
