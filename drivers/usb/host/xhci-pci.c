@@ -89,6 +89,8 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
 	struct pci_dev		*pdev = to_pci_dev(dev);
 
+	pr_info("xhci vendor:0x%x, device:0x%x\n", pdev->vendor, pdev->device);
+
 	/* Look for vendor-specific quirks */
 	if (pdev->vendor == PCI_VENDOR_ID_FRESCO_LOGIC &&
 			(pdev->device == PCI_DEVICE_ID_FRESCO_LOGIC_PDK ||
@@ -268,6 +270,8 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 	if (xhci->quirks & XHCI_RESET_ON_RESUME)
 		xhci_dbg_trace(xhci, trace_xhci_dbg_quirks,
 				"QUIRK: Resetting on resume");
+	/* FIXME: WA for QEMU */
+	xhci->quirks |= XHCI_AVOID_BEI;
 }
 
 #ifdef CONFIG_ACPI
