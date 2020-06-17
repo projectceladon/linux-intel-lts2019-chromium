@@ -6608,14 +6608,12 @@ static int rtl8169_runtime_resume(struct device *device)
 
 	rtl_rar_set(tp, dev->dev_addr);
 
-	if (!tp->TxDescArray)
-		return 0;
-
 	rtl_lock_work(tp);
 	__rtl8169_set_wol(tp, tp->saved_wolopts);
 	rtl_unlock_work(tp);
 
-	__rtl8169_resume(dev);
+	if (tp->TxDescArray)
+		__rtl8169_resume(dev);
 
 	return 0;
 }
