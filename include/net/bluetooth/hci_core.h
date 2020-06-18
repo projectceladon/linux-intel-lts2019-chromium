@@ -285,7 +285,6 @@ struct hci_dev {
 	__u8		dev_name[HCI_MAX_NAME_LENGTH];
 	__u8		short_name[HCI_MAX_SHORT_NAME_LENGTH];
 	__u8		eir[HCI_MAX_EIR_LENGTH];
-	__u8		event_mask[HCI_SET_EVENT_MASK_SIZE];
 	__u16		appearance;
 	__u8		dev_class[3];
 	__u8		major_class;
@@ -338,6 +337,8 @@ struct hci_dev {
 	__u16		conn_info_max_age;
 	__u16		auth_payload_timeout;
 	__u8		min_enc_key_size;
+	__u8		max_enc_key_size;
+	__u8		pairing_opts;
 	__u8		ssp_debug_mode;
 	__u8		hw_error_code;
 	__u32		clock;
@@ -379,9 +380,6 @@ struct hci_dev {
 	unsigned int	acl_cnt;
 	unsigned int	sco_cnt;
 	unsigned int	le_cnt;
-
-	unsigned int	count_adv_change_in_progress;
-	unsigned int	count_scan_change_in_progress;
 
 	unsigned int	acl_mtu;
 	unsigned int	sco_mtu;
