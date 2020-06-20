@@ -6547,7 +6547,7 @@ static int __maybe_unused rtl8169_suspend(struct device *device)
 	return 0;
 }
 
-static int __maybe_unused rtl8169_resume(struct device *device)
+static int rtl8169_resume(struct device *device)
 {
 	struct net_device *dev = dev_get_drvdata(device);
 	struct rtl8169_private *tp = netdev_priv(dev);
@@ -6556,7 +6556,7 @@ static int __maybe_unused rtl8169_resume(struct device *device)
 
 	clk_prepare_enable(tp->clk);
 
-	if (netif_running(dev))
+	if (tp->TxDescArray)
 		rtl8169_up(tp);
 
 	return 0;
@@ -6587,16 +6587,11 @@ static int rtl8169_runtime_resume(struct device *device)
 	struct net_device *dev = dev_get_drvdata(device);
 	struct rtl8169_private *tp = netdev_priv(dev);
 
-	rtl_rar_set(tp, dev->dev_addr);
-
 	rtl_lock_work(tp);
 	__rtl8169_set_wol(tp, tp->saved_wolopts);
 	rtl_unlock_work(tp);
 
-	if (tp->TxDescArray)
-		rtl8169_up(tp);
-
-	return 0;
+	return rtl8169_resume(device);
 }
 
 static int rtl8169_runtime_idle(struct device *device)
