@@ -14,3 +14,5 @@ ifeq ($(CONFIG_CEC_PIN_ERROR_INJ),y)
 endif
 
 obj-$(CONFIG_CEC_CORE) += cec.o
+
+obj-y += i2c/
