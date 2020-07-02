@@ -1,0 +1,33 @@
+From: Tomasz Meresiński <tomasz@meresinski.eu>
+
+usb: add USB_QUIRK_DELAY_INIT for Logitech C922
+
+The Logitech C922 webcam, just like other Logitech webcams,
+needs the USB_QUIRK_DELAY_INIT or it will randomly
+not respond after device connection
+
+Signed-off-by: Tomasz Meresiński <tomasz@meresinski.eu>
+---
+ drivers/usb/core/quirks.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/core/quirks.c b/drivers/usb/core/quirks.c
+index 3e8efe759c3e..e0b77674869c 100644
+--- a/drivers/usb/core/quirks.c
++++ b/drivers/usb/core/quirks.c
+@@ -218,11 +218,12 @@ static const struct usb_device_id usb_quirk_list[] = {
+ 	/* Logitech HD Webcam C270 */
+ 	{ USB_DEVICE(0x046d, 0x0825), .driver_info = USB_QUIRK_RESET_RESUME },
+ 
+-	/* Logitech HD Pro Webcams C920, C920-C, C925e and C930e */
++	/* Logitech HD Pro Webcams C920, C920-C, C922, C925e and C930e */
+ 	{ USB_DEVICE(0x046d, 0x082d), .driver_info = USB_QUIRK_DELAY_INIT },
+ 	{ USB_DEVICE(0x046d, 0x0841), .driver_info = USB_QUIRK_DELAY_INIT },
+ 	{ USB_DEVICE(0x046d, 0x0843), .driver_info = USB_QUIRK_DELAY_INIT },
+ 	{ USB_DEVICE(0x046d, 0x085b), .driver_info = USB_QUIRK_DELAY_INIT },
++	{ USB_DEVICE(0x046d, 0x085c), .driver_info = USB_QUIRK_DELAY_INIT },
+ 
+ 	/* Logitech ConferenceCam CC3000e */
+ 	{ USB_DEVICE(0x046d, 0x0847), .driver_info = USB_QUIRK_DELAY_INIT },
+-- 
+2.17.1
