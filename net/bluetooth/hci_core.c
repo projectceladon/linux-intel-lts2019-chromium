@@ -827,6 +827,10 @@ static int hci_init4_req(struct hci_request *req, unsigned long opt)
 	if (hdev->commands[29] & 0x20)
 		hci_req_add(req, HCI_OP_READ_LOCAL_CODECS, 0, NULL);
 
+	/* Read local pairing options if the HCI command is supported */
+	if (hdev->commands[41] & 0x08)
+		hci_req_add(req, HCI_OP_READ_LOCAL_PAIRING_OPTS, 0, NULL);
+
 	/* Get MWS transport configuration if the HCI command is supported */
 	if (hdev->commands[30] & 0x08)
 		hci_req_add(req, HCI_OP_GET_MWS_TRANSPORT_CONFIG, 0, NULL);
@@ -1568,15 +1572,6 @@ setup_failed:
 
 	clear_bit(HCI_INIT, &hdev->flags);
 
-#ifdef CONFIG_BT_ENFORCE_CLASSIC_SECURITY
-	/* Don't allow usage of Bluetooth if the chip doesn't support */
-	/* Read Encryption Key Size command (byte 20 bit 4). */
-	if (!ret && !(hdev->commands[20] & 0x10)) {
-		WARN(1, "Disabling Bluetooth due to unsupported HCI Read Encryption Key Size command");
-		ret = -EIO;
-	}
-#endif
-
 	if (!ret) {
 		hci_dev_hold(hdev);
 		hci_dev_set_flag(hdev, HCI_RPA_EXPIRED);
@@ -1751,14 +1746,6 @@ int hci_dev_do_close(struct hci_dev *hdev)
 	drain_workqueue(hdev->workqueue);
 
 	hci_dev_lock(hdev);
-
-	/* This will clear the HCI_LE_SCAN_CHANGE_IN_PROGRESS flag in case its
-	 * already set and exception occurred to sync host and controller state.
-	 */
-	if (hci_dev_test_flag(hdev, HCI_LE_SCAN_CHANGE_IN_PROGRESS)) {
-		hci_dev_clear_flag(hdev, HCI_LE_SCAN_CHANGE_IN_PROGRESS);
-		hdev->count_scan_change_in_progress = 0;
-	}
 
 	hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
 
@@ -3305,10 +3292,10 @@ static int hci_suspend_wait_event(struct hci_dev *hdev)
 				     WAKE_COND, SUSPEND_NOTIFIER_TIMEOUT);
 
 	if (ret == 0) {
-		bt_dev_dbg(hdev, "Timed out waiting for suspend");
+		bt_dev_err(hdev, "Timed out waiting for suspend events");
 		for (i = 0; i < __SUSPEND_NUM_TASKS; ++i) {
 			if (test_bit(i, hdev->suspend_tasks))
-				bt_dev_dbg(hdev, "Bit %d is set", i);
+				bt_dev_err(hdev, "Suspend timeout bit: %d", i);
 			clear_bit(i, hdev->suspend_tasks);
 		}
 
@@ -3376,12 +3363,15 @@ static int hci_suspend_notifier(struct notifier_block *nb, unsigned long action,
 		ret = hci_change_suspend_state(hdev, BT_RUNNING);
 	}
 
-	/* If suspend failed, restore it to running */
-	if (ret && action == PM_SUSPEND_PREPARE)
-		hci_change_suspend_state(hdev, BT_RUNNING);
-
 done:
-	return ret ? notifier_from_errno(-EBUSY) : NOTIFY_STOP;
+	/* We always allow suspend even if suspend preparation failed and
+	 * attempt to recover in resume.
+	 */
+	if (ret)
+		bt_dev_err(hdev, "Suspend notifier action (%lu) failed: %d",
+			   action, ret);
+
+	return NOTIFY_STOP;
 }
 
 /* Alloc HCI device */
@@ -3430,9 +3420,6 @@ struct hci_dev *hci_alloc_dev(void)
 	hdev->le_tx_def_phys = HCI_LE_SET_PHY_1M;
 	hdev->le_rx_def_phys = HCI_LE_SET_PHY_1M;
 	hdev->le_num_of_adv_sets = HCI_MAX_ADV_INSTANCES;
-
-	hdev->count_adv_change_in_progress = 0;
-	hdev->count_scan_change_in_progress = 0;
 
 	hdev->rpa_timeout = HCI_DEFAULT_RPA_TIMEOUT;
 	hdev->discov_interleaved_timeout = DISCOV_INTERLEAVED_TIMEOUT;
@@ -4744,104 +4731,13 @@ static void hci_rx_work(struct work_struct *work)
 	}
 }
 
-/* This is a conditional HCI command. The HCI command
- * would be executed only when the run-time condition
- * is met.
- */
-static bool skip_conditional_cmd(struct work_struct *work, struct sk_buff *skb)
-{
-	struct hci_dev *hdev = container_of(work, struct hci_dev, cmd_work);
-	bool cur_enabled, cur_changing, desired_enabled, conditional_cmd = false;
-	unsigned bit_num_cur_ena, bit_num_cur_chng;
-	bool ret = false;
-
-	hci_dev_lock(hdev);
-
-	if (hci_skb_pkt_type(skb) == HCI_COMMAND_PKT) {
-		if (hci_skb_opcode(skb) == HCI_OP_LE_SET_ADV_ENABLE) {
-			desired_enabled = !!*(skb_tail_pointer(skb) - 1);
-			bit_num_cur_ena = HCI_LE_ADV;
-			bit_num_cur_chng = HCI_LE_ADV_CHANGE_IN_PROGRESS;
-			conditional_cmd = true;
-		} else if (hci_skb_opcode(skb) == HCI_OP_LE_SET_SCAN_ENABLE) {
-			desired_enabled = !!*(skb_tail_pointer(skb) - 2);
-			bit_num_cur_ena = HCI_LE_SCAN;
-			bit_num_cur_chng = HCI_LE_SCAN_CHANGE_IN_PROGRESS;
-			conditional_cmd = true;
-			BT_DBG("BT_DBG_DG: set scan enable tx: desired=%d\n",
-			       desired_enabled);
-		}
-	}
-
-	if (conditional_cmd) {
-
-		cur_enabled = hci_dev_test_flag(hdev, bit_num_cur_ena);
-		cur_changing = hci_dev_test_flag(hdev, bit_num_cur_chng);
-
-		BT_DBG("COND opcode=0x%04x, wanted=%d, on=%d, chngn=%d",
-		       hci_skb_opcode(skb), desired_enabled, cur_enabled,
-		       cur_changing);
-
-		/* No need to enable/disable anything if it is already in that
-		 * state or about to be.
-		 * The following condition is good for at most 1 pending
-		 * enabled command and 1 pending disabled command.
-		 * Refer to crbug.com/781749 for more context.
-		 */
-		if ((cur_enabled == desired_enabled && !cur_changing) ||
-		    (cur_enabled != desired_enabled && cur_changing)) {
-			BT_DBG("  COND LE cmd (0x%04x) is already %d (chg %d),"
-				" skip transition to %d", hci_skb_opcode(skb),
-				cur_enabled, cur_changing, desired_enabled);
-
-			skb_orphan(skb);
-			kfree_skb(skb);
-
-			/* See if there are more commands to do in cmd_q. */
-			atomic_set(&hdev->cmd_cnt, 1);
-			if (!skb_queue_empty(&hdev->cmd_q)) {
-				BT_DBG("  COND call queue_work.");
-				queue_work(hdev->workqueue, &hdev->cmd_work);
-			} else {
-				BT_DBG("  COND no more cmd in queue.");
-			}
-			ret = true;
-			goto out;
-		}
-
-		hci_dev_set_flag(hdev, bit_num_cur_chng);
-		if (bit_num_cur_chng == HCI_LE_ADV_CHANGE_IN_PROGRESS) {
-			hdev->count_adv_change_in_progress++;
-			if (hdev->count_adv_change_in_progress <= 0 ||
-			    hdev->count_adv_change_in_progress >= 3)
-				BT_WARN("Unexpected "
-					"count_adv_change_in_progress: %d",
-					hdev->count_adv_change_in_progress);
-			else
-				BT_DBG("count_adv_change_in_progress: %d",
-				       hdev->count_adv_change_in_progress);
-		} else if (bit_num_cur_chng == HCI_LE_SCAN_CHANGE_IN_PROGRESS) {
-			hdev->count_scan_change_in_progress++;
-			if (hdev->count_scan_change_in_progress <= 0 ||
-			    hdev->count_scan_change_in_progress >= 3)
-				BT_WARN("Unexpected "
-					"count_scan_change_in_progress: %d",
-					hdev->count_scan_change_in_progress);
-			else
-				BT_DBG("count_scan_change_in_progress: %d",
-				       hdev->count_scan_change_in_progress);
-		}
-	}
-
-out:
-	hci_dev_unlock(hdev);
-	return ret;
-}
-
 static void hci_cmd_work(struct work_struct *work)
 {
 	struct hci_dev *hdev = container_of(work, struct hci_dev, cmd_work);
 	struct sk_buff *skb;
+
+	BT_DBG("%s cmd_cnt %d cmd queued %d", hdev->name,
+	       atomic_read(&hdev->cmd_cnt), skb_queue_len(&hdev->cmd_q));
 
 	/* Send queued commands */
 	if (atomic_read(&hdev->cmd_cnt)) {
@@ -4856,11 +4752,6 @@ static void hci_cmd_work(struct work_struct *work)
 			if (hci_req_status_pend(hdev))
 				hci_dev_set_flag(hdev, HCI_CMD_PENDING);
 			atomic_dec(&hdev->cmd_cnt);
-
-			/* Check if the command could be skipped. */
-			if (skip_conditional_cmd(work, skb))
-				return;
-
 			hci_send_frame(hdev, skb);
 			if (test_bit(HCI_RESET, &hdev->flags))
 				cancel_delayed_work(&hdev->cmd_timer);
