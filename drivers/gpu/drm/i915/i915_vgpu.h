@@ -32,9 +32,37 @@
 #define PV_MAJOR               1
 #define PV_MINOR               0
 #define PV_MAX_ENGINES_NUM     (VECS1_HW + 1)
+#define PV_INTERRUPT_OFF (PAGE_SIZE/256)
 #define PV_ELSP_OFF            (PAGE_SIZE/8)
 #define PV_DESC_OFF            (PAGE_SIZE/4)
 #define PV_CMD_OFF             (PAGE_SIZE/2)
+
+/* ISR */
+#define VGPU_IRQ_STATUS 0x0
+/* IIR */
+#define VGPU_IRQ_SOURCE 0x80
+
+/* display engine id: vblank and de_port interrupt */
+#define DISPLAY_ENG_ID I915_NUM_ENGINES
+enum intel_display_eng_id {
+       DISP_PIPE_A = I915_NUM_ENGINES + PIPE_A,
+       DISP_PIPE_B,
+       DISP_PIPE_C,
+       DISP_PIPE_D,
+       DISP_DE_PORT,
+};
+
+/* for each pipe */
+#define PIPE_VBLANK 0
+
+/* for aux channel */
+enum intel_display_aux_channel {
+       DP_AUX_CHANNEL_A,
+       DP_AUX_CHANNEL_B,
+       DP_AUX_CHANNEL_C,
+       DP_AUX_CHANNEL_D,
+       DP_AUX_CHANNEL_MAX,
+};
 
 /*
  * define different capabilities of PV optimization
@@ -44,6 +72,7 @@ enum pv_caps {
        PV_GGTT = BIT(1),
        PV_SUBMISSION = BIT(2),
        PV_HW_CONTEXT = BIT(3),
+       PV_INTERRUPT = BIT(4),
 };
 
 /* PV actions */
@@ -141,6 +170,8 @@ struct vgpu_pv_ct_buffer {
 struct i915_virtual_gpu_pv {
        struct gvt_shared_page *shared_page;
        bool enabled;
+
+       void *irq; /* pv irq base */
 
        /* per engine PV workload submission data */
        struct pv_submission *pv_elsp[PV_MAX_ENGINES_NUM];

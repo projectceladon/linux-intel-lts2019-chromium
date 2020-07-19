@@ -97,6 +97,7 @@ void intel_detect_vgpu(struct drm_i915_private *dev_priv)
 	mutex_init(&dev_priv->vgpu.lock);
 
 	dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
+	dev_priv->vgpu.pv_caps |= PV_INTERRUPT;
 
 	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
 		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
@@ -635,6 +636,9 @@ static int intel_vgpu_setup_shared_page(struct drm_i915_private *dev_priv,
 		pv->pv_elsp[i]->submitted = false;
 		spin_lock_init(&pv->pv_elsp[i]->lock);
 	}
+
+	/* setup PV irq data area */
+	pv->irq = (void *)base + PV_INTERRUPT_OFF;
 
 	/* setup PV irq data area */
 	pv->irq = (void *)base + PV_INTERRUPT_OFF;
