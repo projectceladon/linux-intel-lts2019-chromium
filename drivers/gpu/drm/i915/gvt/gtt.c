@@ -1830,7 +1830,7 @@ static int shadow_mm_pv(struct intel_vgpu_mm *mm)
 	struct intel_gvt *gvt = vgpu->gvt;
 	struct intel_gvt_gtt_entry se;
 
-	mm->ppgtt = i915_ppgtt_create(gvt->gt);
+	mm->ppgtt = i915_ppgtt_create(&gvt->dev_priv->gt);
 	if (IS_ERR(mm->ppgtt)) {
 		gvt_vgpu_err("fail to create ppgtt for pdp 0x%llx\n",
 				px_dma(mm->ppgtt->pd));
@@ -3001,7 +3001,7 @@ out:
 			ggtt_set_host_entry(ggtt_mm, &m, g_gtt_index);
 			off += 8;
 		}
-		ggtt_invalidate(vgpu->gvt->gt);
+		ggtt_invalidate(vgpu->gvt->dev_priv);
 	}
 
 	if (action == PV_ACTION_GGTT_UNBIND) {
@@ -3017,7 +3017,7 @@ out:
 			ggtt_set_host_entry(ggtt_mm, &m, g_gtt_index);
 			off += 8;
 		}
-		ggtt_invalidate(vgpu->gvt->gt);
+		ggtt_invalidate(vgpu->gvt->dev_priv);
 	}
 
 	return ret;

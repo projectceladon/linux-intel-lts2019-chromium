@@ -1221,7 +1221,7 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 		struct pv_hwctx *pvctx)
 {
-	struct drm_i915_private *i915 = vgpu->gvt->gt->i915;
+	struct drm_i915_private *i915 = vgpu->gvt->dev_priv;
 	struct intel_vgpu_shadow_context *sctx;
 	struct i915_ppgtt *ppgtt;
 	struct intel_engine_cs *engine;
@@ -1239,7 +1239,7 @@ static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 
 	sctx->i915_context_pml4 = px_dma(ppgtt->pd);
 
-	engine = vgpu->gvt->gt->engine[id];
+	engine = i915->engine[id];
 	ce = intel_context_create(engine);
 	if (IS_ERR(ce))
 		goto out;
@@ -1249,7 +1249,7 @@ static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 	intel_context_set_single_submission(ce);
 
 	/* Max ring buffer size */
-	if (!intel_uc_wants_guc_submission(&engine->gt->uc)) {
+	if (!intel_uc_uses_guc_submission(&engine->gt->uc)) {
 		const unsigned int ring_size = 512 * SZ_4K;
 
 		ce->ring = __intel_context_ring_size(ring_size);
@@ -2005,7 +2005,7 @@ static int submit_context_pv(struct intel_vgpu *vgpu,
 	struct intel_vgpu_submission *s = &vgpu->submission;
 	struct intel_vgpu_workload *workload = NULL;
 
-	workload = intel_vgpu_create_workload(vgpu, engine, desc, ctx_gpa);
+	workload = intel_vgpu_create_workload(vgpu, engine->id, desc, ctx_gpa);
 	if (IS_ERR(workload))
 		return PTR_ERR(workload);
 
@@ -2100,7 +2100,7 @@ static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 
 	if (intel_vgpu_enabled_pv_cap(vgpu, PV_SUBMISSION) &&
 			data == PV_ACTION_ELSP_SUBMISSION)
-		return handle_pv_submission(vgpu, engine);
+		return handle_pv_submission(vgpu, vgpu->gvt->dev_priv->engine[ring_id]);
 
 	execlist = &vgpu->submission.execlist[ring_id];
 

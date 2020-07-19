@@ -1519,7 +1519,7 @@ int i915_driver_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	disable_rpm_wakeref_asserts(&dev_priv->runtime_pm);
 
-	i915_detect_vgpu(dev_priv);
+	intel_detect_vgpu(dev_priv);
 
 	ret = i915_driver_mmio_probe(dev_priv);
 	if (ret < 0)
@@ -1599,7 +1599,7 @@ static void i915_driver_release(struct drm_device *dev)
 
 	disable_rpm_wakeref_asserts(rpm);
 
-	i915_destroy_vgpu(dev_priv);
+	intel_destroy_vgpu(dev_priv);
 
 	i915_gem_driver_release(dev_priv);
 

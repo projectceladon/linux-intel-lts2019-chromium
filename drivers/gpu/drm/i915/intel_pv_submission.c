@@ -14,7 +14,7 @@
 static u64 execlists_update_context(struct i915_request *rq)
 {
 	struct intel_context *ce = rq->context;
-	u64 desc = ce->lrc.desc;
+	u64 desc = ce->lrc_desc;
 	u32 tail, prev;
 
 	tail = intel_ring_set_tail(rq->ring, rq->tail);
@@ -23,7 +23,7 @@ static u64 execlists_update_context(struct i915_request *rq)
 		desc |= CTX_DESC_FORCE_RESTORE;
 	ce->lrc_reg_state[CTX_RING_TAIL] = tail;
 	rq->tail = rq->wa_tail;
-	ce->lrc.desc &= ~CTX_DESC_FORCE_RESTORE;
+	ce->lrc_desc &= ~CTX_DESC_FORCE_RESTORE;
 	return desc;
 }
 
@@ -251,7 +251,7 @@ static void pv_cancel_requests(struct intel_engine_cs *engine)
 
 	/* Mark all executing requests as skipped. */
 	list_for_each_entry(rq, &engine->active.requests, sched.link) {
-		i915_request_set_error_once(rq, -EIO);
+		i915_request_skip(rq, -EIO);
 		i915_request_mark_complete(rq);
 	}
 
