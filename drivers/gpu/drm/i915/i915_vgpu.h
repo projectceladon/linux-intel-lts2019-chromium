@@ -29,6 +29,8 @@
 
 #define PV_MAJOR               1
 #define PV_MINOR               0
+#define PV_DESC_OFF            (PAGE_SIZE/4)
+#define PV_CMD_OFF             (PAGE_SIZE/2)
 
 /*
  * A shared page(4KB) between gvt and VM, could be allocated by guest driver
@@ -39,9 +41,60 @@ struct gvt_shared_page {
        u16 ver_minor;
 };
 
+/*
+ * Definition of the command transport message header (DW0)
+ *
+ * bit[4..0]   message len (in dwords)
+ * bit[7..5]   reserved
+ * bit[8]              write fence to desc
+ * bit[9..11]  reserved
+ * bit[31..16] action code
+ */
+#define PV_CT_MSG_LEN_SHIFT                            0
+#define PV_CT_MSG_LEN_MASK                             0x1F
+#define PV_CT_MSG_WRITE_FENCE_TO_DESC  (1 << 8)
+#define PV_CT_MSG_ACTION_SHIFT                 16
+#define PV_CT_MSG_ACTION_MASK                  0xFFFF
+
+/* PV command transport buffer descriptor */
+struct vgpu_pv_ct_buffer_desc {
+       u32 addr;               /* gpa address */
+       u32 size;               /* size in bytes */
+       u32 head;               /* offset updated by GVT */
+       u32 tail;               /* offset updated by owner */
+
+       u32 fence;              /* fence updated by GVT */
+       u32 status;             /* status updated by GVT */
+} __packed;
+
+/** PV single command transport buffer.
+ *
+ * A single command transport buffer consists of two parts, the header
+ * record (command transport buffer descriptor) and the actual buffer which
+ * holds the commands.
+ *
+ * @desc: pointer to the buffer descriptor
+ * @cmds: pointer to the commands buffer
+ */
+struct vgpu_pv_ct_buffer {
+       struct vgpu_pv_ct_buffer_desc *desc;
+       u32 *cmds;
+};
+
 struct i915_virtual_gpu_pv {
        struct gvt_shared_page *shared_page;
        bool enabled;
+
+       /* PV command buffer support */
+       struct vgpu_pv_ct_buffer ctb;
+       u32 next_fence;
+
+       /* To serialize the vgpu PV send actions */
+       spinlock_t lock;
+
+       /* VGPU's PV specific send function */
+       int (*send)(struct drm_i915_private *dev_priv, u32 *data, u32 len);
+       void (*notify)(struct drm_i915_private *dev_priv);
 };
 
 void i915_detect_vgpu(struct drm_i915_private *dev_priv);

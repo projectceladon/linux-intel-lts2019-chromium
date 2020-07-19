@@ -325,6 +325,110 @@ err:
 }
 
 /*
+ * shared_page setup for VGPU PV features
+ */
+static int intel_vgpu_setup_shared_page(struct drm_i915_private *dev_priv,
+		void __iomem *shared_area)
+{
+	void __iomem *addr;
+	struct i915_virtual_gpu_pv *pv;
+	struct gvt_shared_page *base;
+	u64 gpa;
+	u16 ver_maj, ver_min;
+	int ret = 0;
+	int i;
+	u32 size;
+
+	/* We allocate 1 page shared between guest and GVT for data exchange.
+	 *       ___________.....................
+	 *      |head       |                   |
+	 *      |___________|.................. PAGE/8
+	 *      |PV ELSP                        |
+	 *      :___________....................PAGE/4
+	 *      |desc (SEND)                    |
+	 *      |				|
+	 *      :_______________________________PAGE/2
+	 *      |cmds (SEND)                    |
+	 *      |                               |
+	 *      |                               |
+	 *      |                               |
+	 *      |                               |
+	 *      |_______________________________|
+	 *
+	 * 0 offset: PV version area
+	 * PAGE/8 offset: per engine workload submission data area
+	 * PAGE/4 offset: PV command buffer command descriptor area
+	 * PAGE/2 offset: PV command buffer command data area
+	 */
+
+	base =  (struct gvt_shared_page *)get_zeroed_page(GFP_KERNEL);
+	if (!base) {
+		dev_info(dev_priv->drm.dev, "out of memory for shared memory\n");
+		return -ENOMEM;
+	}
+
+	/* pass guest memory pa address to GVT and then read back to verify */
+	gpa = __pa(base);
+	addr = shared_area + vgtif_offset(shared_page_gpa);
+	writeq(gpa, addr);
+	if (gpa != readq(addr)) {
+		dev_info(dev_priv->drm.dev, "passed shared_page_gpa failed\n");
+		ret = -EIO;
+		goto err;
+	}
+
+	addr = shared_area + vgtif_offset(g2v_notify);
+	writel(VGT_G2V_SHARED_PAGE_SETUP, addr);
+
+	ver_maj = base->ver_major;
+	ver_min = base->ver_minor;
+	if (ver_maj != PV_MAJOR || ver_min != PV_MINOR) {
+		dev_info(dev_priv->drm.dev, "VGPU PV version incompatible\n");
+		ret = -EIO;
+		goto err;
+	}
+
+	pv = kzalloc(sizeof(struct i915_virtual_gpu_pv), GFP_KERNEL);
+	if (!pv) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	DRM_INFO("vgpu PV ver major %d and minor %d\n", ver_maj, ver_min);
+	dev_priv->vgpu.pv = pv;
+	pv->shared_page = base;
+	pv->enabled = true;
+
+	/* setup PV command buffer ptr */
+	pv->ctb.cmds = (void *)base + PV_CMD_OFF;
+	pv->ctb.desc = (void *)base + PV_DESC_OFF;
+	pv->ctb.desc->size = PAGE_SIZE/2;
+	pv->ctb.desc->addr = PV_CMD_OFF;
+
+	/* setup PV command buffer callback */
+	pv->send = intel_vgpu_pv_send_command_buffer;
+	pv->notify = intel_vgpu_pv_notify_mmio;
+	spin_lock_init(&pv->lock);
+
+	/* setup PV per engine data exchange structure */
+	size = sizeof(struct pv_submission);
+	for (i = 0; i < I915_NUM_ENGINES; i++) {
+		pv->pv_elsp[i] = (void *)base + PV_ELSP_OFF +  size * i;
+		pv->pv_elsp[i]->submitted = false;
+		spin_lock_init(&pv->pv_elsp[i]->lock);
+	}
+
+	/* setup PV irq data area */
+	pv->irq = (void *)base + PV_INTERRUPT_OFF;
+
+	return ret;
+err:
+	__free_page(virt_to_page(base));
+	return ret;
+}
+
+
+/*
  * i915 vgpu PV support for Linux
  */
 
@@ -355,6 +459,12 @@ bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
 
 	if (!pvcaps)
 		return false;
+
+	if (intel_vgpu_setup_shared_page(dev_priv, shared_area)) {
+		dev_priv->vgpu.pv_caps = 0;
+		writel(0, shared_area + vgtif_offset(pv_caps));
+		return false;
+	}
 
 	return true;
 }
