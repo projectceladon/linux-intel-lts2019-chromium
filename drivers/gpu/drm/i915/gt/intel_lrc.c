@@ -2762,6 +2762,11 @@ static void __submit_queue_imm(struct intel_engine_cs *engine)
 	if (reset_in_progress(execlists))
 		return; /* defer until we restart the engine following reset */
 
+	if (execlists->tasklet.func != execlists_submission_tasklet) {
+		tasklet_hi_schedule(&execlists->tasklet);
+		return;
+	}
+
 	if (execlists->tasklet.func == execlists_submission_tasklet)
 		__execlists_submission_tasklet(engine);
 	else
@@ -5168,6 +5173,8 @@ void intel_execlists_show_requests(struct intel_engine_cs *engine,
 			else
 				last = rq;
 		}
+	} else {
+		intel_vgpu_config_pv_caps(engine->i915, PV_SUBMISSION, engine);
 	}
 	if (last) {
 		if (count > max) {
