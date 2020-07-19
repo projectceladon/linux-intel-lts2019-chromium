@@ -49,6 +49,7 @@
 #include "fb_decoder.h"
 #include "dmabuf.h"
 #include "page_track.h"
+#include "i915_vgpu.h"
 
 #define GVT_MAX_VGPU 8
 
@@ -230,6 +231,8 @@ struct intel_vgpu {
 
 	u32 scan_nonprivbb;
 	u32 pv_caps;
+	u64 shared_page_gpa;
+	bool shared_page_enabled;
 };
 
 /* validating GM healthy status*/
@@ -691,7 +694,10 @@ void intel_gvt_debugfs_add_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_debugfs_remove_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_debugfs_init(struct intel_gvt *gvt);
 void intel_gvt_debugfs_clean(struct intel_gvt *gvt);
-
+int intel_gvt_read_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len);
+int intel_gvt_write_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len);
 
 #include "trace.h"
 #include "mpt.h"
