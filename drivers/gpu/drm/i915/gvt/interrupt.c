@@ -631,6 +631,20 @@ void intel_vgpu_trigger_virtual_event(struct intel_vgpu *vgpu,
 	ops->check_pending_irq(vgpu);
 }
 
+void intel_vgpu_trigger_pv_interrupt(struct intel_vgpu *vgpu,
+		u32 eng_id, u32 offset)
+{
+	u32 base = PV_INTERRUPT_OFF;
+	u32 irq_source = base + VGPU_IRQ_SOURCE + eng_id;
+	/* 16 Byte interrupt vector */
+	u32 irq_status = base + VGPU_IRQ_STATUS + eng_id * SZ_16 + offset;
+	u8 val1 = 0xff, val2 = 0xff;
+
+	intel_gvt_write_shared_page(vgpu, irq_source, &val1, 1);
+	intel_gvt_write_shared_page(vgpu, irq_status, &val2, 1);
+	intel_gvt_hypervisor_inject_msi(vgpu);
+}
+
 static void init_events(
 	struct intel_gvt_irq *irq)
 {

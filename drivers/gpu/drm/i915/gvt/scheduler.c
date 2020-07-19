@@ -948,8 +948,15 @@ static void complete_current_workload(struct intel_gvt *gvt, int ring_id)
 			update_guest_context(workload);
 
 			for_each_set_bit(event, workload->pending_events,
-					 INTEL_GVT_EVENT_MAX)
-				intel_vgpu_trigger_virtual_event(vgpu, event);
+					 INTEL_GVT_EVENT_MAX) {
+				if (intel_vgpu_enabled_pv_cap(vgpu,
+						PV_INTERRUPT))
+					intel_vgpu_trigger_pv_interrupt(vgpu,
+							ring_id, 0);
+				else
+					intel_vgpu_trigger_virtual_event(vgpu,
+							event);
+			}
 		}
 
 		i915_request_put(fetch_and_zero(&workload->req));
