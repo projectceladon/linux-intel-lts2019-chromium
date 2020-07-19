@@ -1203,6 +1203,8 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 	case 0x78010:	/* vgt_caps */
 	case 0x7881c:
 	case _vgtif_reg(pv_caps):
+	case _vgtif_reg(shared_page_gpa):
+	case _vgtif_reg(shared_page_gpa) + 4:
 		break;
 	default:
 		invalid_read = true;
@@ -1220,6 +1222,9 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	enum intel_gvt_gtt_type root_entry_type = GTT_TYPE_PPGTT_ROOT_L4_ENTRY;
 	struct intel_vgpu_mm *mm;
 	u64 *pdps;
+	unsigned long gpa, gfn;
+	u16 ver_major = PV_MAJOR;
+	u16 ver_minor = PV_MINOR;
 
 	pdps = (u64 *)&vgpu_vreg64_t(vgpu, vgtif_reg(pdp[0]));
 
@@ -1233,6 +1238,19 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	case VGT_G2V_PPGTT_L3_PAGE_TABLE_DESTROY:
 	case VGT_G2V_PPGTT_L4_PAGE_TABLE_DESTROY:
 		return intel_vgpu_put_ppgtt_mm(vgpu, pdps);
+	case VGT_G2V_SHARED_PAGE_SETUP:
+		gpa = vgpu_vreg64_t(vgpu, vgtif_reg(shared_page_gpa));
+		gfn = gpa >> PAGE_SHIFT;
+		if (!intel_gvt_hypervisor_is_valid_gfn(vgpu, gfn)) {
+			vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) = 0;
+			return 0;
+		}
+		vgpu->shared_page_gpa = gpa;
+		vgpu->shared_page_enabled = true;
+
+		intel_gvt_write_shared_page(vgpu, 0, &ver_major, 2);
+		intel_gvt_write_shared_page(vgpu, 2, &ver_minor, 2);
+		break;
 	case VGT_G2V_EXECLIST_CONTEXT_CREATE:
 	case VGT_G2V_EXECLIST_CONTEXT_DESTROY:
 	case 1:	/* Remove this in guest driver. */
@@ -1290,6 +1308,8 @@ static int pvinfo_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 	case _vgtif_reg(pdp[3].hi):
 	case _vgtif_reg(execlist_context_descriptor_lo):
 	case _vgtif_reg(execlist_context_descriptor_hi):
+	case _vgtif_reg(shared_page_gpa):
+	case _vgtif_reg(shared_page_gpa) + 4:
 		break;
 	case _vgtif_reg(rsv5[0])..._vgtif_reg(rsv5[3]):
 		invalid_write = true;
