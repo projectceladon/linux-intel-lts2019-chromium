@@ -162,17 +162,22 @@ static int populate_shadow_context(struct intel_vgpu_workload *workload)
 #undef COPY_REG
 #undef COPY_REG_MASKED
 
-	intel_gvt_hypervisor_read_gpa(vgpu,
-			workload->ring_context_gpa +
-			sizeof(*shadow_ring_context),
-			(void *)shadow_ring_context +
-			sizeof(*shadow_ring_context),
-			I915_GTT_PAGE_SIZE - sizeof(*shadow_ring_context));
+	if (!intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT)) {
+		intel_gvt_hypervisor_read_gpa(vgpu,
+				workload->ring_context_gpa +
+				sizeof(*shadow_ring_context),
+				(void *)shadow_ring_context +
+				sizeof(*shadow_ring_context),
+				I915_GTT_PAGE_SIZE - sizeof(*shadow_ring_context));
+	}
 
 	sr_oa_regs(workload, (u32 *)shadow_ring_context, false);
 	kunmap(page);
 
 	if (IS_RESTORE_INHIBIT(shadow_ring_context->ctx_ctrl.val))
+		return 0;
+
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
 		return 0;
 
 	gvt_dbg_sched("ring id %d workload lrca %x", ring_id,
@@ -395,7 +400,11 @@ intel_gvt_workload_req_alloc(struct intel_vgpu_workload *workload)
 	if (workload->req)
 		return 0;
 
-	rq = i915_request_create(s->shadow[workload->ring_id]);
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
+		rq = i915_request_create(workload->shadow_ctx);
+	else
+		rq = i915_request_create(s->shadow[workload->ring_id]);
+
 	if (IS_ERR(rq)) {
 		gvt_vgpu_err("fail to allocate gem request\n");
 		return PTR_ERR(rq);
@@ -424,9 +433,13 @@ int intel_gvt_scan_and_shadow_workload(struct intel_vgpu_workload *workload)
 	if (workload->shadow)
 		return 0;
 
-	if (!test_and_set_bit(workload->ring_id, s->shadow_ctx_desc_updated))
-		shadow_context_descriptor_update(s->shadow[workload->ring_id],
-						 workload);
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
+		shadow_context_descriptor_update(workload->shadow_ctx, workload);
+	else {
+		if (!test_and_set_bit(workload->ring_id, s->shadow_ctx_desc_updated))
+			shadow_context_descriptor_update(s->shadow[workload->ring_id],
+					workload);
+	}
 
 	ret = intel_gvt_scan_and_shadow_ringbuffer(workload);
 	if (ret)
@@ -629,7 +642,10 @@ static int prepare_workload(struct intel_vgpu_workload *workload)
 
 	update_shadow_pdps(workload);
 
-	set_context_ppgtt_from_shadow(workload, s->shadow[ring]);
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
+		set_context_ppgtt_from_shadow(workload, workload->shadow_ctx);
+	else
+		set_context_ppgtt_from_shadow(workload, s->shadow[ring]);
 
 	ret = intel_vgpu_sync_oos_pages(workload->vgpu);
 	if (ret) {
@@ -819,6 +835,9 @@ static void update_guest_context(struct intel_vgpu_workload *workload)
 	vgpu_vreg_t(vgpu, RING_TAIL(ring_base)) = tail;
 	vgpu_vreg_t(vgpu, RING_HEAD(ring_base)) = head;
 
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
+		goto skip_context_copy;
+
 	context_page_num = rq->engine->context_size;
 	context_page_num = context_page_num >> PAGE_SHIFT;
 
@@ -844,6 +863,7 @@ static void update_guest_context(struct intel_vgpu_workload *workload)
 		i++;
 	}
 
+skip_context_copy:
 	intel_gvt_hypervisor_write_gpa(vgpu, workload->ring_context_gpa +
 		RING_CTX_OFF(ring_header.val), &workload->rb_tail, 4);
 
@@ -859,13 +879,14 @@ static void update_guest_context(struct intel_vgpu_workload *workload)
 
 #undef COPY_REG
 
-	intel_gvt_hypervisor_write_gpa(vgpu,
-			workload->ring_context_gpa +
-			sizeof(*shadow_ring_context),
-			(void *)shadow_ring_context +
-			sizeof(*shadow_ring_context),
-			I915_GTT_PAGE_SIZE - sizeof(*shadow_ring_context));
-
+	if (!intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT)) {
+		intel_gvt_hypervisor_write_gpa(vgpu,
+				workload->ring_context_gpa +
+				sizeof(*shadow_ring_context),
+				(void *)shadow_ring_context +
+				sizeof(*shadow_ring_context),
+				I915_GTT_PAGE_SIZE - sizeof(*shadow_ring_context));
+	}
 	kunmap(page);
 }
 
@@ -1148,6 +1169,22 @@ i915_context_ppgtt_root_restore(struct intel_vgpu_submission *s,
 	}
 }
 
+void intel_vgpu_clean_shadow_ctx(struct intel_vgpu *vgpu)
+{
+	struct intel_engine_cs *engine;
+	enum intel_engine_id id;
+	struct intel_vgpu_shadow_context *sctx = NULL;
+	struct list_head *pos, *n;
+
+	for_each_engine(engine, vgpu->gvt->gt, id) {
+		list_for_each_safe(pos, n, &vgpu->submission.shadow_ctxs[id]) {
+			sctx = container_of(pos, struct intel_vgpu_shadow_context, list);
+			list_del(pos);
+			kfree(sctx);
+		}
+	}
+}
+
 /**
  * intel_vgpu_clean_submission - free submission-related resource for vGPU
  * @vgpu: a vGPU
@@ -1238,6 +1275,7 @@ int intel_vgpu_setup_submission(struct intel_vgpu *vgpu)
 		struct intel_context *ce;
 
 		INIT_LIST_HEAD(&s->workload_q_head[i]);
+		INIT_LIST_HEAD(&s->shadow_ctxs[i]);
 		s->shadow[i] = ERR_PTR(-EINVAL);
 
 		ce = intel_context_create(engine);
@@ -1457,7 +1495,8 @@ static int prepare_mm(struct intel_vgpu_workload *workload)
  */
 struct intel_vgpu_workload *
 intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
-			   struct execlist_ctx_descriptor_format *desc)
+			   struct execlist_ctx_descriptor_format *desc,
+			   u64 ctx_gpa)
 {
 	struct intel_vgpu_submission *s = &vgpu->submission;
 	struct list_head *q = workload_q_head(vgpu, ring_id);
@@ -1468,6 +1507,18 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
 	u32 head, tail, start, ctl, ctx_ctl, per_ctx, indirect_ctx;
 	u32 guest_head;
 	int ret;
+	struct intel_vgpu_shadow_context *sctx = NULL;
+
+	if (ctx_gpa) {
+		sctx = intel_vgpu_find_shadow_context(vgpu, ctx_gpa, engine->id);
+		if (sctx)
+			gvt_dbg_el("%s-%d: found shadow ctx_gpa(%llx)\n", __func__, engine->id, ctx_gpa);
+		else {
+			enter_failsafe_mode(vgpu, GVT_FAILSAFE_GUEST_ERR);
+			ret = -EINVAL;
+			return ERR_PTR(ret);
+		}
+	}
 
 	ring_context_gpa = intel_vgpu_gma_to_gpa(vgpu->gtt.ggtt_mm,
 			(u32)((desc->lrca + 1) << I915_GTT_PAGE_SHIFT));
@@ -1531,6 +1582,8 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
 	workload->rb_tail = tail;
 	workload->rb_start = start;
 	workload->rb_ctl = ctl;
+	if (sctx)
+		workload->shadow_ctx = sctx->ce;
 
 	if (ring_id == RCS0) {
 		intel_gvt_hypervisor_read_gpa(vgpu, ring_context_gpa +

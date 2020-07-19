@@ -443,7 +443,7 @@ static int submit_context(struct intel_vgpu *vgpu, int ring_id,
 	struct intel_vgpu_submission *s = &vgpu->submission;
 	struct intel_vgpu_workload *workload = NULL;
 
-	workload = intel_vgpu_create_workload(vgpu, ring_id, desc);
+	workload = intel_vgpu_create_workload(vgpu, ring_id, desc, 0);
 	if (IS_ERR(workload))
 		return PTR_ERR(workload);
 

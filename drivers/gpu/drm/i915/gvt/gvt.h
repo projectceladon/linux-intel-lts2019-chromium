@@ -141,6 +141,21 @@ enum {
 	INTEL_VGPU_GUC_SUBMISSION,
 };
 
+struct intel_vgpu_shadow_context {
+	struct intel_vgpu *vgpu;
+	struct intel_context *ce;
+	u64 i915_context_pml4;
+
+	u32 eng_id;
+	u64 ctx_gpa;
+	u64 guest_lrca;
+
+	struct kref ref;
+	atomic_t pincount;
+
+	struct list_head list;
+};
+
 struct intel_vgpu_submission_ops {
 	const char *name;
 	int (*init)(struct intel_vgpu *vgpu, intel_engine_mask_t engine_mask);
@@ -151,6 +166,7 @@ struct intel_vgpu_submission_ops {
 struct intel_vgpu_submission {
 	struct intel_vgpu_execlist execlist[I915_NUM_ENGINES];
 	struct list_head workload_q_head[I915_NUM_ENGINES];
+	struct list_head shadow_ctxs[I915_NUM_ENGINES];
 	struct intel_context *shadow[I915_NUM_ENGINES];
 	struct kmem_cache *workloads;
 	atomic_t running_workload_num;
