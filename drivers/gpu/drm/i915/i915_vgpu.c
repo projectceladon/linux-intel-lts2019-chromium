@@ -95,7 +95,14 @@ void i915_detect_vgpu(struct drm_i915_private *dev_priv)
 
 	dev_priv->vgpu.active = true;
 	mutex_init(&dev_priv->vgpu.lock);
-	DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
+
+	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
+		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
+		goto out;
+	}
+
+	DRM_INFO("Virtual GPU for Intel GVT-g detected with PV Optimized.\n");
+
 
 out:
 	pci_iounmap(pdev, shared_area);
@@ -104,6 +111,11 @@ out:
 bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *dev_priv)
 {
 	return dev_priv->vgpu.caps & VGT_CAPS_FULL_PPGTT;
+}
+
+bool intel_vgpu_has_pv_caps(struct drm_i915_private *dev_priv)
+{
+	return dev_priv->vgpu.caps & VGT_CAPS_PV;
 }
 
 struct _balloon_info_ {
@@ -299,4 +311,39 @@ err_upon_mappable:
 err:
 	DRM_ERROR("VGT balloon fail\n");
 	return ret;
+}
+
+/*
+ * i915 vgpu PV support for Linux
+ */
+
+/**
+ * intel_vgpu_check_pv_caps - detect virtual GPU PV capabilities
+ * @dev_priv: i915 device private
+ *
+ * This function is called at the initialization stage, to detect VGPU
+ * PV capabilities
+ *
+ * If guest wants to enable pv_caps, it needs to config it explicitly
+ * through vgt_if interface from gvt layer.
+ */
+bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
+		void __iomem *shared_area)
+{
+	u32 gvt_pvcaps;
+	u32 pvcaps = 0;
+
+	if (!intel_vgpu_has_pv_caps(dev_priv))
+		return false;
+
+	/* PV capability negotiation between PV guest and GVT */
+	gvt_pvcaps = readl(shared_area + vgtif_offset(pv_caps));
+	pvcaps = dev_priv->vgpu.pv_caps & gvt_pvcaps;
+	dev_priv->vgpu.pv_caps = pvcaps;
+	writel(pvcaps, shared_area + vgtif_offset(pv_caps));
+
+	if (!pvcaps)
+		return false;
+
+	return true;
 }

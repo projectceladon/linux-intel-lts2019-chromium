@@ -57,6 +57,7 @@ enum vgt_g2v_type {
 #define VGT_CAPS_FULL_PPGTT		BIT(2)
 #define VGT_CAPS_HWSP_EMULATION		BIT(3)
 #define VGT_CAPS_HUGE_GTT		BIT(4)
+#define VGT_CAPS_PV		BIT(5)
 
 struct vgt_if {
 	u64 magic;		/* VGT_MAGIC */
@@ -109,7 +110,9 @@ struct vgt_if {
 	u32 execlist_context_descriptor_lo;
 	u32 execlist_context_descriptor_hi;
 
-	u32  rsv7[0x200 - 24];    /* pad to one page */
+	u32 pv_caps;
+
+	u32  rsv7[0x200 - 25];    /* pad to one page */
 } __packed;
 
 #define vgtif_offset(x) (offsetof(struct vgt_if, x))
