@@ -42,8 +42,12 @@ intel_vgpu_has_huge_gtt(struct drm_i915_private *dev_priv)
 {
 	return dev_priv->vgpu.caps & VGT_CAPS_HUGE_GTT;
 }
+bool intel_vgpu_has_pv_caps(struct drm_i915_private *dev_priv);
 
 int intel_vgt_balloon(struct i915_ggtt *ggtt);
 void intel_vgt_deballoon(struct i915_ggtt *ggtt);
+/* i915 vgpu pv related functions */
+bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
+               void __iomem *shared_area);
 
 #endif /* _I915_VGPU_H_ */

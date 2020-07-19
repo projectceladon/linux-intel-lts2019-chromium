@@ -53,6 +53,7 @@
 #include "intel_csr.h"
 #include "intel_pm.h"
 #include "intel_sideband.h"
+#include "i915_vgpu.h"
 
 static inline struct drm_i915_private *node_to_i915(struct drm_info_node *node)
 {
@@ -65,6 +66,8 @@ static int i915_capabilities(struct seq_file *m, void *data)
 	struct drm_printer p = drm_seq_file_printer(m);
 
 	seq_printf(m, "pch: %d\n", INTEL_PCH_TYPE(i915));
+	if (intel_vgpu_active(i915))
+		seq_printf(m, "vgpu pv_caps: 0x%x\n", i915->vgpu.pv_caps);
 
 	intel_device_info_print_static(INTEL_INFO(i915), &p);
 	intel_device_info_print_runtime(RUNTIME_INFO(i915), &p);

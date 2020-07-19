@@ -24,6 +24,8 @@
 #ifndef _INTEL_GVT_H_
 #define _INTEL_GVT_H_
 
+#include "i915_pvinfo.h"
+
 struct drm_i915_private;
 
 #ifdef CONFIG_DRM_I915_GVT
