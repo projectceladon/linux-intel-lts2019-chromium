@@ -27,7 +27,25 @@
 #include "i915_drv.h"
 #include "i915_pvinfo.h"
 
+#define PV_MAJOR               1
+#define PV_MINOR               0
+
+/*
+ * A shared page(4KB) between gvt and VM, could be allocated by guest driver
+ * or a fixed location in PCI bar 0 region
+ */
+struct gvt_shared_page {
+       u16 ver_major;
+       u16 ver_minor;
+};
+
+struct i915_virtual_gpu_pv {
+       struct gvt_shared_page *shared_page;
+       bool enabled;
+};
+
 void i915_detect_vgpu(struct drm_i915_private *dev_priv);
+void i915_destroy_vgpu(struct drm_i915_private *dev_priv);
 
 bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *dev_priv);
 
