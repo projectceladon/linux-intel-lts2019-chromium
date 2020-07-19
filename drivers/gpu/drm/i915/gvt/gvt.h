@@ -50,6 +50,7 @@
 #include "dmabuf.h"
 #include "page_track.h"
 #include "i915_vgpu.h"
+#include "i915_pvinfo.h"
 
 #define GVT_MAX_VGPU 8
 
@@ -544,6 +545,12 @@ static inline u64 intel_vgpu_get_bar_gpa(struct intel_vgpu *vgpu, int bar)
 	/* We are 64bit bar. */
 	return (*(u64 *)(vgpu->cfg_space.virtual_cfg_space + bar)) &
 			PCI_BASE_ADDRESS_MEM_MASK;
+}
+
+static inline bool intel_vgpu_enabled_pv_cap(struct intel_vgpu *vgpu,
+		enum pv_caps cap)
+{
+	return vgpu->shared_page_enabled && (vgpu->pv_caps & cap);
 }
 
 void intel_vgpu_clean_opregion(struct intel_vgpu *vgpu);

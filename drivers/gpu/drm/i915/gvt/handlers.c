@@ -1217,6 +1217,160 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 	return 0;
 }
 
+static inline unsigned int ct_header_get_len(u32 header)
+{
+	return (header >> PV_CT_MSG_LEN_SHIFT) & PV_CT_MSG_LEN_MASK;
+}
+
+static inline unsigned int ct_header_get_action(u32 header)
+{
+	return (header >> PV_CT_MSG_ACTION_SHIFT) & PV_CT_MSG_ACTION_MASK;
+}
+
+static int fetch_pv_command_buffer(struct intel_vgpu *vgpu,
+		struct vgpu_pv_ct_buffer_desc *desc,
+		u32 *fence, u32 *action, u32 *data)
+{
+	u32 head, tail, len, size, off;
+	u32 cmd_head;
+	u32 avail;
+	u32 ret;
+
+	/* fetch command descriptor */
+	off = PV_DESC_OFF;
+	ret = intel_gvt_read_shared_page(vgpu, off, desc, sizeof(*desc));
+	if (ret)
+		return ret;
+
+	GEM_BUG_ON(desc->size % 4);
+	GEM_BUG_ON(desc->head % 4);
+	GEM_BUG_ON(desc->tail % 4);
+	GEM_BUG_ON(tail >= size);
+	GEM_BUG_ON(head >= size);
+
+	/* tail == head condition indicates empty */
+	head = desc->head/4;
+	tail = desc->tail/4;
+	size = desc->size/4;
+
+	if (unlikely((tail - head) == 0))
+		return -ENODATA;
+
+	/* fetch command head */
+	off = desc->addr + head * 4;
+	ret = intel_gvt_read_shared_page(vgpu, off, &cmd_head, 4);
+	head = (head + 1) % size;
+	if (ret)
+		goto err;
+
+	len = ct_header_get_len(cmd_head) - 1;
+	*action = ct_header_get_action(cmd_head);
+
+	/* fetch command fence */
+	off = desc->addr + head * 4;
+	ret = intel_gvt_read_shared_page(vgpu, off, fence, 4);
+	head = (head + 1) % size;
+	if (ret)
+		goto err;
+
+	/* no command data */
+	if (len == 0)
+		goto err;
+
+	/* fetch command data */
+	avail = size - head;
+	if (len <= avail) {
+		off =  desc->addr + head * 4;
+		ret = intel_gvt_read_shared_page(vgpu, off, data, len * 4);
+		head = (head + len) % size;
+		if (ret)
+			goto err;
+	} else {
+		/* swap case */
+		off =  desc->addr + head * 4;
+		ret = intel_gvt_read_shared_page(vgpu, off, data, avail * 4);
+		head = (head + avail) % size;
+		if (ret)
+			goto err;
+
+		off = desc->addr;
+		ret = intel_gvt_read_shared_page(vgpu, off, &data[avail],
+				(len - avail) * 4);
+		head = (head + len - avail) % size;
+		if (ret)
+			goto err;
+	}
+
+err:
+	desc->head = head * 4;
+	return ret;
+}
+
+static int handle_pv_actions(struct intel_vgpu *vgpu)
+{
+	struct vgpu_pv_ct_buffer_desc desc;
+	struct intel_vgpu_mm *mm;
+	struct pv_vma *vma;
+	u64 pdp, start, length;
+	u32 fence, action;
+	u32 data[32];
+	int ret;
+
+	ret = fetch_pv_command_buffer(vgpu, &desc, &fence, &action, data);
+	if (ret)
+		return ret;
+
+	switch (action) {
+	case PV_ACTION_PPGTT_L4_ALLOC:
+	case PV_ACTION_PPGTT_L4_CLEAR:
+	case PV_ACTION_PPGTT_L4_INSERT:
+	case PV_ACTION_PPGTT_BIND:
+	case PV_ACTION_PPGTT_UNBIND:
+		vma = (struct pv_vma *)data;
+		pdp = vma->pml4;
+		start = vma->start;
+		length = vma->size << PAGE_SHIFT;
+		mm = intel_vgpu_find_ppgtt_mm(vgpu, &pdp);
+		if (!mm) {
+			gvt_vgpu_err("failed to find pdp 0x%llx\n", pdp);
+			ret = -EINVAL;
+			enter_failsafe_mode(vgpu, GVT_FAILSAFE_GUEST_ERR);
+		}
+
+		if (action == PV_ACTION_PPGTT_L4_ALLOC) {
+			ret = mm->ppgtt->vm.allocate_va_range(&mm->ppgtt->vm,
+					start, length);
+			if (ret)
+				gvt_vgpu_err("failed to alloc %llx\n", pdp);
+			break;
+		}
+
+		if (action == PV_ACTION_PPGTT_L4_CLEAR) {
+			mm->ppgtt->vm.clear_range(&mm->ppgtt->vm,
+					start, length);
+			break;
+		}
+
+		ret = intel_vgpu_handle_pv_vma(vgpu, mm, action, data);
+		break;
+	case PV_ACTION_GGTT_INSERT:
+	case PV_ACTION_GGTT_BIND:
+	case PV_ACTION_GGTT_UNBIND:
+		ret = intel_vgpu_handle_pv_vma(vgpu, NULL, action, data);
+		break;
+	default:
+		break;
+	}
+
+	/* write command descriptor back */
+	desc.fence = fence;
+	desc.status = ret;
+
+	ret = intel_gvt_write_shared_page(vgpu, PV_DESC_OFF,
+			&desc, sizeof(desc));
+	return ret;
+}
+
 static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 {
 	enum intel_gvt_gtt_type root_entry_type = GTT_TYPE_PPGTT_ROOT_L4_ENTRY;
@@ -1225,6 +1379,7 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	unsigned long gpa, gfn;
 	u16 ver_major = PV_MAJOR;
 	u16 ver_minor = PV_MINOR;
+	int ret = 0;
 
 	pdps = (u64 *)&vgpu_vreg64_t(vgpu, vgtif_reg(pdp[0]));
 
@@ -1251,6 +1406,9 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 		intel_gvt_write_shared_page(vgpu, 0, &ver_major, 2);
 		intel_gvt_write_shared_page(vgpu, 2, &ver_minor, 2);
 		break;
+	case VGT_G2V_PV_SEND_TRIGGER:
+		ret = handle_pv_actions(vgpu);
+		break;
 	case VGT_G2V_EXECLIST_CONTEXT_CREATE:
 	case VGT_G2V_EXECLIST_CONTEXT_DESTROY:
 	case 1:	/* Remove this in guest driver. */
@@ -1258,7 +1416,7 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	default:
 		gvt_vgpu_err("Invalid PV notification %d\n", notification);
 	}
-	return 0;
+	return ret;
 }
 
 static int send_display_ready_uevent(struct intel_vgpu *vgpu, int ready)
