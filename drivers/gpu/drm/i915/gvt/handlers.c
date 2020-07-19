@@ -1862,6 +1862,102 @@ static int mmio_read_from_hw(struct intel_vgpu *vgpu,
 	return intel_vgpu_default_mmio_read(vgpu, offset, p_data, bytes);
 }
 
+static int pv_prepare_workload(struct intel_vgpu_workload *workload)
+{
+	return 0;
+}
+
+static int pv_complete_workload(struct intel_vgpu_workload *workload)
+{
+	return 0;
+}
+
+static int submit_context_pv(struct intel_vgpu *vgpu,
+			  const struct intel_engine_cs *engine,
+			  struct execlist_ctx_descriptor_format *desc,
+			  bool emulate_schedule_in)
+{
+	struct intel_vgpu_submission *s = &vgpu->submission;
+	struct intel_vgpu_workload *workload = NULL;
+
+	workload = intel_vgpu_create_workload(vgpu, engine, desc);
+	if (IS_ERR(workload))
+		return PTR_ERR(workload);
+
+	workload->prepare = pv_prepare_workload;
+	workload->complete = pv_complete_workload;
+	workload->emulate_schedule_in = emulate_schedule_in;
+
+	if (emulate_schedule_in)
+		workload->elsp_dwords = s->execlist[engine->id].elsp_dwords;
+
+	gvt_dbg_el("workload %p emulate schedule_in %d\n", workload,
+		   emulate_schedule_in);
+
+	intel_vgpu_queue_workload(workload);
+	return 0;
+}
+
+#define get_desc_from_elsp_dwords(ed, i) \
+	((struct execlist_ctx_descriptor_format *)&((ed)->data[i * 2]))
+
+static int handle_pv_submission(struct intel_vgpu *vgpu,
+		const struct intel_engine_cs *engine)
+{
+	struct intel_vgpu_execlist *execlist;
+	struct pv_submission pv_data;
+	struct execlist_ctx_descriptor_format *desc[2];
+	u32 ring_id = engine->id;
+	u32 base = PV_ELSP_OFF + ring_id * sizeof(struct pv_submission);
+	u32 submitted_off = offsetof(struct pv_submission, submitted);
+	bool submitted = false;
+	int i, ret;
+
+	execlist = &vgpu->submission.execlist[ring_id];
+	if (intel_gvt_read_shared_page(vgpu, base, &pv_data, sizeof(pv_data)))
+		return -EINVAL;
+
+	memcpy(&execlist->elsp_dwords.data, &pv_data.descs, 16);
+
+	desc[0] = get_desc_from_elsp_dwords(&execlist->elsp_dwords, 0);
+	desc[1] = get_desc_from_elsp_dwords(&execlist->elsp_dwords, 1);
+
+	if (!desc[0]->valid) {
+		gvt_vgpu_err("invalid elsp submission, desc0 is invalid\n");
+		goto inv_desc;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(desc); i++) {
+		if (!desc[i]->valid)
+			continue;
+		if (!desc[i]->privilege_access) {
+			gvt_vgpu_err("unexpected GGTT elsp submission\n");
+			goto inv_desc;
+		}
+	}
+
+	/* submit workload */
+	for (i = 0; i < ARRAY_SIZE(desc); i++) {
+		if (!desc[i]->valid)
+			continue;
+
+		ret = submit_context_pv(vgpu, engine, desc[i], i == 0);
+		if (ret) {
+			gvt_vgpu_err("failed to submit desc %d\n", i);
+			return ret;
+		}
+	}
+
+	submitted_off += base;
+	ret = intel_gvt_write_shared_page(vgpu, submitted_off, &submitted, 1);
+	return ret;
+
+inv_desc:
+	gvt_vgpu_err("descriptors content: desc0 %08x %08x desc1 %08x %08x\n",
+		     desc[0]->udw, desc[0]->ldw, desc[1]->udw, desc[1]->ldw);
+	return -EINVAL;
+}
+
 static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 		void *p_data, unsigned int bytes)
 {
@@ -1872,6 +1968,10 @@ static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 
 	if (WARN_ON(ring_id < 0 || ring_id >= I915_NUM_ENGINES))
 		return -EINVAL;
+
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_SUBMISSION) &&
+			data == PV_ACTION_ELSP_SUBMISSION)
+		return handle_pv_submission(vgpu, engine);
 
 	execlist = &vgpu->submission.execlist[ring_id];
 
