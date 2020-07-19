@@ -1183,7 +1183,7 @@ void intel_vgpu_clean_shadow_ctx(struct intel_vgpu *vgpu)
 	struct intel_vgpu_shadow_context *sctx = NULL;
 	struct list_head *pos, *n;
 
-	for_each_engine(engine, vgpu->gvt->gt, id) {
+	for_each_engine(engine, vgpu->gvt->dev_priv, id) {
 		list_for_each_safe(pos, n, &vgpu->submission.shadow_ctxs[id]) {
 			sctx = container_of(pos, struct intel_vgpu_shadow_context, list);
 			list_del(pos);
@@ -1517,9 +1517,9 @@ intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
 	struct intel_vgpu_shadow_context *sctx = NULL;
 
 	if (ctx_gpa) {
-		sctx = intel_vgpu_find_shadow_context(vgpu, ctx_gpa, engine->id);
+		sctx = intel_vgpu_find_shadow_context(vgpu, ctx_gpa, ring_id);
 		if (sctx)
-			gvt_dbg_el("%s-%d: found shadow ctx_gpa(%llx)\n", __func__, engine->id, ctx_gpa);
+			gvt_dbg_el("%s-%d: found shadow ctx_gpa(%llx)\n", __func__, ring_id, ctx_gpa);
 		else {
 			enter_failsafe_mode(vgpu, GVT_FAILSAFE_GUEST_ERR);
 			ret = -EINVAL;

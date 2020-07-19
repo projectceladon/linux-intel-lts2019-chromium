@@ -97,7 +97,6 @@ void intel_detect_vgpu(struct drm_i915_private *dev_priv)
 	mutex_init(&dev_priv->vgpu.lock);
 
 	dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
-	dev_priv->vgpu.pv_caps |= PV_INTERRUPT;
 
 	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
 		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
@@ -129,6 +128,11 @@ bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *dev_priv)
 bool intel_vgpu_has_pv_caps(struct drm_i915_private *dev_priv)
 {
 	return dev_priv->vgpu.caps & VGT_CAPS_PV;
+}
+
+static void intel_vgpu_pv_notify(struct drm_i915_private *dev_priv)
+{
+       dev_priv->vgpu.pv->notify(dev_priv);
 }
 
 static bool intel_vgpu_enabled_pv_caps(struct drm_i915_private *dev_priv,
@@ -337,6 +341,188 @@ err_upon_mappable:
 err:
 	DRM_ERROR("VGT balloon fail\n");
 	return ret;
+}
+
+/**
+ * wait_for_desc_update - Wait for the command buffer descriptor update.
+ * @desc:      buffer descriptor
+ * @fence:     response fence
+ * @status:    placeholder for status
+ *
+ * GVT will update command buffer descriptor with new fence and status
+ * after processing the command identified by the fence. Wait for
+ * specified fence and then read from the descriptor status of the
+ * command.
+ *
+ * Return:
+ * *   0 response received (status is valid)
+ * *   -ETIMEDOUT no response within hardcoded timeout
+ * *   -EPROTO no response, CT buffer is in error
+ */
+static int wait_for_desc_update(struct vgpu_pv_ct_buffer_desc *desc,
+               u32 fence, u32 *status)
+{
+       int err;
+
+#define done (READ_ONCE(desc->fence) == fence)
+       err = wait_for_us(done, 5);
+       if (err)
+               err = wait_for(done, 10);
+#undef done
+
+       if (unlikely(err)) {
+               DRM_ERROR("CT: fence %u failed; reported fence=%u\n",
+                               fence, desc->fence);
+       }
+
+       *status = desc->status;
+       return err;
+}
+
+/**
+ * CTB Guest to GVT request
+ *
+ * Format of the CTB Guest to GVT request message is as follows::
+ *
+ *      +------------+---------+---------+---------+---------+
+ *      |   msg[0]   |   [1]   |   [2]   |   ...   |  [n-1]  |
+ *      +------------+---------+---------+---------+---------+
+ *      |   MESSAGE  |       MESSAGE PAYLOAD                 |
+ *      +   HEADER   +---------+---------+---------+---------+
+ *      |            |    0    |    1    |   ...   |    n    |
+ *      +============+=========+=========+=========+=========+
+ *      |  len >= 1  |  FENCE  |     request specific data   |
+ *      +------+-----+---------+---------+---------+---------+
+ *
+ *                   ^-----------------len-------------------^
+ */
+static int pv_command_buffer_write(struct i915_virtual_gpu_pv *pv,
+               const u32 *action, u32 len /* in dwords */, u32 fence)
+{
+       struct vgpu_pv_ct_buffer_desc *desc = pv->ctb.desc;
+       u32 head = desc->head / 4;      /* in dwords */
+       u32 tail = desc->tail / 4;      /* in dwords */
+       u32 size = desc->size / 4;      /* in dwords */
+       u32 used;                       /* in dwords */
+       u32 header;
+       u32 *cmds = pv->ctb.cmds;
+       unsigned int i;
+
+       GEM_BUG_ON(desc->size % 4);
+       GEM_BUG_ON(desc->head % 4);
+       GEM_BUG_ON(desc->tail % 4);
+       GEM_BUG_ON(tail >= size);
+
+       /*
+        * tail == head condition indicates empty.
+        */
+       if (tail < head)
+               used = (size - head) + tail;
+       else
+               used = tail - head;
+
+       /* make sure there is a space including extra dw for the fence */
+       if (unlikely(used + len + 1 >= size))
+               return -ENOSPC;
+
+       /*
+        * Write the message. The format is the following:
+        * DW0: header (including action code)
+        * DW1: fence
+        * DW2+: action data
+        */
+       header = (len << PV_CT_MSG_LEN_SHIFT) |
+                (PV_CT_MSG_WRITE_FENCE_TO_DESC) |
+                (action[0] << PV_CT_MSG_ACTION_SHIFT);
+
+       cmds[tail] = header;
+       tail = (tail + 1) % size;
+
+       cmds[tail] = fence;
+       tail = (tail + 1) % size;
+
+       for (i = 1; i < len; i++) {
+               cmds[tail] = action[i];
+               tail = (tail + 1) % size;
+       }
+
+       /* now update desc tail (back in bytes) */
+       desc->tail = tail * 4;
+       GEM_BUG_ON(desc->tail > desc->size);
+
+       return 0;
+}
+
+static u32 pv_get_next_fence(struct i915_virtual_gpu_pv *pv)
+{
+	/* For now it's trivial */
+	return ++pv->next_fence;
+}
+
+static int pv_send(struct drm_i915_private *dev_priv,
+		const u32 *action, u32 len, u32 *status)
+{
+	struct i915_virtual_gpu *vgpu = &dev_priv->vgpu;
+	struct i915_virtual_gpu_pv *pv = vgpu->pv;
+
+	struct vgpu_pv_ct_buffer_desc *desc = pv->ctb.desc;
+
+	u32 fence;
+	int err;
+
+	GEM_BUG_ON(!pv->enabled);
+	GEM_BUG_ON(!len);
+	GEM_BUG_ON(len & ~PV_CT_MSG_LEN_MASK);
+
+	fence = pv_get_next_fence(pv);
+	err = pv_command_buffer_write(pv, action, len, fence);
+	if (unlikely(err))
+		goto unlink;
+
+	intel_vgpu_pv_notify(dev_priv);
+
+	err = wait_for_desc_update(desc, fence, status);
+	if (unlikely(err))
+		goto unlink;
+
+	if ((*status)) {
+		err = -EIO;
+		goto unlink;
+	}
+
+	err = (*status);
+unlink:
+	return err;
+}
+
+static int intel_vgpu_pv_send_command_buffer(
+               struct drm_i915_private *dev_priv,
+               u32 *action, u32 len)
+{
+       struct i915_virtual_gpu *vgpu = &dev_priv->vgpu;
+       unsigned long flags;
+
+       u32 status = ~0; /* undefined */
+       int ret;
+
+       spin_lock_irqsave(&vgpu->pv->lock, flags);
+
+       ret = pv_send(dev_priv, action, len, &status);
+       if (unlikely(ret < 0)) {
+               DRM_ERROR("PV: send action %#X failed; err=%d status=%#X\n",
+                         action[0], ret, status);
+       } else if (unlikely(ret)) {
+               DRM_ERROR("PV: send action %#x returned %d (%#x)\n",
+                               action[0], ret, ret);
+       }
+
+       spin_unlock_irqrestore(&vgpu->pv->lock, flags);
+       return ret;
+}
+
+static void intel_vgpu_pv_notify_mmio(struct drm_i915_private *dev_priv)
+{
+       I915_WRITE(vgtif_reg(g2v_notify), VGT_G2V_PV_SEND_TRIGGER);
 }
 
 static int vgpu_pv_vma_vm_action(struct drm_i915_private *dev_priv,
@@ -636,9 +822,6 @@ static int intel_vgpu_setup_shared_page(struct drm_i915_private *dev_priv,
 		pv->pv_elsp[i]->submitted = false;
 		spin_lock_init(&pv->pv_elsp[i]->lock);
 	}
-
-	/* setup PV irq data area */
-	pv->irq = (void *)base + PV_INTERRUPT_OFF;
 
 	/* setup PV irq data area */
 	pv->irq = (void *)base + PV_INTERRUPT_OFF;
