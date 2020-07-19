@@ -129,6 +129,19 @@ bool intel_vgpu_has_pv_caps(struct drm_i915_private *dev_priv)
 	return dev_priv->vgpu.caps & VGT_CAPS_PV;
 }
 
+static bool intel_vgpu_enabled_pv_caps(struct drm_i915_private *dev_priv,
+               enum pv_caps cap)
+{
+       return (dev_priv->vgpu.active && (dev_priv->vgpu.caps & VGT_CAPS_PV)
+                       && (dev_priv->vgpu.pv_caps & cap));
+}
+
+static int intel_vgpu_pv_send(struct drm_i915_private *dev_priv,
+               u32 *action, u32 len)
+{
+       return dev_priv->vgpu.pv->send(dev_priv, action, len);
+}
+
 struct _balloon_info_ {
 	/*
 	 * There are up to 2 regions per mappable/unmappable graphic

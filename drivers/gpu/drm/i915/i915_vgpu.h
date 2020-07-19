@@ -120,5 +120,6 @@ void intel_vgt_deballoon(struct i915_ggtt *ggtt);
 /* i915 vgpu pv related functions */
 bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
                void __iomem *shared_area);
-
+void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
+               enum pv_caps cap, void *data);
 #endif /* _I915_VGPU_H_ */
