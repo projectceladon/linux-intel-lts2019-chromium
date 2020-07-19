@@ -1202,6 +1202,7 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 		break;
 	case 0x78010:	/* vgt_caps */
 	case 0x7881c:
+	case _vgtif_reg(pv_caps):
 		break;
 	default:
 		invalid_read = true;
@@ -1271,6 +1272,10 @@ static int pvinfo_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 		break;
 	case _vgtif_reg(g2v_notify):
 		handle_g2v_notification(vgpu, data);
+		break;
+	case _vgtif_reg(pv_caps):
+		DRM_INFO("vgpu id=%d pv caps =0x%x\n", vgpu->id, data);
+		vgpu->pv_caps = data;
 		break;
 	/* add xhot and yhot to handled list to avoid error log */
 	case _vgtif_reg(cursor_x_hot):
