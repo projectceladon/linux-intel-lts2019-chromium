@@ -473,6 +473,7 @@ static void switch_mmio(struct intel_vgpu *pre,
 	struct intel_vgpu_submission *s;
 	struct engine_mmio *mmio;
 	u32 old_v, new_v;
+	struct intel_vgpu_workload *workload;
 
 	dev_priv = pre ? pre->gvt->dev_priv : next->gvt->dev_priv;
 	if (INTEL_GEN(dev_priv) >= 9)
@@ -508,9 +509,17 @@ static void switch_mmio(struct intel_vgpu *pre,
 			 * image if it's not inhibit context, it will restore
 			 * itself.
 			 */
-			if (mmio->in_context &&
-			    !is_inhibit_context(s->shadow[ring_id]))
-				continue;
+			if (intel_vgpu_enabled_pv_cap(next, PV_HW_CONTEXT)) {
+				workload = list_first_entry(workload_q_head(next, ring_id), struct intel_vgpu_workload, list);
+				if (!workload)
+					continue;
+				if (mmio->in_context && !is_inhibit_context(workload->shadow_ctx))
+					continue;
+
+			} else {
+				if (mmio->in_context && !is_inhibit_context(s->shadow[ring_id]))
+					continue;
+			}
 
 			if (mmio->mask)
 				new_v = vgpu_vreg_t(next, mmio->reg) |
