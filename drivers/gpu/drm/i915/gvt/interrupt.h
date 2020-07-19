@@ -219,6 +219,8 @@ void intel_gvt_clean_irq(struct intel_gvt *gvt);
 
 void intel_vgpu_trigger_virtual_event(struct intel_vgpu *vgpu,
 	enum intel_gvt_event_type event);
+void intel_vgpu_trigger_pv_interrupt(struct intel_vgpu *vgpu,
+	u32 eng_id, u32 offset);
 
 int intel_vgpu_reg_iir_handler(struct intel_vgpu *vgpu, unsigned int reg,
 	void *p_data, unsigned int bytes);

@@ -841,7 +841,6 @@ static int trigger_aux_channel_interrupt(struct intel_vgpu *vgpu,
 		WARN_ON(true);
 		return -EINVAL;
 	}
-
 	intel_vgpu_trigger_virtual_event(vgpu, event);
 	return 0;
 }

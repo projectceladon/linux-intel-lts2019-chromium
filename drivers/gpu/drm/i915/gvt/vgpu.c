@@ -52,6 +52,8 @@ void populate_pvinfo_page(struct intel_vgpu *vgpu)
 	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) = PV_PPGTT | PV_GGTT;
 	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_SUBMISSION;
 	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_HW_CONTEXT;
+	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_INTERRUPT;
+
 	vgpu_vreg_t(vgpu, vgtif_reg(avail_rs.mappable_gmadr.base)) =
 		vgpu_aperture_gmadr_base(vgpu);
 	vgpu_vreg_t(vgpu, vgtif_reg(avail_rs.mappable_gmadr.size)) =
