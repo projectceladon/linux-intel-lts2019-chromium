@@ -1599,6 +1599,8 @@ static void i915_driver_release(struct drm_device *dev)
 
 	disable_rpm_wakeref_asserts(rpm);
 
+	i915_destroy_vgpu(dev_priv);
+
 	i915_gem_driver_release(dev_priv);
 
 	intel_memory_regions_driver_release(dev_priv);

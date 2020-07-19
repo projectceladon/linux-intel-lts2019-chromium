@@ -108,6 +108,17 @@ out:
 	pci_iounmap(pdev, shared_area);
 }
 
+void i915_destroy_vgpu(struct drm_i915_private *dev_priv)
+{
+       struct i915_virtual_gpu_pv *pv = dev_priv->vgpu.pv;
+
+       if (!intel_vgpu_active(dev_priv) || !pv)
+               return;
+
+       __free_page(virt_to_page(pv->shared_page));
+       kfree(pv);
+}
+
 bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *dev_priv)
 {
 	return dev_priv->vgpu.caps & VGT_CAPS_FULL_PPGTT;

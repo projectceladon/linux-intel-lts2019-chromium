@@ -48,6 +48,7 @@ enum vgt_g2v_type {
 	VGT_G2V_PPGTT_L4_PAGE_TABLE_DESTROY,
 	VGT_G2V_EXECLIST_CONTEXT_CREATE,
 	VGT_G2V_EXECLIST_CONTEXT_DESTROY,
+	VGT_G2V_SHARED_PAGE_SETUP,
 	VGT_G2V_MAX,
 };
 
@@ -112,7 +113,9 @@ struct vgt_if {
 
 	u32 pv_caps;
 
-	u32  rsv7[0x200 - 25];    /* pad to one page */
+	u64 shared_page_gpa;
+
+	u32  rsv7[0x200 - 27];    /* pad to one page */
 } __packed;
 
 #define vgtif_offset(x) (offsetof(struct vgt_if, x))

@@ -887,7 +887,9 @@ struct i915_virtual_gpu {
 	bool active;
 	u32 caps;
 	u32 pv_caps;
-};
+
+	struct i915_virtual_gpu_pv *pv;
+} __packed;
 
 /* used in computing the new watermarks state */
 struct intel_wm_config {
