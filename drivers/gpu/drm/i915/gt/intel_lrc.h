@@ -127,4 +127,6 @@ intel_virtual_engine_get_sibling(struct intel_engine_cs *engine,
 bool
 intel_engine_in_execlists_submission_mode(const struct intel_engine_cs *engine);
 
+void vgpu_engine_set_pv_context_ops(struct intel_engine_cs *engine);
+
 #endif /* _INTEL_LRC_H_ */

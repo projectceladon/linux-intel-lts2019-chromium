@@ -57,7 +57,7 @@
  * This function is called at the initialization stage, to detect whether
  * running on a vGPU.
  */
-void i915_detect_vgpu(struct drm_i915_private *dev_priv)
+void intel_detect_vgpu(struct drm_i915_private *dev_priv)
 {
 	struct pci_dev *pdev = dev_priv->drm.pdev;
 	u64 magic;
@@ -96,7 +96,7 @@ void i915_detect_vgpu(struct drm_i915_private *dev_priv)
 	dev_priv->vgpu.active = true;
 	mutex_init(&dev_priv->vgpu.lock);
 
-	dev_priv->vgpu.pv_caps |= PV_SUBMISSION;
+	dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
 
 	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
 		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
@@ -109,7 +109,7 @@ out:
 	pci_iounmap(pdev, shared_area);
 }
 
-void i915_destroy_vgpu(struct drm_i915_private *dev_priv)
+void intel_destroy_vgpu(struct drm_i915_private *dev_priv)
 {
        struct i915_virtual_gpu_pv *pv = dev_priv->vgpu.pv;
 
