@@ -43,6 +43,7 @@ enum pv_caps {
        PV_PPGTT = BIT(0),
        PV_GGTT = BIT(1),
        PV_SUBMISSION = BIT(2),
+       PV_HW_CONTEXT = BIT(3),
 };
 
 /* PV actions */
@@ -57,6 +58,11 @@ enum intel_vgpu_pv_action {
        PV_ACTION_GGTT_UNBIND,
        PV_ACTION_GGTT_BIND,
        PV_ACTION_ELSP_SUBMISSION,
+       PV_ACTION_HWCTX_ALLOC,
+       PV_ACTION_HWCTX_DESTROY,
+       PV_ACTION_HWCTX_PIN,
+       PV_ACTION_HWCTX_UNPIN,
+       PV_ACTION_HWCTX_RESET,
 };
 
 /*
@@ -75,6 +81,21 @@ struct pv_vma {
        u64 start; /* start of virtual address */
        u64 dma_addrs; /* BO's dma address list */
        u64 pml4; /* ppgtt handler */
+} __packed;
+
+/* PV workload submission */
+struct pv_submission {
+       u64 descs[EXECLIST_MAX_PORTS];
+       /* guest logical context handler */
+       u64 ctx_gpa[EXECLIST_MAX_PORTS];
+       bool submitted;
+       spinlock_t lock;
+} __packed;
+
+/* PV engine logical context */
+struct pv_hwctx {
+       u32 eng_id;
+       u64 ctx_gpa; /* guest logical context handler */
 } __packed;
 
 /*

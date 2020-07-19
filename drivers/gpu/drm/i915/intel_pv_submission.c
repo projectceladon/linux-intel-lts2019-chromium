@@ -48,6 +48,7 @@ static void pv_submit(struct intel_engine_cs *engine,
 	do {
 		rq = *out++;
 		pv_elsp->descs[n] = execlists_update_context(rq);
+		pv_elsp->ctx_gpa[n] = virt_to_phys(rq->context);
 		n++;
 	} while (out != end);
 
