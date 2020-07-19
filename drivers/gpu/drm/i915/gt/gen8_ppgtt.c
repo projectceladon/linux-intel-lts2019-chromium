@@ -706,8 +706,10 @@ struct i915_ppgtt *gen8_ppgtt_create(struct intel_gt *gt)
 	ppgtt->vm.allocate_va_range = gen8_ppgtt_alloc;
 	ppgtt->vm.clear_range = gen8_ppgtt_clear;
 
-	if (intel_vgpu_active(gt->i915))
+	if (intel_vgpu_active(gt->i915)) {
+		intel_vgpu_config_pv_caps(gt->i915, PV_PPGTT, ppgtt);
 		gen8_ppgtt_notify_vgt(ppgtt, true);
+	}
 
 	ppgtt->vm.cleanup = gen8_ppgtt_cleanup;
 
