@@ -27,10 +27,37 @@
 #include "i915_drv.h"
 #include "i915_pvinfo.h"
 
+#include "gt/intel_engine_types.h"
+
 #define PV_MAJOR               1
 #define PV_MINOR               0
+#define PV_MAX_ENGINES_NUM     (VECS1_HW + 1)
+#define PV_ELSP_OFF            (PAGE_SIZE/8)
 #define PV_DESC_OFF            (PAGE_SIZE/4)
 #define PV_CMD_OFF             (PAGE_SIZE/2)
+
+/*
+ * define different capabilities of PV optimization
+ */
+enum pv_caps {
+       PV_PPGTT = BIT(0),
+       PV_GGTT = BIT(1),
+       PV_SUBMISSION = BIT(2),
+};
+
+/* PV actions */
+enum intel_vgpu_pv_action {
+       PV_ACTION_DEFAULT = 0x0,
+       PV_ACTION_PPGTT_L4_ALLOC,
+       PV_ACTION_PPGTT_L4_CLEAR,
+       PV_ACTION_PPGTT_L4_INSERT,
+       PV_ACTION_PPGTT_BIND,
+       PV_ACTION_PPGTT_UNBIND,
+       PV_ACTION_GGTT_INSERT,
+       PV_ACTION_GGTT_UNBIND,
+       PV_ACTION_GGTT_BIND,
+       PV_ACTION_ELSP_SUBMISSION,
+};
 
 /*
  * A shared page(4KB) between gvt and VM, could be allocated by guest driver
@@ -40,6 +67,15 @@ struct gvt_shared_page {
        u16 ver_major;
        u16 ver_minor;
 };
+
+/* PV virtual memory address for GGTT/PPGTT */
+struct pv_vma {
+       u32 size; /* num of pages */
+       u32 flags; /* bind or unbind flags */
+       u64 start; /* start of virtual address */
+       u64 dma_addrs; /* BO's dma address list */
+       u64 pml4; /* ppgtt handler */
+} __packed;
 
 /*
  * Definition of the command transport message header (DW0)
@@ -85,6 +121,9 @@ struct i915_virtual_gpu_pv {
        struct gvt_shared_page *shared_page;
        bool enabled;
 
+       /* per engine PV workload submission data */
+       struct pv_submission *pv_elsp[PV_MAX_ENGINES_NUM];
+
        /* PV command buffer support */
        struct vgpu_pv_ct_buffer ctb;
        u32 next_fence;
@@ -122,4 +161,5 @@ bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
                void __iomem *shared_area);
 void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
                enum pv_caps cap, void *data);
+void vgpu_set_pv_submission(struct intel_engine_cs *engine);
 #endif /* _I915_VGPU_H_ */

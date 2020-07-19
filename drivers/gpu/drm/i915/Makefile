@@ -266,7 +266,7 @@ i915-$(CONFIG_DRM_I915_SELFTEST) += \
 	selftests/igt_spinner.o
 
 # virtual gpu code
-i915-y += i915_vgpu.o
+i915-y += i915_vgpu.o intel_pv_submission.o
 
 ifeq ($(CONFIG_DRM_I915_GVT),y)
 i915-y += intel_gvt.o
