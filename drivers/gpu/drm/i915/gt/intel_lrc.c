@@ -5240,6 +5240,58 @@ intel_engine_in_execlists_submission_mode(const struct intel_engine_cs *engine)
 	       intel_execlists_set_default_submission;
 }
 
+static int pv_context_alloc(struct intel_context *ce)
+{
+	vgpu_hwctx_pv_update(ce, PV_ACTION_HWCTX_ALLOC);
+	return execlists_context_alloc(ce);
+}
+
+static int pv_context_pin(struct intel_context *ce)
+{
+	vgpu_hwctx_pv_update(ce, PV_ACTION_HWCTX_PIN);
+	return execlists_context_pin(ce);
+}
+
+static void pv_context_unpin(struct intel_context *ce)
+{
+	vgpu_hwctx_pv_update(ce, PV_ACTION_HWCTX_UNPIN);
+	return execlists_context_unpin(ce);
+}
+
+
+static void pv_context_reset(struct intel_context *ce)
+{
+	vgpu_hwctx_pv_update(ce, PV_ACTION_HWCTX_RESET);
+	return execlists_context_reset(ce);
+}
+
+static void pv_context_destroy(struct kref *kref)
+{
+	struct intel_context *ce = container_of(kref, typeof(*ce), ref);
+
+	vgpu_hwctx_pv_update(ce, PV_ACTION_HWCTX_DESTROY);
+	return execlists_context_destroy(kref);
+}
+
+static const struct intel_context_ops pv_context_ops = {
+	.alloc = pv_context_alloc,
+
+	.pin = pv_context_pin,
+	.unpin = pv_context_unpin,
+
+	.enter = intel_context_enter_engine,
+	.exit = intel_context_exit_engine,
+
+	.reset = pv_context_reset,
+	.destroy = pv_context_destroy,
+};
+
+void vgpu_engine_set_pv_context_ops(struct intel_engine_cs *engine)
+{
+	engine->cops = &pv_context_ops;
+	engine->context_size = (LRC_STATE_PN + 1) * PAGE_SIZE;
+}
+
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)
 #include "selftest_lrc.c"
 #endif
