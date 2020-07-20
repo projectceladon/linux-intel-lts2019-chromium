@@ -96,7 +96,10 @@ void intel_detect_vgpu(struct drm_i915_private *dev_priv)
 	dev_priv->vgpu.active = true;
 	mutex_init(&dev_priv->vgpu.lock);
 
+	/* guest driver PV capability */
+	dev_priv->vgpu.pv_caps = PV_PPGTT | PV_GGTT;
 	dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
+	dev_priv->vgpu.pv_caps |= PV_INTERRUPT;
 
 	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
 		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
@@ -343,6 +346,243 @@ err:
 	return ret;
 }
 
+
+
+static int vgpu_pv_vma_vm_action(struct drm_i915_private *dev_priv,
+               u32 action, struct pv_vma *pvvma)
+{
+       u32 data[32];
+       u32 size;
+
+       size = sizeof(*pvvma) / 4;
+       if (1 + size > ARRAY_SIZE(data))
+               return -EIO;
+
+       data[0] = action;
+       memcpy(&data[1], pvvma, sizeof(*pvvma));
+       return intel_vgpu_pv_send(dev_priv, data, 1 + size);
+}
+
+static int vgpu_pv_vma_action(struct i915_vma *vma,
+               u32 action, u64 flags, u64 pte_flag)
+{              
+       struct drm_i915_private *i915 = vma->vm->i915;
+       struct sgt_iter sgt_iter;
+       dma_addr_t addr;
+       struct pv_vma pvvma;
+       u32 num_pages;
+       u64 *gpas;
+       int i = 0;
+       u32 data[32];
+       int ret;
+       u32 size = sizeof(pvvma) / 4;
+
+       if (1 + size > ARRAY_SIZE(data))
+               return -EIO;
+
+       num_pages = vma->node.size >> PAGE_SHIFT;
+       pvvma.size = num_pages;
+       pvvma.start = vma->node.start;
+       pvvma.flags = flags;
+
+       if (action == PV_ACTION_PPGTT_BIND ||
+                       action == PV_ACTION_PPGTT_UNBIND ||
+                       action == PV_ACTION_PPGTT_L4_INSERT)
+               pvvma.pml4 = px_dma(i915_vm_to_ppgtt(vma->vm)->pd);
+
+       if (num_pages == 1) {
+               pvvma.dma_addrs = vma->pages->sgl->dma_address | pte_flag;
+               goto out;
+       }
+
+       gpas = kmalloc_array(num_pages, sizeof(u64), GFP_KERNEL);
+       if (gpas == NULL)
+               return -ENOMEM;
+
+       pvvma.dma_addrs = virt_to_phys((void *)gpas);
+       for_each_sgt_daddr(addr, sgt_iter, vma->pages) {
+               gpas[i++] = addr | pte_flag;
+       }
+       if (num_pages != i)
+               pvvma.size = i;
+out:
+       data[0] = action;
+       memcpy(&data[1], &pvvma, sizeof(pvvma));
+       ret = intel_vgpu_pv_send(i915, data, 1 + size);
+
+       if (num_pages > 1)
+               kfree(gpas);
+
+       return ret;
+}
+
+static void gen8_ppgtt_clear_pv(struct i915_address_space *vm,
+               u64 start, u64 length)
+{
+       struct drm_i915_private *dev_priv = vm->i915;
+       struct pv_vma ppgtt;
+
+       ppgtt.pml4 = px_dma(i915_vm_to_ppgtt(vm)->pd);
+       ppgtt.start = start;
+       ppgtt.size = length >> PAGE_SHIFT;
+
+       vgpu_pv_vma_vm_action(dev_priv, PV_ACTION_PPGTT_L4_CLEAR, &ppgtt);
+}
+
+static int gen8_ppgtt_alloc_pv(struct i915_address_space *vm,
+               u64 start, u64 length)
+{
+       struct drm_i915_private *dev_priv = vm->i915;
+       struct pv_vma ppgtt;
+       u32 action = PV_ACTION_PPGTT_L4_ALLOC;
+
+       ppgtt.pml4 = px_dma(i915_vm_to_ppgtt(vm)->pd);
+       ppgtt.start = start;
+       ppgtt.size = length >> PAGE_SHIFT;
+
+       return vgpu_pv_vma_vm_action(dev_priv, action, &ppgtt);
+}
+
+static void gen8_ppgtt_insert_pv(struct i915_address_space *vm,
+               struct i915_vma *vma,
+               enum i915_cache_level cache_level, u32 flags)
+{
+       u64 pte_encode = vma->vm->pte_encode(0, cache_level, flags);
+
+       vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_L4_INSERT, 0, pte_encode);
+}
+
+static int ppgtt_bind_vma_pv(struct i915_vma *vma,
+                         enum i915_cache_level cache_level,
+                         u32 flags)
+{
+       u32 pte_flags;
+       u64 pte_encode;
+
+       if (flags & I915_VMA_ALLOC)
+               set_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma));
+
+       /* Applicable to VLV, and gen8+ */
+       pte_flags = 0;
+       if (i915_gem_object_is_readonly(vma->obj))
+               pte_flags |= PTE_READ_ONLY;
+
+       pte_encode = vma->vm->pte_encode(0, cache_level, pte_flags);
+
+       GEM_BUG_ON(!test_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)));
+
+       vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_BIND, flags, pte_encode);
+
+       return 0;
+}
+
+static void ppgtt_unbind_vma_pv(struct i915_vma *vma)
+{
+       if (test_and_clear_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)))
+               vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_UNBIND, 0, 0);
+}
+
+static void gen8_ggtt_insert_entries_pv(struct i915_address_space *vm,
+               struct i915_vma *vma, enum i915_cache_level level, u32 flags)
+{
+       const gen8_pte_t pte_encode = vm->pte_encode(0, level, flags);
+
+       vgpu_pv_vma_action(vma, PV_ACTION_GGTT_INSERT, 0, pte_encode);
+}
+
+static int ggtt_bind_vma_pv(struct i915_vma *vma,
+		enum i915_cache_level cache_level, u32 flags)
+{
+	int ret;
+	struct drm_i915_gem_object *obj = vma->obj;
+	u32 pte_flags;
+
+	/* Applicable to VLV (gen8+ do not support RO in the GGTT) */
+	pte_flags = 0;
+	if (i915_gem_object_is_readonly(obj))
+		pte_flags |= PTE_READ_ONLY;
+
+	pte_flags = vma->vm->pte_encode(0, cache_level, flags);
+	ret = vgpu_pv_vma_action(vma, PV_ACTION_GGTT_BIND, 0, pte_flags);
+	vma->page_sizes.gtt = I915_GTT_PAGE_SIZE;
+
+	/*
+	 * Without aliasing PPGTT there's no difference between
+	 * GLOBAL/LOCAL_BIND, it's all the same ptes. Hence unconditionally
+	 * upgrade to both bound if we bind either to avoid double-binding.
+	 */
+	atomic_or(I915_VMA_GLOBAL_BIND | I915_VMA_LOCAL_BIND, &vma->flags);
+
+	return 0;
+}
+
+static void ggtt_unbind_vma_pv(struct i915_vma *vma)
+{
+	vgpu_pv_vma_action(vma, PV_ACTION_GGTT_UNBIND, 0, 0);
+}
+
+int vgpu_hwctx_pv_update(struct intel_context *ce, u32 action)
+{
+	struct drm_i915_private *i915 = ce->engine->i915;
+	struct pv_hwctx pv_ctx;
+
+	u32 data[32];
+	int ret;
+	u32 size = sizeof(pv_ctx) / 4;
+
+	if (1 + size > ARRAY_SIZE(data))
+		return -EIO;
+
+	pv_ctx.ctx_gpa = virt_to_phys(ce);
+	pv_ctx.eng_id = ce->engine->id;
+	data[0] = action;
+	memcpy(&data[1], &pv_ctx, sizeof(pv_ctx));
+	ret = intel_vgpu_pv_send(i915, data, 1 + size);
+
+	return ret;
+}
+
+/*
+ * config guest driver PV ops for different PV features
+ */
+void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
+		enum pv_caps cap, void *data)
+{
+	struct i915_ppgtt *ppgtt;
+	struct i915_ggtt *ggtt;
+	struct intel_engine_cs *engine;
+
+	if (!intel_vgpu_enabled_pv_caps(dev_priv, cap))
+		return;
+
+	if (cap == PV_PPGTT) {
+		ppgtt = (struct i915_ppgtt *)data;
+		ppgtt->vm.allocate_va_range = gen8_ppgtt_alloc_pv;
+		ppgtt->vm.insert_entries = gen8_ppgtt_insert_pv;
+		ppgtt->vm.clear_range = gen8_ppgtt_clear_pv;
+
+		ppgtt->vm.vma_ops.bind_vma    = ppgtt_bind_vma_pv;
+		ppgtt->vm.vma_ops.unbind_vma  = ppgtt_unbind_vma_pv;
+	}
+
+	if (cap == PV_GGTT) {
+		ggtt = (struct i915_ggtt *)data;
+		ggtt->vm.insert_entries = gen8_ggtt_insert_entries_pv;
+		ggtt->vm.vma_ops.bind_vma    = ggtt_bind_vma_pv;
+		ggtt->vm.vma_ops.unbind_vma  = ggtt_unbind_vma_pv;
+	}
+
+	if (cap == PV_SUBMISSION) {
+		engine = (struct intel_engine_cs *)data;
+		vgpu_set_pv_submission(engine);
+	}
+
+	if (cap == PV_HW_CONTEXT) {
+		engine = (struct intel_engine_cs *)data;
+		vgpu_engine_set_pv_context_ops(engine);
+	}
+}
+
 /**
  * wait_for_desc_update - Wait for the command buffer descriptor update.
  * @desc:      buffer descriptor
@@ -523,210 +763,6 @@ static int intel_vgpu_pv_send_command_buffer(
 static void intel_vgpu_pv_notify_mmio(struct drm_i915_private *dev_priv)
 {
        I915_WRITE(vgtif_reg(g2v_notify), VGT_G2V_PV_SEND_TRIGGER);
-}
-
-static int vgpu_pv_vma_vm_action(struct drm_i915_private *dev_priv,
-               u32 action, struct pv_vma *pvvma)
-{
-       u32 data[32];
-       u32 size;
-
-       size = sizeof(*pvvma) / 4;
-       if (1 + size > ARRAY_SIZE(data))
-               return -EIO;
-
-       data[0] = action;
-       memcpy(&data[1], pvvma, sizeof(*pvvma));
-       return intel_vgpu_pv_send(dev_priv, data, 1 + size);
-}
-
-static int vgpu_pv_vma_action(struct i915_vma *vma,
-               u32 action, u64 flags, u64 pte_flag)
-{              
-       struct drm_i915_private *i915 = vma->vm->i915;
-       struct sgt_iter sgt_iter;
-       dma_addr_t addr;
-       struct pv_vma pvvma;
-       u32 num_pages;
-       u64 *gpas;
-       int i = 0;
-       u32 data[32];
-       int ret;
-       u32 size = sizeof(pvvma) / 4;
-
-       if (1 + size > ARRAY_SIZE(data))
-               return -EIO;
-
-       num_pages = vma->node.size >> PAGE_SHIFT;
-       pvvma.size = num_pages;
-       pvvma.start = vma->node.start;
-       pvvma.flags = flags;
-
-       if (action == PV_ACTION_PPGTT_BIND ||
-                       action == PV_ACTION_PPGTT_UNBIND ||
-                       action == PV_ACTION_PPGTT_L4_INSERT)
-               pvvma.pml4 = px_dma(i915_vm_to_ppgtt(vma->vm)->pd);
-
-       if (num_pages == 1) {
-               pvvma.dma_addrs = vma->pages->sgl->dma_address | pte_flag;
-               goto out;
-       }
-
-       gpas = kmalloc_array(num_pages, sizeof(u64), GFP_KERNEL);
-       if (gpas == NULL)
-               return -ENOMEM;
-
-       pvvma.dma_addrs = virt_to_phys((void *)gpas);
-       for_each_sgt_daddr(addr, sgt_iter, vma->pages) {
-               gpas[i++] = addr | pte_flag;
-       }
-       if (num_pages != i)
-               pvvma.size = i;
-out:
-       data[0] = action;
-       memcpy(&data[1], &pvvma, sizeof(pvvma));
-       ret = intel_vgpu_pv_send(i915, data, 1 + size);
-
-       if (num_pages > 1)
-               kfree(gpas);
-
-       return ret;
-}
-
-static void gen8_ppgtt_clear_pv(struct i915_address_space *vm,
-               u64 start, u64 length)
-{
-       struct drm_i915_private *dev_priv = vm->i915;
-       struct pv_vma ppgtt;
-
-       ppgtt.pml4 = px_dma(i915_vm_to_ppgtt(vm)->pd);
-       ppgtt.start = start;
-       ppgtt.size = length >> PAGE_SHIFT;
-
-       vgpu_pv_vma_vm_action(dev_priv, PV_ACTION_PPGTT_L4_CLEAR, &ppgtt);
-}
-
-static int gen8_ppgtt_alloc_pv(struct i915_address_space *vm,
-               u64 start, u64 length)
-{
-       struct drm_i915_private *dev_priv = vm->i915;
-       struct pv_vma ppgtt;
-       u32 action = PV_ACTION_PPGTT_L4_ALLOC;
-
-       ppgtt.pml4 = px_dma(i915_vm_to_ppgtt(vm)->pd);
-       ppgtt.start = start;
-       ppgtt.size = length >> PAGE_SHIFT;
-
-       return vgpu_pv_vma_vm_action(dev_priv, action, &ppgtt);
-}
-
-static void gen8_ppgtt_insert_pv(struct i915_address_space *vm,
-               struct i915_vma *vma,
-               enum i915_cache_level cache_level, u32 flags)
-{
-       u64 pte_encode = vma->vm->pte_encode(0, cache_level, flags);
-
-       vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_L4_INSERT, 0, pte_encode);
-}
-
-static int ppgtt_bind_vma_pv(struct i915_vma *vma,
-                         enum i915_cache_level cache_level,
-                         u32 flags)
-{
-       u32 pte_flags;
-       u64 pte_encode;
-
-       if (flags & I915_VMA_ALLOC)
-               set_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma));
-
-       /* Applicable to VLV, and gen8+ */
-       pte_flags = 0;
-       if (i915_gem_object_is_readonly(vma->obj))
-               pte_flags |= PTE_READ_ONLY;
-
-       pte_encode = vma->vm->pte_encode(0, cache_level, pte_flags);
-
-       GEM_BUG_ON(!test_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)));
-
-       vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_BIND, flags, pte_encode);
-
-       return 0;
-}
-
-static void ppgtt_unbind_vma_pv(struct i915_vma *vma)
-{
-       if (test_and_clear_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)))
-               vgpu_pv_vma_action(vma, PV_ACTION_PPGTT_UNBIND, 0, 0);
-}
-
-static void gen8_ggtt_insert_entries_pv(struct i915_address_space *vm,
-               struct i915_vma *vma, enum i915_cache_level level, u32 flags)
-{
-       const gen8_pte_t pte_encode = vm->pte_encode(0, level, flags);
-
-       vgpu_pv_vma_action(vma, PV_ACTION_GGTT_INSERT, 0, pte_encode);
-}
-
-static int ggtt_bind_vma_pv(struct i915_vma *vma,
-		enum i915_cache_level cache_level, u32 flags)
-{
-	int ret;
-	struct drm_i915_gem_object *obj = vma->obj;
-	u32 pte_flags;
-
-	/* Applicable to VLV (gen8+ do not support RO in the GGTT) */
-	pte_flags = 0;
-	if (i915_gem_object_is_readonly(obj))
-		pte_flags |= PTE_READ_ONLY;
-
-	pte_flags = vma->vm->pte_encode(0, cache_level, flags);
-	ret = vgpu_pv_vma_action(vma, PV_ACTION_GGTT_BIND, 0, pte_flags);
-	vma->page_sizes.gtt = I915_GTT_PAGE_SIZE;
-
-	/*
-	 * Without aliasing PPGTT there's no difference between
-	 * GLOBAL/LOCAL_BIND, it's all the same ptes. Hence unconditionally
-	 * upgrade to both bound if we bind either to avoid double-binding.
-	 */
-	atomic_or(I915_VMA_GLOBAL_BIND | I915_VMA_LOCAL_BIND, &vma->flags);
-
-	return 0;
-}
-
-static void ggtt_unbind_vma_pv(struct i915_vma *vma)
-{
-	vgpu_pv_vma_action(vma, PV_ACTION_GGTT_UNBIND, 0, 0);
-}
-
-/*
- * config guest driver PV ops for different PV features
- */
-void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
-		enum pv_caps cap, void *data)
-{
-	struct i915_ppgtt *ppgtt;
-	struct i915_ggtt *ggtt;
-
-	if (!intel_vgpu_enabled_pv_caps(dev_priv, cap))
-		return;
-
-	if (cap == PV_PPGTT) {
-		ppgtt = (struct i915_ppgtt *)data;
-		ppgtt->vm.allocate_va_range = gen8_ppgtt_alloc_pv;
-		ppgtt->vm.insert_entries = gen8_ppgtt_insert_pv;
-		ppgtt->vm.clear_range = gen8_ppgtt_clear_pv;
-
-		ppgtt->vm.vma_ops.bind_vma    = ppgtt_bind_vma_pv;
-		ppgtt->vm.vma_ops.unbind_vma  = ppgtt_unbind_vma_pv;
-	}
-
-	if (cap == PV_GGTT) {
-		ggtt = (struct i915_ggtt *)data;
-		ggtt->vm.insert_entries = gen8_ggtt_insert_entries_pv;
-		ggtt->vm.vma_ops.bind_vma    = ggtt_bind_vma_pv;
-		ggtt->vm.vma_ops.unbind_vma  = ggtt_unbind_vma_pv;
-	}
-
 }
 
 /*

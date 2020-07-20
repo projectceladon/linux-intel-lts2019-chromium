@@ -214,4 +214,6 @@ bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
 void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
                enum pv_caps cap, void *data);
 void vgpu_set_pv_submission(struct intel_engine_cs *engine);
+int vgpu_hwctx_pv_update(struct intel_context *ce, u32 action);
+
 #endif /* _I915_VGPU_H_ */
