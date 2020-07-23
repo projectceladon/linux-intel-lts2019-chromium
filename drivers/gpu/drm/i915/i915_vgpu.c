@@ -97,9 +97,11 @@ void intel_detect_vgpu(struct drm_i915_private *dev_priv)
 	mutex_init(&dev_priv->vgpu.lock);
 
 	/* guest driver PV capability */
+	DRM_INFO("Set pv_caps=0.\n");
+	dev_priv->vgpu.pv_caps = 0;
 	dev_priv->vgpu.pv_caps = PV_PPGTT | PV_GGTT;
-	dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
-	dev_priv->vgpu.pv_caps |= PV_INTERRUPT;
+	//dev_priv->vgpu.pv_caps |= PV_SUBMISSION | PV_HW_CONTEXT;
+	//dev_priv->vgpu.pv_caps |= PV_INTERRUPT;
 
 	if (!intel_vgpu_check_pv_caps(dev_priv, shared_area)) {
 		DRM_INFO("Virtual GPU for Intel GVT-g detected.\n");
@@ -130,6 +132,7 @@ bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *dev_priv)
 
 bool intel_vgpu_has_pv_caps(struct drm_i915_private *dev_priv)
 {
+	//DRM_INFO("In function intel_vgpu_has_pv_caps, dev_priv->vgpu.caps = %d\n", dev_priv->vgpu.caps);
 	return dev_priv->vgpu.caps & VGT_CAPS_PV;
 }
 
@@ -889,8 +892,10 @@ bool intel_vgpu_check_pv_caps(struct drm_i915_private *dev_priv,
 	u32 gvt_pvcaps;
 	u32 pvcaps = 0;
 
-	if (!intel_vgpu_has_pv_caps(dev_priv))
+	if (!intel_vgpu_has_pv_caps(dev_priv)){
+		DRM_INFO("intel_vgpu_has_pv_caps is flase, will return false");
 		return false;
+	}
 
 	/* PV capability negotiation between PV guest and GVT */
 	gvt_pvcaps = readl(shared_area + vgtif_offset(pv_caps));
