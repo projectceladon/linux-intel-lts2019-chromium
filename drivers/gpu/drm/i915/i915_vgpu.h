@@ -118,7 +118,6 @@ struct pv_submission {
        /* guest logical context handler */
        u64 ctx_gpa[EXECLIST_MAX_PORTS];
        bool submitted;
-       spinlock_t lock;
 } __packed;
 
 /* PV engine logical context */
