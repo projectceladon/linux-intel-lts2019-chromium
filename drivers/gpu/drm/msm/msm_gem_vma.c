@@ -103,8 +103,7 @@ void msm_gem_close_vma(struct msm_gem_address_space *aspace,
 
 /* Initialize a new vma and allocate an iova for it */
 int msm_gem_init_vma(struct msm_gem_address_space *aspace,
-		struct msm_gem_vma *vma, int npages,
-		u64 range_start, u64 range_end)
+		struct msm_gem_vma *vma, int npages)
 {
 	int ret;
 
@@ -112,8 +111,7 @@ int msm_gem_init_vma(struct msm_gem_address_space *aspace,
 		return -EBUSY;
 
 	spin_lock(&aspace->lock);
-	ret = drm_mm_insert_node_in_range(&aspace->mm, &vma->node, npages, 0,
-		0, range_start, range_end, 0);
+	ret = drm_mm_insert_node(&aspace->mm, &vma->node, npages);
 	spin_unlock(&aspace->lock);
 
 	if (ret)
@@ -127,14 +125,14 @@ int msm_gem_init_vma(struct msm_gem_address_space *aspace,
 	return 0;
 }
 
+
 struct msm_gem_address_space *
-msm_gem_address_space_create(struct msm_mmu *mmu, const char *name,
-		u64 va_start, u64 size)
+msm_gem_address_space_create(struct device *dev, struct iommu_domain *domain,
+		const char *name)
 {
 	struct msm_gem_address_space *aspace;
-
-	if (IS_ERR(mmu))
-		return ERR_CAST(mmu);
+	u64 size = domain->geometry.aperture_end -
+		domain->geometry.aperture_start;
 
 	aspace = kzalloc(sizeof(*aspace), GFP_KERNEL);
 	if (!aspace)
@@ -142,9 +140,33 @@ msm_gem_address_space_create(struct msm_mmu *mmu, const char *name,
 
 	spin_lock_init(&aspace->lock);
 	aspace->name = name;
-	aspace->mmu = mmu;
+	aspace->mmu = msm_iommu_new(dev, domain);
 
-	drm_mm_init(&aspace->mm, va_start >> PAGE_SHIFT, size >> PAGE_SHIFT);
+	drm_mm_init(&aspace->mm, (domain->geometry.aperture_start >> PAGE_SHIFT),
+		size >> PAGE_SHIFT);
+
+	kref_init(&aspace->kref);
+
+	return aspace;
+}
+
+struct msm_gem_address_space *
+msm_gem_address_space_create_a2xx(struct device *dev, struct msm_gpu *gpu,
+		const char *name, uint64_t va_start, uint64_t va_end)
+{
+	struct msm_gem_address_space *aspace;
+	u64 size = va_end - va_start;
+
+	aspace = kzalloc(sizeof(*aspace), GFP_KERNEL);
+	if (!aspace)
+		return ERR_PTR(-ENOMEM);
+
+	spin_lock_init(&aspace->lock);
+	aspace->name = name;
+	aspace->mmu = msm_gpummu_new(dev, gpu);
+
+	drm_mm_init(&aspace->mm, (va_start >> PAGE_SHIFT),
+		size >> PAGE_SHIFT);
 
 	kref_init(&aspace->kref);
 
