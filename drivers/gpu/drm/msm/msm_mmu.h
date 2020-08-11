@@ -10,10 +10,11 @@
 #include <linux/iommu.h>
 
 struct msm_mmu_funcs {
+	int (*attach)(struct msm_mmu *mmu);
 	void (*detach)(struct msm_mmu *mmu);
 	int (*map)(struct msm_mmu *mmu, uint64_t iova, struct sg_table *sgt,
-			size_t len, int prot);
-	int (*unmap)(struct msm_mmu *mmu, uint64_t iova, size_t len);
+			unsigned len, int prot);
+	int (*unmap)(struct msm_mmu *mmu, uint64_t iova, unsigned len);
 	void (*destroy)(struct msm_mmu *mmu);
 };
 
