@@ -10,10 +10,9 @@
 #include "a6xx_hfi.h"
 
 struct a6xx_gmu_bo {
-	struct drm_gem_object *obj;
 	void *virt;
 	size_t size;
-	u64 iova;
+	dma_addr_t iova;
 };
 
 /*
@@ -44,10 +43,7 @@ struct a6xx_gmu_bo {
 struct a6xx_gmu {
 	struct device *dev;
 
-	struct msm_gem_address_space *aspace;
-
 	void * __iomem mmio;
-	void * __iomem rscc;
 
 	int hfi_irq;
 	int gmu_irq;
@@ -56,12 +52,8 @@ struct a6xx_gmu {
 
 	int idle_level;
 
-	struct a6xx_gmu_bo hfi;
-	struct a6xx_gmu_bo debug;
-	struct a6xx_gmu_bo icache;
-	struct a6xx_gmu_bo dcache;
-	struct a6xx_gmu_bo dummy;
-	struct a6xx_gmu_bo log;
+	struct a6xx_gmu_bo *hfi;
+	struct a6xx_gmu_bo *debug;
 
 	int nr_clocks;
 	struct clk_bulk_data *clocks;
@@ -84,7 +76,6 @@ struct a6xx_gmu {
 
 	bool initialized;
 	bool hung;
-	bool legacy; /* a618 or a630 */
 };
 
 static inline u32 gmu_read(struct a6xx_gmu *gmu, u32 offset)
@@ -95,13 +86,6 @@ static inline u32 gmu_read(struct a6xx_gmu *gmu, u32 offset)
 static inline void gmu_write(struct a6xx_gmu *gmu, u32 offset, u32 value)
 {
 	return msm_writel(value, gmu->mmio + (offset << 2));
-}
-
-static inline void
-gmu_write_bulk(struct a6xx_gmu *gmu, u32 offset, const u32 *data, u32 size)
-{
-	memcpy_toio(gmu->mmio + (offset << 2), data, size);
-	wmb();
 }
 
 static inline void gmu_rmw(struct a6xx_gmu *gmu, u32 reg, u32 mask, u32 or)
@@ -125,15 +109,6 @@ static inline u64 gmu_read64(struct a6xx_gmu *gmu, u32 lo, u32 hi)
 
 #define gmu_poll_timeout(gmu, addr, val, cond, interval, timeout) \
 	readl_poll_timeout((gmu)->mmio + ((addr) << 2), val, cond, \
-		interval, timeout)
-
-static inline void gmu_write_rscc(struct a6xx_gmu *gmu, u32 offset, u32 value)
-{
-	return msm_writel(value, gmu->rscc + (offset << 2));
-}
-
-#define gmu_poll_timeout_rscc(gmu, addr, val, cond, interval, timeout) \
-	readl_poll_timeout((gmu)->rscc + ((addr) << 2), val, cond, \
 		interval, timeout)
 
 /*
@@ -181,16 +156,10 @@ enum a6xx_gmu_oob_state {
 #define GMU_OOB_GPU_SET_ACK	24
 #define GMU_OOB_GPU_SET_CLEAR	24
 
-#define GMU_OOB_GPU_SET_REQUEST_NEW	30
-#define GMU_OOB_GPU_SET_ACK_NEW		31
-#define GMU_OOB_GPU_SET_CLEAR_NEW	31
-
 
 void a6xx_hfi_init(struct a6xx_gmu *gmu);
 int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state);
 void a6xx_hfi_stop(struct a6xx_gmu *gmu);
-int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu);
-int a6xx_hfi_set_freq(struct a6xx_gmu *gmu, int index);
 
 bool a6xx_gmu_gx_is_on(struct a6xx_gmu *gmu);
 bool a6xx_gmu_sptprac_is_on(struct a6xx_gmu *gmu);
