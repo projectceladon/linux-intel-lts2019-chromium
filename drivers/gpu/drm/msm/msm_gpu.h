@@ -21,6 +21,8 @@ struct msm_gpu_state;
 
 struct msm_gpu_config {
 	const char *ioname;
+	uint64_t va_start;
+	uint64_t va_end;
 	unsigned int nr_rings;
 };
 
@@ -62,8 +64,6 @@ struct msm_gpu_funcs {
 	int (*gpu_state_put)(struct msm_gpu_state *state);
 	unsigned long (*gpu_get_freq)(struct msm_gpu *gpu);
 	void (*gpu_set_freq)(struct msm_gpu *gpu, unsigned long freq);
-	struct msm_gem_address_space *(*create_address_space)
-		(struct msm_gpu *gpu, struct platform_device *pdev);
 };
 
 struct msm_gpu {
@@ -111,14 +111,7 @@ struct msm_gpu {
 	struct clk *ebi1_clk, *core_clk, *rbbmtimer_clk;
 	uint32_t fast_rate;
 
-	/* The gfx-mem interconnect path that's used by all GPU types. */
 	struct icc_path *icc_path;
-
-	/*
-	 * Second interconnect path for some A3xx and all A4xx GPUs to the
-	 * On Chip MEMory (OCMEM).
-	 */
-	struct icc_path *ocmem_icc_path;
 
 	/* Hang and Inactivity Detection:
 	 */
