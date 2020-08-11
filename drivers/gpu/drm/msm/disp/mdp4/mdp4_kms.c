@@ -514,7 +514,7 @@ struct msm_kms *mdp4_kms_init(struct drm_device *dev)
 			config->iommu);
 
 		aspace  = msm_gem_address_space_create(mmu,
-			"mdp4", 0x1000, 0x100000000 - 0x1000);
+			"mdp4", 0x1000, 0xffffffff);
 
 		if (IS_ERR(aspace)) {
 			if (!IS_ERR(mmu))
