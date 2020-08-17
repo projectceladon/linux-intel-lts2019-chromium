@@ -416,11 +416,6 @@ enum snd_soc_pcm_subclass {
 	SND_SOC_PCM_CLASS_BE	= 1,
 };
 
-enum snd_soc_card_subclass {
-	SND_SOC_CARD_CLASS_INIT		= 0,
-	SND_SOC_CARD_CLASS_RUNTIME	= 1,
-};
-
 int snd_soc_register_card(struct snd_soc_card *card);
 int snd_soc_unregister_card(struct snd_soc_card *card);
 int devm_snd_soc_register_card(struct device *dev, struct snd_soc_card *card);
@@ -511,10 +506,6 @@ int snd_soc_set_runtime_hwparams(struct snd_pcm_substream *substream,
 	const struct snd_pcm_hardware *hw);
 
 /* Jack reporting */
-int snd_soc_card_jack_new(struct snd_soc_card *card, const char *id, int type,
-	struct snd_soc_jack *jack, struct snd_soc_jack_pin *pins,
-	unsigned int num_pins);
-
 void snd_soc_jack_report(struct snd_soc_jack *jack, int status, int mask);
 int snd_soc_jack_add_pins(struct snd_soc_jack *jack, int count,
 			  struct snd_soc_jack_pin *pins);
@@ -584,8 +575,6 @@ static inline int snd_soc_set_ac97_ops(struct snd_ac97_bus_ops *ops)
 struct snd_kcontrol *snd_soc_cnew(const struct snd_kcontrol_new *_template,
 				  void *data, const char *long_name,
 				  const char *prefix);
-struct snd_kcontrol *snd_soc_card_get_kcontrol(struct snd_soc_card *soc_card,
-					       const char *name);
 int snd_soc_add_component_controls(struct snd_soc_component *component,
 	const struct snd_kcontrol_new *controls, unsigned int num_controls);
 int snd_soc_add_card_controls(struct snd_soc_card *soc_card,
@@ -821,7 +810,7 @@ struct snd_soc_dai_link {
 	const struct snd_soc_compr_ops *compr_ops;
 
 	/* Mark this pcm with non atomic ops */
-	bool nonatomic;
+	unsigned int nonatomic:1;
 
 	/* For unidirectional dai links */
 	unsigned int playback_only:1;
@@ -1017,9 +1006,6 @@ struct snd_soc_card {
 
 	spinlock_t dpcm_lock;
 
-	bool instantiated;
-	bool topology_shortname_created;
-
 	int (*probe)(struct snd_soc_card *card);
 	int (*late_probe)(struct snd_soc_card *card);
 	int (*remove)(struct snd_soc_card *card);
@@ -1080,8 +1066,6 @@ struct snd_soc_card {
 	int num_of_dapm_widgets;
 	const struct snd_soc_dapm_route *of_dapm_routes;
 	int num_of_dapm_routes;
-	bool fully_routed;
-	bool disable_route_checks;
 
 	/* lists of probed devices belonging to this card */
 	struct list_head component_dev_list;
@@ -1107,6 +1091,13 @@ struct snd_soc_card {
 	struct work_struct deferred_resume_work;
 #endif
 	u32 pop_time;
+
+	/* bit field */
+	unsigned int instantiated:1;
+	unsigned int topology_shortname_created:1;
+	unsigned int fully_routed:1;
+	unsigned int disable_route_checks:1;
+	unsigned int probed:1;
 
 	void *drvdata;
 };
@@ -1190,6 +1181,8 @@ struct snd_soc_pcm_runtime {
 /* see soc_new_pcm_runtime()  */
 #define asoc_rtd_to_cpu(rtd, n)   (rtd)->dais[n]
 #define asoc_rtd_to_codec(rtd, n) (rtd)->dais[n + (rtd)->num_cpus]
+#define asoc_substream_to_rtd(substream) \
+	((struct snd_soc_pcm_runtime *)snd_pcm_substream_chip(substream))
 
 #define for_each_rtd_components(rtd, i, component)			\
 	for ((i) = 0, component = NULL;					\
@@ -1271,19 +1264,6 @@ struct soc_enum {
 	struct snd_soc_dobj dobj;
 #endif
 };
-
-/* device driver data */
-
-static inline void snd_soc_card_set_drvdata(struct snd_soc_card *card,
-		void *data)
-{
-	card->drvdata = data;
-}
-
-static inline void *snd_soc_card_get_drvdata(struct snd_soc_card *card)
-{
-	return card->drvdata;
-}
 
 static inline bool snd_soc_volsw_is_stereo(struct soc_mixer_control *mc)
 {
@@ -1398,20 +1378,6 @@ struct snd_soc_dai *snd_soc_find_dai(
 #include <sound/soc-dai.h>
 
 static inline
-struct snd_soc_dai *snd_soc_card_get_codec_dai(struct snd_soc_card *card,
-					       const char *dai_name)
-{
-	struct snd_soc_pcm_runtime *rtd;
-
-	list_for_each_entry(rtd, &card->rtd_list, list) {
-		if (!strcmp(rtd->codec_dai->name, dai_name))
-			return rtd->codec_dai;
-	}
-
-	return NULL;
-}
-
-static inline
 int snd_soc_fixup_dai_links_platform_name(struct snd_soc_card *card,
 					  const char *platform_name)
 {
@@ -1456,5 +1422,6 @@ static inline void snd_soc_dapm_mutex_unlock(struct snd_soc_dapm_context *dapm)
 }
 
 #include <sound/soc-component.h>
+#include <sound/soc-card.h>
 
 #endif

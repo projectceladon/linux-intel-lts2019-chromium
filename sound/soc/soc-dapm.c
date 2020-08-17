@@ -725,8 +725,7 @@ static int snd_soc_dapm_set_bias_level(struct snd_soc_dapm_context *dapm,
 
 	trace_snd_soc_bias_level_start(card, level);
 
-	if (card && card->set_bias_level)
-		ret = card->set_bias_level(card, dapm, level);
+	ret = snd_soc_card_set_bias_level(card, dapm, level);
 	if (ret != 0)
 		goto out;
 
@@ -736,8 +735,7 @@ static int snd_soc_dapm_set_bias_level(struct snd_soc_dapm_context *dapm,
 	if (ret != 0)
 		goto out;
 
-	if (card && card->set_bias_level_post)
-		ret = card->set_bias_level_post(card, dapm, level);
+	ret = snd_soc_card_set_bias_level_post(card, dapm, level);
 out:
 	trace_snd_soc_bias_level_done(card, level);
 
@@ -1801,7 +1799,7 @@ static void dapm_pre_sequence_async(void *data, async_cookie_t cookie)
 	/* If we're off and we're not supposed to go into STANDBY */
 	if (d->bias_level == SND_SOC_BIAS_OFF &&
 	    d->target_bias_level != SND_SOC_BIAS_OFF) {
-		if (d->dev)
+		if (d->dev && cookie)
 			pm_runtime_get_sync(d->dev);
 
 		ret = snd_soc_dapm_set_bias_level(d, SND_SOC_BIAS_STANDBY);
@@ -1848,7 +1846,7 @@ static void dapm_post_sequence_async(void *data, async_cookie_t cookie)
 			dev_err(d->dev, "ASoC: Failed to turn off bias: %d\n",
 				ret);
 
-		if (d->dev)
+		if (d->dev && cookie)
 			pm_runtime_put(d->dev);
 	}
 
@@ -2676,7 +2674,7 @@ int snd_soc_dapm_update_dai(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	int ret;
 
 	mutex_lock_nested(&rtd->card->dapm_mutex, SND_SOC_DAPM_CLASS_RUNTIME);
@@ -3806,7 +3804,7 @@ snd_soc_dai_link_event_pre_pmu(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_dapm_path *path;
 	struct snd_soc_dai *source, *sink;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_pcm_hw_params *params = NULL;
 	const struct snd_soc_pcm_stream *config = NULL;
 	struct snd_pcm_runtime *runtime = NULL;
@@ -4128,7 +4126,7 @@ snd_soc_dapm_new_dai(struct snd_soc_card *card,
 		     struct snd_pcm_substream *substream,
 		     char *id)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dapm_widget template;
 	struct snd_soc_dapm_widget *w;
 	const char **w_param_text;

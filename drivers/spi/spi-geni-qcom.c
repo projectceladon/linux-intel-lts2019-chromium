@@ -70,7 +70,9 @@ struct spi_geni_master {
 	u32 tx_fifo_depth;
 	u32 fifo_width_bits;
 	u32 tx_wm;
+	u32 last_mode;
 	unsigned long cur_speed_hz;
+	unsigned long cur_sclk_hz;
 	unsigned int cur_bits_per_word;
 	unsigned int tx_rem_bytes;
 	unsigned int rx_rem_bytes;
@@ -110,6 +112,9 @@ static int get_spi_clk_cfg(unsigned int speed_hz,
 	ret = dev_pm_opp_set_rate(mas->dev, sclk_freq);
 	if (ret)
 		dev_err(mas->dev, "dev_pm_opp_set_rate failed %d\n", ret);
+	else
+		mas->cur_sclk_hz = sclk_freq;
+
 	return ret;
 }
 
@@ -180,8 +185,6 @@ static void spi_setup_word_len(struct spi_geni_master *mas, u16 mode,
 	struct geni_se *se = &mas->se;
 	u32 word_len;
 
-	word_len = readl(se->base + SE_SPI_WORD_LEN);
-
 	/*
 	 * If bits_per_word isn't a byte aligned value, set the packing to be
 	 * 1 SPI word per FIFO word.
@@ -190,10 +193,9 @@ static void spi_setup_word_len(struct spi_geni_master *mas, u16 mode,
 		pack_words = mas->fifo_width_bits / bits_per_word;
 	else
 		pack_words = 1;
-	word_len &= ~WORD_LEN_MSK;
-	word_len |= ((bits_per_word - MIN_WORD_LEN) & WORD_LEN_MSK);
 	geni_se_config_packing(&mas->se, bits_per_word, pack_words, msb_first,
 								true, true);
+	word_len = (bits_per_word - MIN_WORD_LEN) & WORD_LEN_MSK;
 	writel(word_len, se->base + SE_SPI_WORD_LEN);
 }
 
@@ -203,6 +205,9 @@ static int geni_spi_set_clock_and_bw(struct spi_geni_master *mas,
 	u32 clk_sel, m_clk_cfg, idx, div;
 	struct geni_se *se = &mas->se;
 	int ret;
+
+	if (clk_hz == mas->cur_speed_hz)
+		return 0;
 
 	ret = get_spi_clk_cfg(clk_hz, mas, &idx, &div);
 	if (ret) {
@@ -238,38 +243,34 @@ static int setup_fifo_params(struct spi_device *spi_slv,
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
 	struct geni_se *se = &mas->se;
-	u32 loopback_cfg, cpol, cpha, demux_output_inv;
+	u32 loopback_cfg = 0, cpol = 0, cpha = 0, demux_output_inv = 0;
 	u32 demux_sel;
 
-	loopback_cfg = readl(se->base + SE_SPI_LOOPBACK);
-	cpol = readl(se->base + SE_SPI_CPOL);
-	cpha = readl(se->base + SE_SPI_CPHA);
-	demux_output_inv = 0;
-	loopback_cfg &= ~LOOPBACK_MSK;
-	cpol &= ~CPOL;
-	cpha &= ~CPHA;
+	if (mas->last_mode != spi_slv->mode) {
+		if (spi_slv->mode & SPI_LOOP)
+			loopback_cfg = LOOPBACK_ENABLE;
 
-	if (spi_slv->mode & SPI_LOOP)
-		loopback_cfg |= LOOPBACK_ENABLE;
+		if (spi_slv->mode & SPI_CPOL)
+			cpol = CPOL;
 
-	if (spi_slv->mode & SPI_CPOL)
-		cpol |= CPOL;
+		if (spi_slv->mode & SPI_CPHA)
+			cpha = CPHA;
 
-	if (spi_slv->mode & SPI_CPHA)
-		cpha |= CPHA;
+		if (spi_slv->mode & SPI_CS_HIGH)
+			demux_output_inv = BIT(spi_slv->chip_select);
 
-	if (spi_slv->mode & SPI_CS_HIGH)
-		demux_output_inv = BIT(spi_slv->chip_select);
+		demux_sel = spi_slv->chip_select;
+		mas->cur_bits_per_word = spi_slv->bits_per_word;
 
-	demux_sel = spi_slv->chip_select;
-	mas->cur_bits_per_word = spi_slv->bits_per_word;
+		spi_setup_word_len(mas, spi_slv->mode, spi_slv->bits_per_word);
+		writel(loopback_cfg, se->base + SE_SPI_LOOPBACK);
+		writel(demux_sel, se->base + SE_SPI_DEMUX_SEL);
+		writel(cpha, se->base + SE_SPI_CPHA);
+		writel(cpol, se->base + SE_SPI_CPOL);
+		writel(demux_output_inv, se->base + SE_SPI_DEMUX_OUTPUT_INV);
 
-	spi_setup_word_len(mas, spi_slv->mode, spi_slv->bits_per_word);
-	writel(loopback_cfg, se->base + SE_SPI_LOOPBACK);
-	writel(demux_sel, se->base + SE_SPI_DEMUX_SEL);
-	writel(cpha, se->base + SE_SPI_CPHA);
-	writel(cpol, se->base + SE_SPI_CPOL);
-	writel(demux_output_inv, se->base + SE_SPI_DEMUX_OUTPUT_INV);
+		mas->last_mode = spi_slv->mode;
+	}
 
 	return geni_spi_set_clock_and_bw(mas, spi_slv->max_speed_hz);
 }
@@ -279,9 +280,7 @@ static int spi_geni_prepare_message(struct spi_master *spi,
 {
 	int ret;
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
-	struct geni_se *se = &mas->se;
 
-	geni_se_select_mode(se, GENI_SE_FIFO);
 	ret = setup_fifo_params(spi_msg->spi, spi);
 	if (ret)
 		dev_err(mas->dev, "Couldn't select mode %d\n", ret);
@@ -322,6 +321,8 @@ static int spi_geni_init(struct spi_geni_master *mas)
 	else
 		mas->oversampling = 1;
 
+	geni_se_select_mode(se, GENI_SE_FIFO);
+
 	pm_runtime_put(mas->dev);
 	return 0;
 }
@@ -357,11 +358,9 @@ static void setup_fifo_xfer(struct spi_transfer *xfer,
 	}
 
 	/* Speed and bits per word can be overridden per transfer */
-	if (xfer->speed_hz != mas->cur_speed_hz) {
-		ret = geni_spi_set_clock_and_bw(mas, xfer->speed_hz);
-		if (ret)
-			return;
-	}
+	ret = geni_spi_set_clock_and_bw(mas, xfer->speed_hz);
+	if (ret)
+		return;
 
 	mas->tx_rem_bytes = 0;
 	mas->rx_rem_bytes = 0;
@@ -638,6 +637,8 @@ static int spi_geni_probe(struct platform_device *pdev)
 	init_completion(&mas->cancel_done);
 	init_completion(&mas->abort_done);
 	spin_lock_init(&mas->lock);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 250);
 	pm_runtime_enable(dev);
 
 	ret = geni_icc_get(&mas->se, NULL);
@@ -717,7 +718,11 @@ static int __maybe_unused spi_geni_runtime_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	return geni_se_resources_on(&mas->se);
+	ret = geni_se_resources_on(&mas->se);
+	if (ret)
+		return ret;
+
+	return dev_pm_opp_set_rate(mas->dev, mas->cur_sclk_hz);
 }
 
 static int __maybe_unused spi_geni_suspend(struct device *dev)

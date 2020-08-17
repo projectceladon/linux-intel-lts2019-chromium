@@ -22,6 +22,9 @@
 #include "../../codecs/rt5514.h"
 #include "../../codecs/rt5663.h"
 #include "../../codecs/hdac_hdmi.h"
+#include <linux/clk.h>
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
 
 #define KBL_REALTEK_CODEC_DAI "rt5663-aif"
 #define KBL_REALTEK_DMIC_CODEC_DAI "rt5514-aif1"
@@ -50,6 +53,10 @@ struct kbl_codec_private {
 	struct snd_soc_jack kabylake_headset;
 	struct list_head hdmi_pcm_list;
 	struct snd_soc_jack kabylake_hdmi[2];
+	struct clk *ssp0_mclk;
+	struct clk *ssp0_sclk;
+	struct clk *ssp1_mclk;
+	struct clk *ssp1_sclk;
 };
 
 enum {
@@ -71,6 +78,99 @@ static const struct snd_kcontrol_new kabylake_controls[] = {
 	SOC_DAPM_PIN_SWITCH("DMIC"),
 };
 
+static int platform_clock_control(struct snd_soc_dapm_widget *w,
+			struct snd_kcontrol *k, int event, int ssp_num)
+{
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
+	struct kbl_codec_private *priv = snd_soc_card_get_drvdata(card);
+	struct clk *mclk, *sclk;
+	unsigned long sclk_rate;
+	int ret = 0;
+
+	switch (ssp_num) {
+	case 0:
+		mclk = priv->ssp0_mclk;
+		sclk = priv->ssp0_sclk;
+		sclk_rate = 6144000;
+		break;
+	case 1:
+		mclk = priv->ssp1_mclk;
+		sclk = priv->ssp1_sclk;
+		sclk_rate = 3072000;
+		break;
+	default:
+		dev_err(card->dev, "Invalid ssp_num %d\n", ssp_num);
+		return -EINVAL;
+	}
+
+	/*
+	 * MCLK/SCLK need to be ON early for a successful synchronization of
+	 * codec internal clock. And the clocks are turned off during
+	 * POST_PMD after the stream is stopped.
+	 */
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		if (__clk_is_enabled(mclk))
+			return 0;
+
+		/* Enable MCLK */
+		ret = clk_set_rate(mclk, 24000000);
+		if (ret < 0) {
+			dev_err(card->dev, "Can't set rate for ssp%d_mclk, err: %d\n",
+				ssp_num, ret);
+			return ret;
+		}
+
+		ret = clk_prepare_enable(mclk);
+		if (ret < 0) {
+			dev_err(card->dev, "Can't enable ssp%d_mclk, err: %d\n",
+				ssp_num, ret);
+			return ret;
+		}
+
+		/* Enable SCLK */
+		ret = clk_set_rate(sclk, sclk_rate);
+		if (ret < 0) {
+			dev_err(card->dev, "Can't set rate for ssp%d_sclk, err: %d\n",
+				ssp_num, ret);
+			clk_disable_unprepare(mclk);
+			return ret;
+		}
+
+		ret = clk_prepare_enable(sclk);
+		if (ret < 0) {
+			dev_err(card->dev, "Can't enable ssp%d_sclk, err: %d\n",
+				ssp_num, ret);
+			clk_disable_unprepare(mclk);
+		}
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		if (!__clk_is_enabled(mclk))
+			return 0;
+
+		clk_disable_unprepare(mclk);
+		clk_disable_unprepare(sclk);
+		break;
+	default:
+		return 0;
+	}
+
+	return 0;
+}
+
+static int platform_clock_control_ssp0(struct snd_soc_dapm_widget *w,
+			struct snd_kcontrol *k, int event)
+{
+	return platform_clock_control(w, k, event, 0);
+}
+
+static int platform_clock_control_ssp1(struct snd_soc_dapm_widget *w,
+			struct snd_kcontrol *k, int event)
+{
+	return platform_clock_control(w, k, event, 1);
+}
+
 static const struct snd_soc_dapm_widget kabylake_widgets[] = {
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
@@ -79,11 +179,17 @@ static const struct snd_soc_dapm_widget kabylake_widgets[] = {
 	SND_SOC_DAPM_MIC("DMIC", NULL),
 	SND_SOC_DAPM_SPK("HDMI1", NULL),
 	SND_SOC_DAPM_SPK("HDMI2", NULL),
-
+	SND_SOC_DAPM_SUPPLY("Platform Clock SSP0", SND_SOC_NOPM, 0, 0,
+			platform_clock_control_ssp0, SND_SOC_DAPM_PRE_PMU |
+			SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_SUPPLY("Platform Clock SSP1", SND_SOC_NOPM, 0, 0,
+			platform_clock_control_ssp1, SND_SOC_DAPM_PRE_PMU |
+			SND_SOC_DAPM_POST_PMD),
 };
 
 static const struct snd_soc_dapm_route kabylake_map[] = {
 	/* Headphones */
+	{ "Headphone Jack", NULL, "Platform Clock SSP1" },
 	{ "Headphone Jack", NULL, "HPOL" },
 	{ "Headphone Jack", NULL, "HPOR" },
 
@@ -92,6 +198,7 @@ static const struct snd_soc_dapm_route kabylake_map[] = {
 	{ "Right Spk", NULL, "Right BE_OUT" },
 
 	/* other jacks */
+	{ "Headset Mic", NULL, "Platform Clock SSP1" },
 	{ "IN1P", NULL, "Headset Mic" },
 	{ "IN1N", NULL, "Headset Mic" },
 
@@ -106,8 +213,8 @@ static const struct snd_soc_dapm_route kabylake_map[] = {
 	{ "hs_in", NULL, "ssp1 Rx" },
 	{ "ssp1 Rx", NULL, "AIF Capture" },
 
-	{ "codec1_in", NULL, "DMIC01 Rx" },
-	{ "DMIC01 Rx", NULL, "AIF1 Capture" },
+	{ "codec1_in", NULL, "ssp0 Rx" },
+	{ "ssp0 Rx", NULL, "AIF1 Capture" },
 
 	/* IV feedback path */
 	{ "codec0_fb_in", NULL, "ssp0 Rx"},
@@ -115,6 +222,7 @@ static const struct snd_soc_dapm_route kabylake_map[] = {
 	{ "ssp0 Rx", NULL, "Right HiFi Capture" },
 
 	/* DMIC */
+	{ "DMIC", NULL, "Platform Clock SSP0" },
 	{ "DMIC1L", NULL, "DMIC" },
 	{ "DMIC1R", NULL, "DMIC" },
 	{ "DMIC2L", NULL, "DMIC" },
@@ -263,52 +371,65 @@ static const struct snd_soc_ops kabylake_rt5663_fe_ops = {
 	.startup = kbl_fe_startup,
 };
 
-static void kabylake_ssp_fixup(struct snd_soc_pcm_runtime *rtd,
-	struct snd_pcm_hw_params *params, snd_pcm_format_t pcm_fmt)
+static int kabylake_ssp_fixup(struct snd_soc_pcm_runtime *rtd,
+					struct snd_pcm_hw_params *params)
 {
 	struct snd_interval *rate = hw_param_interval(params,
 			SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
 			SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+	struct snd_soc_dpcm *dpcm, *rtd_dpcm = NULL;
+
+	/*
+	 * The following loop will be called only for playback stream
+	 * In this platform, there is only one playback device on every SSP
+	 */
+	for_each_dpcm_fe(rtd, SNDRV_PCM_STREAM_PLAYBACK, dpcm) {
+		rtd_dpcm = dpcm;
+		break;
+	}
+
+	/*
+	 * This following loop will be called only for capture stream
+	 * In this platform, there is only one capture device on every SSP
+	 */
+	for_each_dpcm_fe(rtd, SNDRV_PCM_STREAM_CAPTURE, dpcm) {
+		rtd_dpcm = dpcm;
+		break;
+	}
+
+	if (!rtd_dpcm)
+		return -EINVAL;
+
+	/*
+	 * The above 2 loops are mutually exclusive based on the stream direction,
+	 * thus rtd_dpcm variable will never be overwritten
+	 */
 
 	/*
 	 * The ADSP will convert the FE rate to 48k, stereo, 24 bit
 	 */
-
-	rate->min = rate->max = 48000;
-	channels->min = channels->max = 2;
-
-	snd_mask_none(fmt);
-	snd_mask_set_format(fmt, pcm_fmt);
-}
-
-static int kabylake_ssp0_fixup(struct snd_soc_pcm_runtime *rtd,
-	struct snd_pcm_hw_params *params)
-{
-	kabylake_ssp_fixup(rtd, params, SNDRV_PCM_FORMAT_S16_LE);
-	return 0;
-}
-
-static int kabylake_ssp1_fixup(struct snd_soc_pcm_runtime *rtd,
-	struct snd_pcm_hw_params *params)
-{
-
-	kabylake_ssp_fixup(rtd, params, SNDRV_PCM_FORMAT_S24_LE);
-	return 0;
-}
-
-static int kabylake_dmic_fixup(struct snd_soc_pcm_runtime *rtd,
-					struct snd_pcm_hw_params *params)
-{
-	struct snd_interval *channels = hw_param_interval(params,
-			SNDRV_PCM_HW_PARAM_CHANNELS);
-
+	if (!strcmp(rtd_dpcm->fe->dai_link->name, "Kbl Audio Port") ||
+	    !strcmp(rtd_dpcm->fe->dai_link->name, "Kbl Audio Headset Playback") ||
+	    !strcmp(rtd_dpcm->fe->dai_link->name, "Kbl Audio Capture Port")) {
+		rate->min = rate->max = 48000;
+		channels->min = channels->max = 2;
+		snd_mask_none(fmt);
+		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
+	} else if (!strcmp(rtd_dpcm->fe->dai_link->name, "Kbl Audio DMIC cap")) {
 		if (params_channels(params) == 2 ||
 				DMIC_CH(dmic_constraints) == 2)
 			channels->min = channels->max = 2;
 		else
 			channels->min = channels->max = 4;
+	}
+	/*
+	 * The speaker on the SSP0 supports S16_LE and not S24_LE.
+	 * thus changing the mask here
+	 */
+	if (!strcmp(rtd_dpcm->be->dai_link->name, "SSP0-Codec"))
+		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 
 	return 0;
 }
@@ -345,6 +466,20 @@ static int kabylake_ssp0_hw_params(struct snd_pcm_substream *substream,
 	int ret = 0, j;
 
 	for_each_rtd_codec_dais(rtd, j, codec_dai) {
+		if (!strcmp(codec_dai->component->name, RT5514_DEV_NAME)) {
+			ret = snd_soc_dai_set_tdm_slot(codec_dai, 0xF, 0, 8, 16);
+			if (ret < 0) {
+				dev_err(rtd->dev, "set TDM slot err:%d\n", ret);
+				return ret;
+			}
+
+			ret = snd_soc_dai_set_sysclk(codec_dai,
+				RT5514_SCLK_S_MCLK, 24576000, SND_SOC_CLOCK_IN);
+			if (ret < 0) {
+				dev_err(rtd->dev, "set sysclk err: %d\n", ret);
+				return ret;
+			}
+		}
 		if (!strcmp(codec_dai->component->name, MAXIM_DEV0_NAME)) {
 			ret = snd_soc_dai_set_tdm_slot(codec_dai, 0x30, 3, 8, 16);
 			if (ret < 0) {
@@ -364,36 +499,9 @@ static int kabylake_ssp0_hw_params(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static int kabylake_dmic01_hw_params(struct snd_pcm_substream *substream,
-	struct snd_pcm_hw_params *params)
-{
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	int ret = 0;
-
-	ret = snd_soc_dai_set_tdm_slot(rtd->codec_dai, 0xF, 0, 8, 16);
-	if (ret < 0) {
-		dev_err(rtd->dev, "set TDM slot err:%d\n", ret);
-		return ret;
-	}
-
-	ret = snd_soc_dai_set_sysclk(rtd->codec_dai,
-		RT5514_SCLK_S_MCLK, 24576000, SND_SOC_CLOCK_IN);
-	if (ret < 0) {
-		dev_err(rtd->dev, "set sysclk err: %d\n", ret);
-		return ret;
-	}
-
-	return ret;
-}
-
 static struct snd_soc_ops kabylake_ssp0_ops = {
 	.hw_params = kabylake_ssp0_hw_params,
 };
-
-static struct snd_soc_ops kabylake_dmic01_ops = {
-	.hw_params = kabylake_dmic01_hw_params,
-};
-
 
 static const unsigned int channels_dmic[] = {
 	4,
@@ -465,18 +573,13 @@ SND_SOC_DAILINK_DEF(ssp0_pin,
 SND_SOC_DAILINK_DEF(ssp0_codec,
 	DAILINK_COMP_ARRAY(
 	/* Left */ COMP_CODEC(MAXIM_DEV0_NAME, KBL_MAXIM_CODEC_DAI),
-	/* Right */COMP_CODEC(MAXIM_DEV1_NAME, KBL_MAXIM_CODEC_DAI)));
+	/* Right */COMP_CODEC(MAXIM_DEV1_NAME, KBL_MAXIM_CODEC_DAI),
+	/* dmic */ COMP_CODEC(RT5514_DEV_NAME, KBL_REALTEK_DMIC_CODEC_DAI)));
 
 SND_SOC_DAILINK_DEF(ssp1_pin,
 	DAILINK_COMP_ARRAY(COMP_CPU("SSP1 Pin")));
 SND_SOC_DAILINK_DEF(ssp1_codec,
 	DAILINK_COMP_ARRAY(COMP_CODEC(RT5663_DEV_NAME, KBL_REALTEK_CODEC_DAI)));
-
-SND_SOC_DAILINK_DEF(dmic01_pin,
-	DAILINK_COMP_ARRAY(COMP_CPU("DMIC01 Pin")));
-SND_SOC_DAILINK_DEF(dmic01_codec,
-	DAILINK_COMP_ARRAY(
-		COMP_CODEC(RT5514_DEV_NAME, KBL_REALTEK_DMIC_CODEC_DAI)));
 
 SND_SOC_DAILINK_DEF(idisp1_pin,
 	DAILINK_COMP_ARRAY(COMP_CPU("iDisp1 Pin")));
@@ -581,8 +684,9 @@ static struct snd_soc_dai_link kabylake_dais[] = {
 			SND_SOC_DAIFMT_NB_NF |
 			SND_SOC_DAIFMT_CBS_CFS,
 		.ignore_pmdown_time = 1,
-		.be_hw_params_fixup = kabylake_ssp0_fixup,
+		.be_hw_params_fixup = kabylake_ssp_fixup,
 		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.ops = &kabylake_ssp0_ops,
 		SND_SOC_DAILINK_REG(ssp0_pin, ssp0_codec, platform),
 	},
@@ -594,24 +698,11 @@ static struct snd_soc_dai_link kabylake_dais[] = {
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 			SND_SOC_DAIFMT_CBS_CFS,
 		.ignore_pmdown_time = 1,
-		.be_hw_params_fixup = kabylake_ssp1_fixup,
+		.be_hw_params_fixup = kabylake_ssp_fixup,
 		.ops = &kabylake_rt5663_ops,
 		.dpcm_playback = 1,
 		.dpcm_capture = 1,
 		SND_SOC_DAILINK_REG(ssp1_pin, ssp1_codec, platform),
-	},
-	{
-		.name = "dmic01",
-		.id = 2,
-		.no_pcm = 1,
-		.dai_fmt = SND_SOC_DAIFMT_DSP_B |
-			SND_SOC_DAIFMT_NB_NF |
-			SND_SOC_DAIFMT_CBS_CFS,
-		.ignore_pmdown_time = 1,
-		.be_hw_params_fixup = kabylake_dmic_fixup,
-		.dpcm_capture = 1,
-		.ops = &kabylake_dmic01_ops,
-		SND_SOC_DAILINK_REG(dmic01_pin, dmic01_codec, platform),
 	},
 	{
 		.name = "iDisp1",
@@ -682,10 +773,34 @@ static struct snd_soc_card kabylake_audio_card = {
 	.late_probe = kabylake_card_late_probe,
 };
 
+static int kabylake_audio_clk_get(struct device *dev, const char *id,
+	struct clk **clk)
+{
+	int ret = 0;
+
+	if (!clk)
+		return -EINVAL;
+
+	*clk = devm_clk_get(dev, id);
+	if (IS_ERR(*clk)) {
+		ret = PTR_ERR(*clk);
+		if (ret == -ENOENT) {
+			dev_info(dev, "Failed to get %s, defer probe\n", id);
+			return -EPROBE_DEFER;
+		}
+
+		dev_err(dev, "Failed to get %s with err:%d\n", id, ret);
+		return ret;
+	}
+
+	return ret;
+}
+
 static int kabylake_audio_probe(struct platform_device *pdev)
 {
 	struct kbl_codec_private *ctx;
 	struct snd_soc_acpi_mach *mach;
+	int ret = 0;
 
 	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -700,6 +815,22 @@ static int kabylake_audio_probe(struct platform_device *pdev)
 	if (mach)
 		dmic_constraints = mach->mach_params.dmic_num == 2 ?
 			&constraints_dmic_2ch : &constraints_dmic_channels;
+
+	ret = kabylake_audio_clk_get(&pdev->dev, "ssp0_mclk", &ctx->ssp0_mclk);
+	if (ret != 0)
+		return ret;
+
+	ret = kabylake_audio_clk_get(&pdev->dev, "ssp0_sclk", &ctx->ssp0_sclk);
+	if (ret != 0)
+		return ret;
+
+	ret = kabylake_audio_clk_get(&pdev->dev, "ssp1_mclk", &ctx->ssp1_mclk);
+	if (ret != 0)
+		return ret;
+
+	ret = kabylake_audio_clk_get(&pdev->dev, "ssp1_sclk", &ctx->ssp1_sclk);
+	if (ret != 0)
+		return ret;
 
 	return devm_snd_soc_register_card(&pdev->dev, &kabylake_audio_card);
 }

@@ -392,6 +392,8 @@
 # define DP_DS_12BPC		            2
 # define DP_DS_16BPC		            3
 
+#define DP_MAX_DOWNSTREAM_PORTS		    0x10
+
 /* DP Forward error Correction Registers */
 #define DP_FEC_CAPABILITY		    0x090    /* 1.4 */
 # define DP_FEC_CAPABLE			    (1 << 0)
@@ -700,14 +702,15 @@
 # define DP_TEST_COUNT_MASK		    0xf
 
 #define DP_PHY_TEST_PATTERN                 0x248
-# define DP_TEST_PHY_PATTERN_NONE			0x0
-# define DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING	0x1
-# define DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT 0x2
-# define DP_TEST_PHY_PATTERN_PRBS7			0x3
-# define DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN	0x4
-# define DP_TEST_PHY_PATTERN_CP2520_PATTERN_1		0x5
-# define DP_TEST_PHY_PATTERN_CP2520_PATTERN_2		0x6
-# define DP_TEST_PHY_PATTERN_CP2520_PATTERN_3		0x7
+# define DP_PHY_TEST_PATTERN_SEL_MASK       0x7
+# define DP_PHY_TEST_PATTERN_NONE           0x0
+# define DP_PHY_TEST_PATTERN_D10_2          0x1
+# define DP_PHY_TEST_PATTERN_ERROR_COUNT    0x2
+# define DP_PHY_TEST_PATTERN_PRBS7          0x3
+# define DP_PHY_TEST_PATTERN_80BIT_CUSTOM   0x4
+# define DP_PHY_TEST_PATTERN_CP2520         0x5
+
+#define DP_TEST_HBR2_SCRAMBLER_RESET        0x24A
 #define DP_TEST_80BIT_CUSTOM_PATTERN_7_0    0x250
 #define	DP_TEST_80BIT_CUSTOM_PATTERN_15_8   0x251
 #define	DP_TEST_80BIT_CUSTOM_PATTERN_23_16  0x252
@@ -1099,6 +1102,7 @@
 #define DP_MST_PHYSICAL_PORT_0 0
 #define DP_MST_LOGICAL_PORT_0 8
 
+#define DP_LINK_CONSTANT_N_VALUE 0x8000
 #define DP_LINK_STATUS_SIZE	   6
 bool drm_dp_channel_eq_ok(const u8 link_status[DP_LINK_STATUS_SIZE],
 			  int lane_count);
@@ -1471,13 +1475,16 @@ struct drm_dp_desc {
 
 int drm_dp_read_desc(struct drm_dp_aux *aux, struct drm_dp_desc *desc,
 		     bool is_branch);
+u32 drm_dp_get_edid_quirks(const struct edid *edid);
 
 /**
  * enum drm_dp_quirk - Display Port sink/branch device specific quirks
  *
  * Display Port sink and branch devices in the wild have a variety of bugs, try
  * to collect them here. The quirks are shared, but it's up to the drivers to
- * implement workarounds for them.
+ * implement workarounds for them. Note that because some devices have
+ * unreliable OUIDs, the EDID of sinks should also be checked for quirks using
+ * drm_dp_get_edid_quirks().
  */
 enum drm_dp_quirk {
 	/**
@@ -1506,14 +1513,16 @@ enum drm_dp_quirk {
 /**
  * drm_dp_has_quirk() - does the DP device have a specific quirk
  * @desc: Device decriptor filled by drm_dp_read_desc()
+ * @edid_quirks: Optional quirk bitmask filled by drm_dp_get_edid_quirks()
  * @quirk: Quirk to query for
  *
  * Return true if DP device identified by @desc has @quirk.
  */
 static inline bool
-drm_dp_has_quirk(const struct drm_dp_desc *desc, enum drm_dp_quirk quirk)
+drm_dp_has_quirk(const struct drm_dp_desc *desc, u32 edid_quirks,
+		 enum drm_dp_quirk quirk)
 {
-	return desc->quirks & BIT(quirk);
+	return (desc->quirks | edid_quirks) & BIT(quirk);
 }
 
 #ifdef CONFIG_DRM_DP_CEC
@@ -1549,4 +1558,26 @@ static inline void drm_dp_cec_unset_edid(struct drm_dp_aux *aux)
 
 #endif
 
+/**
+ * struct drm_dp_phy_test_params - DP Phy Compliance parameters
+ * @link_rate: Requested Link rate from DPCD 0x219
+ * @num_lanes: Number of lanes requested by sing through DPCD 0x220
+ * @phy_pattern: DP Phy test pattern from DPCD 0x248
+ * @hb2_reset: DP HBR2_COMPLIANCE_SCRAMBLER_RESET from DCPD 0x24A and 0x24B
+ * @custom80: DP Test_80BIT_CUSTOM_PATTERN from DPCDs 0x250 through 0x259
+ * @enhanced_frame_cap: flag for enhanced frame capability.
+ */
+struct drm_dp_phy_test_params {
+	int link_rate;
+	u8 num_lanes;
+	u8 phy_pattern;
+	u8 hbr2_reset[2];
+	u8 custom80[10];
+	bool enhanced_frame_cap;
+};
+
+int drm_dp_get_phy_test_pattern(struct drm_dp_aux *aux,
+				struct drm_dp_phy_test_params *data);
+int drm_dp_set_phy_test_pattern(struct drm_dp_aux *aux,
+				struct drm_dp_phy_test_params *data, u8 dp_rev);
 #endif /* _DRM_DP_HELPER_H_ */

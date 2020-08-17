@@ -1181,8 +1181,6 @@ struct intel_hdmi {
 };
 
 struct intel_dp_mst_encoder;
-#define DP_MAX_DOWNSTREAM_PORTS		0x10
-
 /*
  * enum link_m_n_set:
  *	When platform provides two set of M_N registers for dp, we can
@@ -1250,6 +1248,7 @@ struct intel_dp {
 	int max_link_rate;
 	/* sink or branch descriptor */
 	struct drm_dp_desc desc;
+	u32 edid_quirks;
 	struct drm_dp_aux aux;
 	u32 aux_busy_last_status;
 	u8 train_set[4];

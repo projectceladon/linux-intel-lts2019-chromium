@@ -593,6 +593,7 @@ static void tgl_ctx_workarounds_init(struct intel_engine_cs *engine,
 	WA_SET_FIELD_MASKED(GEN8_CS_CHICKEN1,
 			    GEN9_PREEMPT_GPGPU_LEVEL_MASK,
 			    GEN9_PREEMPT_GPGPU_THREAD_GROUP_LEVEL);
+
 }
 
 static void
@@ -1345,6 +1346,12 @@ rcs_engine_wa_init(struct intel_engine_cs *engine, struct i915_wa_list *wal)
 		wa_write_or(wal,
 			    GEN7_SARCHKMD,
 			    GEN7_DISABLE_SAMPLER_PREFETCH);
+	}
+
+	if (IS_TIGERLAKE(i915)) {
+		/* Wa_1606931601:tgl */
+		wa_masked_en(wal, GEN7_ROW_CHICKEN2, GEN12_DISABLE_EARLY_READ);
+
 	}
 
 	if (IS_GEN(i915, 11)) {

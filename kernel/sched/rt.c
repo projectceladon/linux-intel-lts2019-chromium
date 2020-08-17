@@ -848,7 +848,7 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 		if (skip)
 			continue;
 
-		raw_spin_lock(&rq->lock);
+		raw_spin_lock(rq_lockp(rq));
 		update_rq_clock(rq);
 
 		if (rt_rq->rt_time) {
@@ -886,7 +886,7 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 
 		if (enqueue)
 			sched_rt_rq_enqueue(rt_rq);
-		raw_spin_unlock(&rq->lock);
+		raw_spin_unlock(rq_lockp(rq));
 	}
 
 	if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
@@ -1569,18 +1569,62 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	return rt_task_of(rt_se);
 }
 
-static struct task_struct *
-pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+#ifdef CONFIG_SCHED_CORE
+static void for_each_rt_task(struct rq *rq,
+			     void (*fn)(struct rq *rq, struct task_struct *p))
+{
+	rt_rq_iter_t iter;
+	struct rt_prio_array *array;
+	struct list_head *queue;
+	int i;
+	struct rt_rq *rt_rq;
+	struct sched_rt_entity *rt_se;
+	struct task_struct *task;
+
+	for_each_rt_rq(rt_rq, iter, rq) {
+		array = &rt_rq->active;
+		for (i = 0; i < MAX_RT_PRIO; i++) {
+			queue = array->queue + i;
+			list_for_each_entry(rt_se, queue, run_list) {
+				if (rt_entity_is_task(rt_se)) {
+					task = rt_task_of(rt_se);
+					fn(rq, task);
+				}
+			}
+		}
+	}
+}
+
+static void core_sched_activate_rt(struct rq *rq)
+{
+	for_each_rt_task(rq, sched_core_add);
+}
+
+static void core_sched_deactivate_rt(struct rq *rq)
+{
+	for_each_rt_task(rq, sched_core_remove);
+}
+
+#endif
+
+static struct task_struct *pick_task_rt(struct rq *rq)
 {
 	struct task_struct *p;
-
-	WARN_ON_ONCE(prev || rf);
 
 	if (!sched_rt_runnable(rq))
 		return NULL;
 
 	p = _pick_next_task_rt(rq);
-	set_next_task_rt(rq, p, true);
+
+	return p;
+}
+
+static struct task_struct *pick_next_task_rt(struct rq *rq)
+{
+	struct task_struct *p = pick_task_rt(rq);
+	if (p)
+		set_next_task_rt(rq, p, true);
+
 	return p;
 }
 
@@ -2026,9 +2070,9 @@ void rto_push_irq_work_func(struct irq_work *work)
 	 * When it gets updated, a check is made if a push is possible.
 	 */
 	if (has_pushable_tasks(rq)) {
-		raw_spin_lock(&rq->lock);
+		raw_spin_lock(rq_lockp(rq));
 		push_rt_tasks(rq);
-		raw_spin_unlock(&rq->lock);
+		raw_spin_unlock(rq_lockp(rq));
 	}
 
 	raw_spin_lock(&rd->rto_lock);
@@ -2373,12 +2417,17 @@ const struct sched_class rt_sched_class = {
 
 #ifdef CONFIG_SMP
 	.balance		= balance_rt,
+	.pick_task		= pick_task_rt,
 	.select_task_rq		= select_task_rq_rt,
 	.set_cpus_allowed       = set_cpus_allowed_common,
 	.rq_online              = rq_online_rt,
 	.rq_offline             = rq_offline_rt,
 	.task_woken		= task_woken_rt,
 	.switched_from		= switched_from_rt,
+#ifdef CONFIG_SCHED_CORE
+	.core_sched_activate    = core_sched_activate_rt,
+	.core_sched_deactivate  = core_sched_deactivate_rt,
+#endif
 #endif
 
 	.task_tick		= task_tick_rt,

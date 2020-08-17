@@ -414,9 +414,13 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 		err = of_property_read_u64(node, "opp-hz-real", real_freqs);
 #endif
 		if (err < 0) {
-			dev_warn(kbdev->dev, "Failed to read opp-hz-real property with error %d\n",
-					err);
-			continue;
+			/* Failed to read opp-hz-real property, use opp-hz
+			 * value instead.
+			 */
+			int j;
+
+			for (j = 0; j < kbdev->nr_clocks; j++)
+				real_freqs[j] = opp_freq;
 		}
 #ifdef CONFIG_REGULATOR
 		err = of_property_read_u32_array(node,
@@ -647,6 +651,12 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 
 	if (kbdev->nr_clocks == 0) {
 		dev_err(kbdev->dev, "Clock not available for devfreq\n");
+		return -ENODEV;
+	}
+
+	/* Can't do devfreq without this table */
+	if (!kbdev->opp_table) {
+		dev_err(kbdev->dev, "Uninitialized devfreq opp table\n");
 		return -ENODEV;
 	}
 

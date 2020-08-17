@@ -909,6 +909,16 @@ static void hci_req_directed_advertising(struct hci_request *req,
 		cp.peer_addr_type = conn->dst_type;
 		bacpy(&cp.peer_addr, &conn->dst);
 
+		/* As per Core Spec 5.2 Vol 2, PART E, Sec 7.8.53, for
+		 * advertising_event_property LE_LEGACY_ADV_DIRECT_IND
+		 * does not supports advertising data when the advertising set already
+		 * contains some, the controller shall return erroc code 'Invalid
+		 * HCI Command Parameters(0x12).
+		 * So it is required to remove adv set for handle 0x00. since we use
+		 * instance 0 for directed adv.
+		 */
+		__hci_req_remove_ext_adv_instance(req, cp.handle);
+
 		hci_req_add(req, HCI_OP_LE_SET_EXT_ADV_PARAMS, sizeof(cp), &cp);
 
 		if (own_addr_type == ADDR_LE_DEV_RANDOM &&
@@ -1040,11 +1050,8 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 	 * anyway have to disable it in order to start directed
 	 * advertising.
 	 */
-	if (hci_dev_test_flag(hdev, HCI_LE_ADV)) {
-		u8 enable = 0x00;
-		hci_req_add(&req, HCI_OP_LE_SET_ADV_ENABLE, sizeof(enable),
-			    &enable);
-	}
+	if (hci_dev_test_flag(hdev, HCI_LE_ADV))
+		 __hci_req_disable_advertising(&req);
 
 	/* If requested to connect as slave use directed advertising */
 	if (conn->role == HCI_ROLE_SLAVE) {

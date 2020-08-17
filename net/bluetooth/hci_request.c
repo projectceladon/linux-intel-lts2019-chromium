@@ -413,11 +413,15 @@ static void __hci_update_background_scan(struct hci_request *req)
 	 */
 	hci_discovery_filter_clear(hdev);
 
+	BT_DBG("%s ADV monitoring is %s", hdev->name,
+	       hci_is_adv_monitoring(hdev) ? "on" : "off");
+
 	if (list_empty(&hdev->pend_le_conns) &&
-	    list_empty(&hdev->pend_le_reports)) {
+	    list_empty(&hdev->pend_le_reports) &&
+	    !hci_is_adv_monitoring(hdev)) {
 		/* If there is no pending LE connections or devices
-		 * to be scanned for, we should stop the background
-		 * scanning.
+		 * to be scanned for or no ADV monitors, we should stop the
+		 * background scanning.
 		 */
 
 		/* If controller is not scanning we are done. */
@@ -574,17 +578,21 @@ static u8 *create_uuid128_list(struct hci_dev *hdev, u8 *data, ptrdiff_t len)
 static void create_eir(struct hci_dev *hdev, u8 *data)
 {
 	u8 *ptr = data;
+	u8 size_remaining = HCI_MAX_EIR_LENGTH;
 	size_t name_len;
 
 	name_len = strlen(hdev->dev_name);
 
 	if (name_len > 0) {
 		/* EIR Data type */
-		if (name_len > 48) {
-			name_len = 48;
+		if (name_len > min_t(u16, (HCI_MAX_EIR_LENGTH - 2),
+				     hdev->eir_max_name_len)) {
+			name_len = min_t(u16, (HCI_MAX_EIR_LENGTH - 2),
+					 hdev->eir_max_name_len);
 			ptr[1] = EIR_NAME_SHORT;
-		} else
+		} else {
 			ptr[1] = EIR_NAME_COMPLETE;
+		}
 
 		/* EIR Data length */
 		ptr[0] = name_len + 1;
@@ -592,17 +600,21 @@ static void create_eir(struct hci_dev *hdev, u8 *data)
 		memcpy(ptr + 2, hdev->dev_name, name_len);
 
 		ptr += (name_len + 2);
+		size_remaining -= (name_len + 2);
 	}
 
-	if (hdev->inq_tx_power != HCI_TX_POWER_INVALID) {
+	if (hdev->inq_tx_power != HCI_TX_POWER_INVALID &&
+	    size_remaining >= 3) {
 		ptr[0] = 2;
 		ptr[1] = EIR_TX_POWER;
 		ptr[2] = (u8) hdev->inq_tx_power;
 
 		ptr += 3;
+		size_remaining -= 3;
 	}
 
-	if (hdev->devid_source > 0) {
+	if (hdev->devid_source > 0 &&
+	    size_remaining >= 10) {
 		ptr[0] = 9;
 		ptr[1] = EIR_DEVICE_ID;
 
@@ -612,11 +624,16 @@ static void create_eir(struct hci_dev *hdev, u8 *data)
 		put_unaligned_le16(hdev->devid_version, ptr + 8);
 
 		ptr += 10;
+		size_remaining -= 10;
 	}
 
-	ptr = create_uuid16_list(hdev, ptr, HCI_MAX_EIR_LENGTH - (ptr - data));
-	ptr = create_uuid32_list(hdev, ptr, HCI_MAX_EIR_LENGTH - (ptr - data));
-	ptr = create_uuid128_list(hdev, ptr, HCI_MAX_EIR_LENGTH - (ptr - data));
+	ptr = create_uuid16_list(hdev, ptr, size_remaining);
+	size_remaining = HCI_MAX_EIR_LENGTH - (ptr - data);
+
+	ptr = create_uuid32_list(hdev, ptr, size_remaining);
+	size_remaining = HCI_MAX_EIR_LENGTH - (ptr - data);
+
+	ptr = create_uuid128_list(hdev, ptr, size_remaining);
 }
 
 void __hci_req_update_eir(struct hci_request *req)
@@ -710,7 +727,8 @@ static int add_to_white_list(struct hci_request *req,
 	}
 
 	/* During suspend, only wakeable devices can be in whitelist */
-	if (hdev->suspended && !params->wakeable)
+	if (hdev->suspended && !hci_conn_test_flag(HCI_CONN_FLAG_REMOTE_WAKEUP,
+						   params->current_flags))
 		return 0;
 
 	*num_entries += 1;
@@ -792,6 +810,14 @@ static u8 update_white_list(struct hci_request *req)
 		if (add_to_white_list(req, params, &num_entries, allow_rpa))
 			return 0x00;
 	}
+
+	/* Once the controller offloading of advertisement monitor is in place,
+	 * the if condition should include the support of MSFT extension
+	 * support. If suspend is ongoing, whitelist should be the default to
+	 * prevent waking by random advertisements.
+	 */
+	if (!idr_is_empty(&hdev->adv_monitors_idr) && !hdev->suspended)
+		return 0x00;
 
 	/* Select filter policy to use white list */
 	return 0x01;
@@ -885,6 +911,27 @@ static void hci_req_start_scan(struct hci_request *req, u8 type, u16 interval,
 	}
 }
 
+/* Returns true if an le connection is in the scanning state */
+static inline bool hci_is_le_conn_scanning(struct hci_dev *hdev)
+{
+	struct hci_conn_hash *h = &hdev->conn_hash;
+	struct hci_conn  *c;
+
+	rcu_read_lock();
+
+	list_for_each_entry_rcu(c, &h->list, list) {
+		if (c->type == LE_LINK && c->state == BT_CONNECT &&
+		    test_bit(HCI_CONN_SCANNING, &c->flags)) {
+			rcu_read_unlock();
+			return true;
+		}
+	}
+
+	rcu_read_unlock();
+
+	return false;
+}
+
 void hci_req_add_le_passive_scan(struct hci_request *req)
 {
 	struct hci_dev *hdev = req->hdev;
@@ -929,6 +976,9 @@ void hci_req_add_le_passive_scan(struct hci_request *req)
 	if (hdev->suspended) {
 		window = hdev->le_scan_window_suspend;
 		interval = hdev->le_scan_int_suspend;
+	} else if (hci_is_le_conn_scanning(hdev)) {
+		window = hdev->le_scan_window_connect;
+		interval = hdev->le_scan_int_connect;
 	} else {
 		window = hdev->le_scan_window;
 		interval = hdev->le_scan_interval;
@@ -973,15 +1023,19 @@ static void hci_req_clear_event_filter(struct hci_request *req)
 
 static void hci_req_set_event_filter(struct hci_request *req)
 {
-	struct bdaddr_list *b;
+	struct bdaddr_list_with_flags *b;
 	struct hci_cp_set_event_filter f;
 	struct hci_dev *hdev = req->hdev;
-	u8 scan;
+	u8 scan = SCAN_DISABLED;
 
 	/* Always clear event filter when starting */
 	hci_req_clear_event_filter(req);
 
-	list_for_each_entry(b, &hdev->wakeable, list) {
+	list_for_each_entry(b, &hdev->whitelist, list) {
+		if (!hci_conn_test_flag(HCI_CONN_FLAG_REMOTE_WAKEUP,
+					b->current_flags))
+			continue;
+
 		memset(&f, 0, sizeof(f));
 		bacpy(&f.addr_conn_flt.bdaddr, &b->bdaddr);
 		f.flt_type = HCI_FLT_CONN_SETUP;
@@ -990,9 +1044,9 @@ static void hci_req_set_event_filter(struct hci_request *req)
 
 		bt_dev_dbg(hdev, "Adding event filters for %pMR", &b->bdaddr);
 		hci_req_add(req, HCI_OP_SET_EVENT_FLT, sizeof(f), &f);
+		scan = SCAN_PAGE;
 	}
 
-	scan = !list_empty(&hdev->wakeable) ? SCAN_PAGE : SCAN_DISABLED;
 	hci_req_add(req, HCI_OP_WRITE_SCAN_ENABLE, 1, &scan);
 }
 
@@ -1164,13 +1218,8 @@ static u8 get_cur_adv_instance_scan_rsp_len(struct hci_dev *hdev)
 void __hci_req_disable_advertising(struct hci_request *req)
 {
 	if (ext_adv_capable(req->hdev)) {
-		struct hci_cp_le_set_ext_adv_enable cp;
+		__hci_req_disable_ext_adv_instance(req, 0x00);
 
-		cp.enable = 0x00;
-		/* Disable all sets since we only support one set at the moment */
-		cp.num_of_sets = 0x00;
-
-		hci_req_add(req, HCI_OP_LE_SET_EXT_ADV_ENABLE, sizeof(cp), &cp);
 	} else {
 		u8 enable = 0x00;
 
@@ -1451,7 +1500,7 @@ void __hci_req_update_scan_rsp_data(struct hci_request *req, u8 instance)
 		memcpy(hdev->scan_rsp_data, cp.data, sizeof(cp.data));
 		hdev->scan_rsp_data_len = len;
 
-		cp.handle = 0;
+		cp.handle = instance;
 		cp.length = len;
 		cp.operation = LE_SET_ADV_DATA_OP_COMPLETE;
 		cp.frag_pref = LE_SET_ADV_DATA_NO_FRAG;
@@ -1595,7 +1644,7 @@ void __hci_req_update_adv_data(struct hci_request *req, u8 instance)
 		hdev->adv_data_len = len;
 
 		cp.length = len;
-		cp.handle = 0;
+		cp.handle = instance;
 		cp.operation = LE_SET_ADV_DATA_OP_COMPLETE;
 		cp.frag_pref = LE_SET_ADV_DATA_NO_FRAG;
 
@@ -1879,7 +1928,7 @@ int __hci_req_setup_ext_adv_instance(struct hci_request *req, u8 instance)
 
 		memset(&cp, 0, sizeof(cp));
 
-		cp.handle = 0;
+		cp.handle = instance;
 		bacpy(&cp.bdaddr, &random_addr);
 
 		hci_req_add(req,
@@ -1922,7 +1971,7 @@ int __hci_req_enable_ext_advertising(struct hci_request *req, u8 instance)
 	 * scheduling it.
 	 */
 	if (adv_instance && adv_instance->duration) {
-		u16 duration = adv_instance->duration * MSEC_PER_SEC;
+		u16 duration = adv_instance->timeout * MSEC_PER_SEC;
 
 		/* Time = N * 10 ms */
 		adv_set->duration = cpu_to_le16(duration / 10);
@@ -1935,13 +1984,59 @@ int __hci_req_enable_ext_advertising(struct hci_request *req, u8 instance)
 	return 0;
 }
 
+int __hci_req_disable_ext_adv_instance(struct hci_request *req, u8 instance)
+{
+	struct hci_dev *hdev = req->hdev;
+	struct hci_cp_le_set_ext_adv_enable *cp;
+	struct hci_cp_ext_adv_set *adv_set;
+	u8 data[sizeof(*cp) + sizeof(*adv_set) * 1];
+	u8 req_size;
+
+	/* If request specifies an instance that doesn't exist, fail */
+	if (instance > 0 && !hci_find_adv_instance(hdev, instance))
+		return -EINVAL;
+
+	memset(data, 0, sizeof(data));
+
+	cp = (void *)data;
+	adv_set = (void *)cp->data;
+
+	/* Instance 0x00 indicates all advertising instances will be disabled */
+	cp->num_of_sets = !!instance;
+	cp->enable = 0x00;
+
+	adv_set->handle = instance;
+
+	req_size = sizeof(*cp) + sizeof(*adv_set) * cp->num_of_sets;
+	hci_req_add(req, HCI_OP_LE_SET_EXT_ADV_ENABLE, req_size, data);
+
+	return 0;
+}
+
+int __hci_req_remove_ext_adv_instance(struct hci_request *req, u8 instance)
+{
+	struct hci_dev *hdev = req->hdev;
+
+	/* If request specifies an instance that doesn't exist, fail */
+	if (instance > 0 && !hci_find_adv_instance(hdev, instance))
+		return -EINVAL;
+
+	hci_req_add(req, HCI_OP_LE_REMOVE_ADV_SET, sizeof(instance), &instance);
+
+	return 0;
+}
+
 int __hci_req_start_ext_adv(struct hci_request *req, u8 instance)
 {
 	struct hci_dev *hdev = req->hdev;
+	struct adv_info *adv_instance = hci_find_adv_instance(hdev, instance);
 	int err;
 
-	if (hci_dev_test_flag(hdev, HCI_LE_ADV))
-		__hci_req_disable_advertising(req);
+	/* If instance isn't pending, the chip knows about it, and it's safe to
+	 * disable
+	 */
+	if (adv_instance && !adv_instance->pending)
+		__hci_req_disable_ext_adv_instance(req, instance);
 
 	err = __hci_req_setup_ext_adv_instance(req, instance);
 	if (err < 0)
@@ -2089,7 +2184,7 @@ void hci_req_clear_adv_instance(struct hci_dev *hdev, struct sock *sk,
 	    hci_dev_test_flag(hdev, HCI_ADVERTISING))
 		return;
 
-	if (next_instance)
+	if (next_instance && !ext_adv_capable(hdev))
 		__hci_req_schedule_adv_instance(req, next_instance->instance,
 						false);
 }

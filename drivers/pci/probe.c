@@ -1506,7 +1506,7 @@ static void set_pcie_untrusted(struct pci_dev *dev)
 	 * untrusted as well.
 	 */
 	parent = pci_upstream_bridge(dev);
-	if (parent && parent->untrusted)
+	if (parent && (parent->untrusted || parent->external_facing))
 		dev->untrusted = true;
 }
 
@@ -2033,7 +2033,7 @@ static void pci_configure_relaxed_ordering(struct pci_dev *dev)
 	 * For now, we only deal with Relaxed Ordering issues with Root
 	 * Ports. Peer-to-Peer DMA is another can of worms.
 	 */
-	root = pci_find_pcie_root_port(dev);
+	root = pcie_find_root_port(dev);
 	if (!root)
 		return;
 
@@ -2359,8 +2359,8 @@ static void pci_init_capabilities(struct pci_dev *dev)
 	/* Process Address Space ID */
 	pci_pasid_init(dev);
 
-	/* Enable ACS P2P upstream forwarding */
-	pci_enable_acs(dev);
+	/* Access Control Services */
+	pci_acs_init(dev);
 
 	/* Precision Time Measurement */
 	pci_ptm_init(dev);

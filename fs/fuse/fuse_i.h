@@ -45,7 +45,7 @@
 #define FUSE_NAME_MAX 1024
 
 /** Number of dentries for each connection in the control filesystem */
-#define FUSE_CTL_NUM_DENTRIES 5
+#define FUSE_CTL_NUM_DENTRIES 6
 
 /** List of active connections */
 extern struct list_head fuse_conn_list;
@@ -719,6 +719,9 @@ struct fuse_conn {
 
 	/* Do not show mount options */
 	unsigned int no_mount_options:1;
+
+	/* Initialize security xattrs when creating a new inode */
+	unsigned int init_security : 1;
 
 	/** The number of requests waiting for completion */
 	atomic_t num_waiting;

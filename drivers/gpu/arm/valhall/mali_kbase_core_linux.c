@@ -2436,7 +2436,7 @@ struct kbasep_debug_command {
 	kbasep_debug_command_func *func;
 };
 
-void kbasep_ktrace_dump_wrapper(struct kbase_device *kbdev)
+static void kbasep_ktrace_dump_wrapper(struct kbase_device *kbdev)
 {
 	KBASE_KTRACE_DUMP(kbdev);
 }
@@ -3536,9 +3536,9 @@ int power_control_init(struct kbase_device *kbdev)
 	 * operating with a partial initialization of regulators.
 	 */
 	for (i = 0; i < BASE_MAX_NR_CLOCKS_REGULATORS; i++) {
-		kbdev->regulators[i] = regulator_get_optional(kbdev->dev,
+		kbdev->regulators[i] = regulator_get(kbdev->dev,
 			regulator_names[i]);
-		if (IS_ERR_OR_NULL(kbdev->regulators[i])) {
+		if (IS_ERR(kbdev->regulators[i])) {
 			err = PTR_ERR(kbdev->regulators[i]);
 			kbdev->regulators[i] = NULL;
 			break;
@@ -4119,7 +4119,7 @@ static int kbase_platform_device_probe(struct platform_device *pdev)
 
 	if (err) {
 		if (err == -EPROBE_DEFER)
-			dev_dbg(kbdev->dev, "Device initialization Deferred\n");
+			dev_dbg(kbdev->dev, "Device initialization deferred\n");
 		else
 			dev_err(kbdev->dev, "Device initialization failed\n");
 

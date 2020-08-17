@@ -243,6 +243,7 @@ static int aggregate_requests(struct icc_node *node)
 {
 	struct icc_provider *p = node->provider;
 	struct icc_req *r;
+	u32 avg_bw, peak_bw;
 
 	node->avg_bw = 0;
 	node->peak_bw = 0;
@@ -251,9 +252,14 @@ static int aggregate_requests(struct icc_node *node)
 		p->pre_aggregate(node);
 
 	hlist_for_each_entry(r, &node->req_list, req_node) {
-		if (!r->enabled)
-			continue;
-		p->aggregate(node, r->tag, r->avg_bw, r->peak_bw,
+		if (r->enabled) {
+			avg_bw = r->avg_bw;
+			peak_bw = r->peak_bw;
+		} else {
+			avg_bw = 0;
+			peak_bw = 0;
+		}
+		p->aggregate(node, r->tag, avg_bw, peak_bw,
 			     &node->avg_bw, &node->peak_bw);
 	}
 
@@ -263,23 +269,22 @@ static int aggregate_requests(struct icc_node *node)
 static int apply_constraints(struct icc_path *path)
 {
 	struct icc_node *next, *prev = NULL;
+	struct icc_provider *p;
 	int ret = -EINVAL;
 	int i;
 
 	for (i = 0; i < path->num_nodes; i++) {
 		next = path->reqs[i].node;
+		p = next->provider;
 
-		/*
-		 * Both endpoints should be valid master-slave pairs of the
-		 * same interconnect provider that will be configured.
-		 */
-		if (!prev || next->provider != prev->provider) {
+		/* both endpoints should be valid master-slave pairs */
+		if (!prev || (p != prev->provider && !p->inter_set)) {
 			prev = next;
 			continue;
 		}
 
 		/* set the constraints */
-		ret = next->provider->set(prev, next);
+		ret = p->set(prev, next);
 		if (ret)
 			goto out;
 
@@ -331,28 +336,49 @@ EXPORT_SYMBOL_GPL(of_icc_xlate_onecell);
  * Looks for interconnect provider under the node specified by @spec and if
  * found, uses xlate function of the provider to map phandle args to node.
  *
- * Returns a valid pointer to struct icc_node on success or ERR_PTR()
+ * Returns a valid pointer to struct icc_node_data on success or ERR_PTR()
  * on failure.
  */
-static struct icc_node *of_icc_get_from_provider(struct of_phandle_args *spec)
+struct icc_node_data *of_icc_get_from_provider(struct of_phandle_args *spec)
 {
 	struct icc_node *node = ERR_PTR(-EPROBE_DEFER);
+	struct icc_node_data *data = NULL;
 	struct icc_provider *provider;
 
-	if (!spec || spec->args_count != 1)
+	if (!spec)
 		return ERR_PTR(-EINVAL);
 
 	mutex_lock(&icc_lock);
 	list_for_each_entry(provider, &icc_providers, provider_list) {
-		if (provider->dev->of_node == spec->np)
-			node = provider->xlate(spec, provider->data);
-		if (!IS_ERR(node))
-			break;
+		if (provider->dev->of_node == spec->np) {
+			if (provider->xlate_extended) {
+				data = provider->xlate_extended(spec, provider->data);
+				if (!IS_ERR(data)) {
+					node = data->node;
+					break;
+				}
+			} else {
+				node = provider->xlate(spec, provider->data);
+				if (!IS_ERR(node))
+					break;
+			}
+		}
 	}
 	mutex_unlock(&icc_lock);
 
-	return node;
+	if (IS_ERR(node))
+		return ERR_CAST(node);
+
+	if (!data) {
+		data = kzalloc(sizeof(*data), GFP_KERNEL);
+		if (!data)
+			return ERR_PTR(-ENOMEM);
+		data->node = node;
+	}
+
+	return data;
 }
+EXPORT_SYMBOL_GPL(of_icc_get_from_provider);
 
 static void devm_icc_release(struct device *dev, void *res)
 {
@@ -397,7 +423,7 @@ EXPORT_SYMBOL_GPL(devm_of_icc_get);
 struct icc_path *of_icc_get_by_index(struct device *dev, int idx)
 {
 	struct icc_path *path;
-	struct icc_node *src_node, *dst_node;
+	struct icc_node_data *src_data, *dst_data;
 	struct device_node *np;
 	struct of_phandle_args src_args, dst_args;
 	int ret;
@@ -435,39 +461,46 @@ struct icc_path *of_icc_get_by_index(struct device *dev, int idx)
 
 	of_node_put(dst_args.np);
 
-	src_node = of_icc_get_from_provider(&src_args);
+	src_data = of_icc_get_from_provider(&src_args);
 
-	if (IS_ERR(src_node)) {
-		if (PTR_ERR(src_node) != -EPROBE_DEFER)
+	if (IS_ERR(src_data)) {
+		if (PTR_ERR(src_data) != -EPROBE_DEFER)
 			dev_err(dev, "error finding src node: %ld\n",
-				PTR_ERR(src_node));
-		return ERR_CAST(src_node);
+				PTR_ERR(src_data));
+		return ERR_CAST(src_data);
 	}
 
-	dst_node = of_icc_get_from_provider(&dst_args);
+	dst_data = of_icc_get_from_provider(&dst_args);
 
-	if (IS_ERR(dst_node)) {
-		if (PTR_ERR(dst_node) != -EPROBE_DEFER)
+	if (IS_ERR(dst_data)) {
+		if (PTR_ERR(dst_data) != -EPROBE_DEFER)
 			dev_err(dev, "error finding dst node: %ld\n",
-				PTR_ERR(dst_node));
-		return ERR_CAST(dst_node);
+				PTR_ERR(dst_data));
+		kfree(src_data);
+		return ERR_CAST(dst_data);
 	}
 
 	mutex_lock(&icc_lock);
-	path = path_find(dev, src_node, dst_node);
+	path = path_find(dev, src_data->node, dst_data->node);
 	mutex_unlock(&icc_lock);
 	if (IS_ERR(path)) {
 		dev_err(dev, "%s: invalid path=%ld\n", __func__, PTR_ERR(path));
-		return path;
+		goto free_icc_data;
 	}
+
+	if (src_data->tag && src_data->tag == dst_data->tag)
+		icc_set_tag(path, src_data->tag);
 
 	path->name = kasprintf(GFP_KERNEL, "%s-%s",
-			       src_node->name, dst_node->name);
+			       src_data->node->name, dst_data->node->name);
 	if (!path->name) {
 		kfree(path);
-		return ERR_PTR(-ENOMEM);
+		path = ERR_PTR(-ENOMEM);
 	}
 
+free_icc_data:
+	kfree(src_data);
+	kfree(dst_data);
 	return path;
 }
 EXPORT_SYMBOL_GPL(of_icc_get_by_index);
@@ -969,7 +1002,7 @@ int icc_provider_add(struct icc_provider *provider)
 {
 	if (WARN_ON(!provider->set))
 		return -EINVAL;
-	if (WARN_ON(!provider->xlate))
+	if (WARN_ON(!provider->xlate && !provider->xlate_extended))
 		return -EINVAL;
 
 	mutex_lock(&icc_lock);

@@ -208,6 +208,36 @@ struct dpu_encoder_virt {
 
 #define to_dpu_encoder_virt(x) container_of(x, struct dpu_encoder_virt, base)
 
+static u32 dither_matrix[DITHER_MATRIX_SZ] = {
+	15, 7, 13, 5, 3, 11, 1, 9, 12, 4, 14, 6, 0, 8, 2, 10
+};
+
+static void _dpu_encoder_setup_dither(struct dpu_encoder_phys *phys)
+{
+	struct dpu_hw_dither_cfg dither_cfg = { 0 };
+
+	if (!phys->hw_pp || !phys->hw_pp->ops.setup_dither)
+		return;
+
+	switch (phys->connector->display_info.bpc) {
+	case 6:
+		dither_cfg.c0_bitdepth = 6;
+		dither_cfg.c1_bitdepth = 6;
+		dither_cfg.c2_bitdepth = 6;
+		dither_cfg.c3_bitdepth = 6;
+		dither_cfg.temporal_en = 0;
+		break;
+	default:
+		phys->hw_pp->ops.setup_dither(phys->hw_pp, NULL);
+		return;
+	}
+
+	memcpy(&dither_cfg.matrix, dither_matrix,
+			sizeof(u32) * DITHER_MATRIX_SZ);
+
+	phys->hw_pp->ops.setup_dither(phys->hw_pp, &dither_cfg);
+}
+
 void dpu_encoder_helper_report_irq_timeout(struct dpu_encoder_phys *phys_enc,
 		enum dpu_intr_idx intr_idx)
 {
@@ -586,7 +616,10 @@ static int dpu_encoder_virt_atomic_check(
 	dpu_kms = to_dpu_kms(priv->kms);
 	mode = &crtc_state->mode;
 	adj_mode = &crtc_state->adjusted_mode;
-	global_state = dpu_kms_get_existing_global_state(dpu_kms);
+	global_state = dpu_kms_get_global_state(crtc_state->state);
+	if (IS_ERR(global_state))
+		return PTR_ERR(global_state);
+
 	trace_dpu_enc_atomic_check(DRMID(drm_enc));
 
 	/*
@@ -621,12 +654,15 @@ static int dpu_encoder_virt_atomic_check(
 	/* Reserve dynamic resources now. */
 	if (!ret) {
 		/*
-		 * Avoid reserving resources when mode set is pending. Topology
-		 * info may not be available to complete reservation.
+		 * Release and Allocate resources on every modeset
+		 * Dont allocate when active is false.
 		 */
 		if (drm_atomic_crtc_needs_modeset(crtc_state)) {
-			ret = dpu_rm_reserve(&dpu_kms->rm, global_state,
-					drm_enc, crtc_state, topology);
+			dpu_rm_release(global_state, drm_enc);
+
+			if (!crtc_state->active_changed || crtc_state->active)
+				ret = dpu_rm_reserve(&dpu_kms->rm, global_state,
+						drm_enc, crtc_state, topology);
 		}
 	}
 
@@ -992,6 +1028,9 @@ static void dpu_encoder_virt_mode_set(struct drm_encoder *drm_enc,
 
 	trace_dpu_enc_mode_set(DRMID(drm_enc));
 
+	if (drm_enc->encoder_type == DRM_MODE_ENCODER_TMDS && priv->dp)
+		msm_dp_display_mode_set(priv->dp, drm_enc, mode, adj_mode);
+
 	list_for_each_entry(conn_iter, connector_list, head)
 		if (conn_iter->encoder == drm_enc)
 			conn = conn_iter;
@@ -1086,6 +1125,7 @@ static void _dpu_encoder_virt_enable_helper(struct drm_encoder *drm_enc)
 	struct dpu_encoder_virt *dpu_enc = NULL;
 	struct msm_drm_private *priv;
 	struct dpu_kms *dpu_kms;
+	int i;
 
 	if (!drm_enc || !drm_enc->dev) {
 		DPU_ERROR("invalid parameters\n");
@@ -1108,6 +1148,14 @@ static void _dpu_encoder_virt_enable_helper(struct drm_encoder *drm_enc)
 				dpu_kms->catalog);
 
 	_dpu_encoder_update_vsync_source(dpu_enc, &dpu_enc->disp_info);
+
+	if (dpu_enc->disp_info.intf_type == DRM_MODE_ENCODER_DSI) {
+		for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+			struct dpu_encoder_phys *phys = dpu_enc->phys_encs[i];
+
+			_dpu_encoder_setup_dither(phys);
+		}
+	}
 }
 
 void dpu_encoder_virt_runtime_resume(struct drm_encoder *drm_enc)
@@ -1134,6 +1182,7 @@ static void dpu_encoder_virt_enable(struct drm_encoder *drm_enc)
 {
 	struct dpu_encoder_virt *dpu_enc = NULL;
 	int ret = 0;
+	struct msm_drm_private *priv;
 	struct drm_display_mode *cur_mode = NULL;
 
 	if (!drm_enc) {
@@ -1144,6 +1193,7 @@ static void dpu_encoder_virt_enable(struct drm_encoder *drm_enc)
 
 	mutex_lock(&dpu_enc->enc_lock);
 	cur_mode = &dpu_enc->base.crtc->state->adjusted_mode;
+	priv = drm_enc->dev->dev_private;
 
 	trace_dpu_enc_enable(DRMID(drm_enc), cur_mode->hdisplay,
 			     cur_mode->vdisplay);
@@ -1164,6 +1214,15 @@ static void dpu_encoder_virt_enable(struct drm_encoder *drm_enc)
 
 	_dpu_encoder_virt_enable_helper(drm_enc);
 
+	if (drm_enc->encoder_type == DRM_MODE_ENCODER_TMDS && priv->dp) {
+		ret = msm_dp_display_enable(priv->dp,
+						drm_enc);
+		if (ret) {
+			DPU_ERROR_ENC(dpu_enc, "dp display enable failed: %d\n",
+				ret);
+			goto out;
+		}
+	}
 	dpu_enc->enabled = true;
 
 out:
@@ -1175,7 +1234,6 @@ static void dpu_encoder_virt_disable(struct drm_encoder *drm_enc)
 	struct dpu_encoder_virt *dpu_enc = NULL;
 	struct msm_drm_private *priv;
 	struct dpu_kms *dpu_kms;
-	struct dpu_global_state *global_state;
 	int i = 0;
 
 	if (!drm_enc) {
@@ -1194,7 +1252,6 @@ static void dpu_encoder_virt_disable(struct drm_encoder *drm_enc)
 
 	priv = drm_enc->dev->dev_private;
 	dpu_kms = to_dpu_kms(priv->kms);
-	global_state = dpu_kms_get_existing_global_state(dpu_kms);
 
 	trace_dpu_enc_disable(DRMID(drm_enc));
 
@@ -1224,7 +1281,10 @@ static void dpu_encoder_virt_disable(struct drm_encoder *drm_enc)
 
 	DPU_DEBUG_ENC(dpu_enc, "encoder disabled\n");
 
-	dpu_rm_release(global_state, drm_enc);
+	if (drm_enc->encoder_type == DRM_MODE_ENCODER_TMDS && priv->dp) {
+		if (msm_dp_display_disable(priv->dp, drm_enc))
+			DPU_ERROR_ENC(dpu_enc, "dp display disable failed\n");
+	}
 
 	mutex_unlock(&dpu_enc->enc_lock);
 }
@@ -2000,7 +2060,7 @@ static int dpu_encoder_setup_display(struct dpu_encoder_virt *dpu_enc,
 {
 	int ret = 0;
 	int i = 0;
-	enum dpu_intf_type intf_type;
+	enum dpu_intf_type intf_type = INTF_NONE;
 	struct dpu_enc_phys_init_params phys_params;
 
 	if (!dpu_enc) {
@@ -2022,9 +2082,9 @@ static int dpu_encoder_setup_display(struct dpu_encoder_virt *dpu_enc,
 	case DRM_MODE_ENCODER_DSI:
 		intf_type = INTF_DSI;
 		break;
-	default:
-		DPU_ERROR_ENC(dpu_enc, "unsupported display interface type\n");
-		return -EINVAL;
+	case DRM_MODE_ENCODER_TMDS:
+		intf_type = INTF_DP;
+		break;
 	}
 
 	WARN_ON(disp_info->num_of_h_tiles < 1);

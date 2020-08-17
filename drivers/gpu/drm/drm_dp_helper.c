@@ -1248,6 +1248,67 @@ drm_dp_get_quirks(const struct drm_dp_dpcd_ident *ident, bool is_branch)
 #undef DEVICE_ID_ANY
 #undef DEVICE_ID
 
+struct edid_quirk {
+	u8 mfg_id[2];
+	u8 prod_id[2];
+	u32 quirks;
+};
+
+#define MFG(first, second) { (first), (second) }
+#define PROD_ID(first, second) { (first), (second) }
+
+/*
+ * Some devices have unreliable OUIDs where they don't set the device ID
+ * correctly, and as a result we need to use the EDID for finding additional
+ * DP quirks in such cases.
+ */
+static const struct edid_quirk edid_quirk_list[] = {
+};
+
+#undef MFG
+#undef PROD_ID
+
+/**
+ * drm_dp_get_edid_quirks() - Check the EDID of a DP device to find additional
+ * DP-specific quirks
+ * @edid: The EDID to check
+ *
+ * While OUIDs are meant to be used to recognize a DisplayPort device, a lot
+ * of manufacturers don't seem to like following standards and neglect to fill
+ * the dev-ID in, making it impossible to only use OUIDs for determining
+ * quirks in some cases. This function can be used to check the EDID and look
+ * up any additional DP quirks. The bits returned by this function correspond
+ * to the quirk bits in &drm_dp_quirk.
+ *
+ * Returns: a bitmask of quirks, if any. The driver can check this using
+ * drm_dp_has_quirk().
+ */
+u32 drm_dp_get_edid_quirks(const struct edid *edid)
+{
+	const struct edid_quirk *quirk;
+	u32 quirks = 0;
+	int i;
+
+	if (!edid)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(edid_quirk_list); i++) {
+		quirk = &edid_quirk_list[i];
+		if (memcmp(quirk->mfg_id, edid->mfg_id,
+			   sizeof(edid->mfg_id)) == 0 &&
+		    memcmp(quirk->prod_id, edid->prod_code,
+			   sizeof(edid->prod_code)) == 0)
+			quirks |= quirk->quirks;
+	}
+
+	DRM_DEBUG_KMS("DP sink: EDID mfg %*phD prod-ID %*phD quirks: 0x%04x\n",
+		      (int)sizeof(edid->mfg_id), edid->mfg_id,
+		      (int)sizeof(edid->prod_code), edid->prod_code, quirks);
+
+	return quirks;
+}
+EXPORT_SYMBOL(drm_dp_get_edid_quirks);
+
 /**
  * drm_dp_read_desc - read sink/branch descriptor from DPCD
  * @aux: DisplayPort AUX channel
@@ -1422,3 +1483,97 @@ int drm_dp_dsc_sink_supported_input_bpcs(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_S
 	return num_bpc;
 }
 EXPORT_SYMBOL(drm_dp_dsc_sink_supported_input_bpcs);
+
+/**
+ * drm_dp_get_phy_test_pattern() - get the requested pattern from the sink.
+ * @aux: DisplayPort AUX channel
+ * @data: DP phy compliance test parameters.
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int drm_dp_get_phy_test_pattern(struct drm_dp_aux *aux,
+				struct drm_dp_phy_test_params *data)
+{
+	int err;
+	u8 rate, lanes;
+
+	err = drm_dp_dpcd_readb(aux, DP_TEST_LINK_RATE, &rate);
+	if (err < 0)
+		return err;
+	data->link_rate = drm_dp_bw_code_to_link_rate(rate);
+
+	err = drm_dp_dpcd_readb(aux, DP_TEST_LANE_COUNT, &lanes);
+	if (err < 0)
+		return err;
+	data->num_lanes = lanes & DP_MAX_LANE_COUNT_MASK;
+
+	if (lanes & DP_ENHANCED_FRAME_CAP)
+		data->enhanced_frame_cap = true;
+
+	err = drm_dp_dpcd_readb(aux, DP_PHY_TEST_PATTERN, &data->phy_pattern);
+	if (err < 0)
+		return err;
+
+	switch (data->phy_pattern) {
+	case DP_PHY_TEST_PATTERN_80BIT_CUSTOM:
+		err = drm_dp_dpcd_read(aux, DP_TEST_80BIT_CUSTOM_PATTERN_7_0,
+				       &data->custom80, sizeof(data->custom80));
+		if (err < 0)
+			return err;
+
+		break;
+	case DP_PHY_TEST_PATTERN_CP2520:
+		err = drm_dp_dpcd_read(aux, DP_TEST_HBR2_SCRAMBLER_RESET,
+				       &data->hbr2_reset,
+				       sizeof(data->hbr2_reset));
+		if (err < 0)
+			return err;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_dp_get_phy_test_pattern);
+
+/**
+ * drm_dp_set_phy_test_pattern() - set the pattern to the sink.
+ * @aux: DisplayPort AUX channel
+ * @data: DP phy compliance test parameters.
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int drm_dp_set_phy_test_pattern(struct drm_dp_aux *aux,
+				struct drm_dp_phy_test_params *data, u8 dp_rev)
+{
+	int err, i;
+	u8 link_config[2];
+	u8 test_pattern;
+
+	link_config[0] = drm_dp_link_rate_to_bw_code(data->link_rate);
+	link_config[1] = data->num_lanes;
+	if (data->enhanced_frame_cap)
+		link_config[1] |= DP_LANE_COUNT_ENHANCED_FRAME_EN;
+	err = drm_dp_dpcd_write(aux, DP_LINK_BW_SET, link_config, 2);
+	if (err < 0)
+		return err;
+
+	test_pattern = data->phy_pattern;
+	if (dp_rev < 0x12) {
+		test_pattern = (test_pattern << 2) &
+			       DP_LINK_QUAL_PATTERN_11_MASK;
+		err = drm_dp_dpcd_writeb(aux, DP_TRAINING_PATTERN_SET,
+					 test_pattern);
+		if (err < 0)
+			return err;
+	} else {
+		for (i = 0; i < data->num_lanes; i++) {
+			err = drm_dp_dpcd_writeb(aux,
+						 DP_LINK_QUAL_LANE0_SET + i,
+						 test_pattern);
+			if (err < 0)
+				return err;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_dp_set_phy_test_pattern);

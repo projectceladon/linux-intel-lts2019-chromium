@@ -132,32 +132,41 @@ __printf(1, 2)
 void bt_warn(const char *fmt, ...);
 __printf(1, 2)
 void bt_err(const char *fmt, ...);
+#if IS_ENABLED(CONFIG_BT_FEATURE_DEBUG)
+void bt_dbg_set(bool enable);
+bool bt_dbg_get(void);
 __printf(1, 2)
 void bt_dbg(const char *fmt, ...);
+#define BT_DBG_INT	bt_dbg
+#else
+#define BT_DBG_INT	pr_debug
+#endif
 __printf(1, 2)
 void bt_warn_ratelimited(const char *fmt, ...);
 __printf(1, 2)
 void bt_err_ratelimited(const char *fmt, ...);
 
-void bt_set_debug(bool enabled);
+#if IS_ENABLED(CONFIG_BT_FEATURE_DEBUG_FUNC_NAMES)
+#define BT_PREFIX "%s() "
+#define BT_PREFIX_PARAM ,__func__
+#define BT_DBG(fmt, ...)	\
+	BT_DBG_INT(BT_PREFIX fmt "\n", __func__, ##__VA_ARGS__)
+#else
+#define BT_PREFIX
+#define BT_PREFIX_PARAM
+#define BT_DBG(fmt, ...)	\
+	BT_DBG_INT(fmt "\n", ##__VA_ARGS__)
+#endif
 
-static inline const char *basename(const char *path)
-{
-	const char *str = strrchr(path, '/');
+#define BT_INFO(fmt, ...)	\
+	bt_info(BT_PREFIX fmt "\n" BT_PREFIX_PARAM, ##__VA_ARGS__)
+#define BT_WARN(fmt, ...)	\
+	bt_warn(BT_PREFIX fmt "\n" BT_PREFIX_PARAM, ##__VA_ARGS__)
+#define BT_ERR(fmt, ...)	\
+	bt_err(BT_PREFIX fmt "\n" BT_PREFIX_PARAM, ##__VA_ARGS__)
 
-	return str ? (str + 1) : path;
-}
-
-#define BT_INFO(fmt, ...)	bt_info("%s:%s() " fmt "\n",		\
-				basename(__FILE__), __func__, ##__VA_ARGS__)
-#define BT_WARN(fmt, ...)	bt_warn("%s:%s() " fmt "\n",		\
-				basename(__FILE__), __func__, ##__VA_ARGS__)
-#define BT_ERR(fmt, ...)	bt_err("%s:%s() " fmt "\n",		\
-				basename(__FILE__), __func__, ##__VA_ARGS__)
-#define BT_DBG(fmt, ...)	bt_dbg("%s:%s() " fmt "\n",		\
-				basename(__FILE__), __func__, ##__VA_ARGS__)
-
-#define BT_ERR_RATELIMITED(fmt, ...) bt_err_ratelimited(fmt "\n", ##__VA_ARGS__)
+#define BT_ERR_RATELIMITED(fmt, ...) \
+	bt_err_ratelimited(BT_PREFIX fmt "\n" BT_PREFIX_PARAM, ##__VA_ARGS__)
 
 #define bt_dev_info(hdev, fmt, ...)				\
 	BT_INFO("%s: " fmt, (hdev)->name, ##__VA_ARGS__)
@@ -169,7 +178,8 @@ static inline const char *basename(const char *path)
 	BT_DBG("%s: " fmt, (hdev)->name, ##__VA_ARGS__)
 
 #define bt_dev_warn_ratelimited(hdev, fmt, ...)			\
-	bt_warn_ratelimited("%s: " fmt, (hdev)->name, ##__VA_ARGS__)
+	bt_warn_ratelimited("%s: " BT_PREFIX fmt, (hdev)->name	\
+			    BT_PREFIX_PARAM, ##__VA_ARGS__)
 #define bt_dev_err_ratelimited(hdev, fmt, ...)			\
 	BT_ERR_RATELIMITED("%s: " fmt, (hdev)->name, ##__VA_ARGS__)
 

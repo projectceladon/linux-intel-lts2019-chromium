@@ -771,6 +771,15 @@ int geni_icc_set_bw(struct geni_se *se)
 }
 EXPORT_SYMBOL(geni_icc_set_bw);
 
+void geni_icc_set_tag(struct geni_se *se, u32 tag)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(se->icc_paths); i++)
+		icc_set_tag(se->icc_paths[i].path, tag);
+}
+EXPORT_SYMBOL(geni_icc_set_tag);
+
 /* To do: Replace this by icc_bulk_enable once it's implemented in ICC core */
 int geni_icc_enable(struct geni_se *se)
 {
@@ -808,6 +817,7 @@ EXPORT_SYMBOL(geni_icc_disable);
 
 void geni_remove_earlycon_icc_vote(void)
 {
+	struct platform_device *pdev;
 	struct geni_wrapper *wrapper;
 	struct device_node *parent;
 	struct device_node *child;
@@ -820,7 +830,12 @@ void geni_remove_earlycon_icc_vote(void)
 	for_each_child_of_node(parent, child) {
 		if (!of_device_is_compatible(child, "qcom,geni-se-qup"))
 			continue;
-		wrapper = platform_get_drvdata(of_find_device_by_node(child));
+
+		pdev = of_find_device_by_node(child);
+		if (!pdev)
+			continue;
+
+		wrapper = platform_get_drvdata(pdev);
 		icc_put(wrapper->to_core.path);
 		wrapper->to_core.path = NULL;
 
@@ -895,8 +910,8 @@ static int geni_se_probe(struct platform_device *pdev)
 	if (of_get_compatible_child(pdev->dev.of_node, "qcom,geni-debug-uart"))
 		earlycon_wrapper = wrapper;
 	of_node_put(pdev->dev.of_node);
-#endif
 exit:
+#endif
 	dev_set_drvdata(dev, wrapper);
 	dev_dbg(dev, "GENI SE Driver probed\n");
 	return devm_of_platform_populate(dev);
