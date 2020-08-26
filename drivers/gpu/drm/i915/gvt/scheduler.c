@@ -621,11 +621,11 @@ static void release_shadow_batch_buffer(struct intel_vgpu_workload *workload)
 	}
 }
 
-static int prepare_workload(struct intel_vgpu_workload *workload)
+static int
+intel_vgpu_shadow_mm_pin(struct intel_vgpu_workload *workload)
 {
 	struct intel_vgpu *vgpu = workload->vgpu;
-	struct intel_vgpu_submission *s = &vgpu->submission;
-	int ring = workload->ring_id;
+	struct intel_vgpu_mm *m;
 	int ret = 0;
 
 	ret = intel_vgpu_pin_mm(workload->shadow_mm);
@@ -640,12 +640,58 @@ static int prepare_workload(struct intel_vgpu_workload *workload)
 		return -EINVAL;
 	}
 
+	if (!list_empty(&workload->lri_shadow_mm)) {
+		list_for_each_entry(m, &workload->lri_shadow_mm,
+				    ppgtt_mm.link) {
+			ret = intel_vgpu_pin_mm(m);
+			if (ret) {
+				list_for_each_entry_from_reverse(m,
+								 &workload->lri_shadow_mm,
+								 ppgtt_mm.link)
+					intel_vgpu_unpin_mm(m);
+				gvt_vgpu_err("LRI shadow ppgtt fail to pin\n");
+				break;
+			}
+		}
+	}
+
+	if (ret)
+		intel_vgpu_unpin_mm(workload->shadow_mm);
+
+	return ret;
+}
+
+static void
+intel_vgpu_shadow_mm_unpin(struct intel_vgpu_workload *workload)
+{
+	struct intel_vgpu_mm *m;
+
+	if (!list_empty(&workload->lri_shadow_mm)) {
+		list_for_each_entry(m, &workload->lri_shadow_mm,
+				    ppgtt_mm.link)
+			intel_vgpu_unpin_mm(m);
+	}
+	intel_vgpu_unpin_mm(workload->shadow_mm);
+}
+
+static int prepare_workload(struct intel_vgpu_workload *workload)
+{
+	struct intel_vgpu *vgpu = workload->vgpu;
+	struct intel_vgpu_submission *s = &vgpu->submission;
+	int ret = 0;
+
+	ret = intel_vgpu_shadow_mm_pin(workload);
+	if (ret) {
+		gvt_vgpu_err("fail to pin shadow mm\n");
+		return ret;
+	}
+
 	update_shadow_pdps(workload);
 
 	if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
 		set_context_ppgtt_from_shadow(workload, workload->shadow_ctx);
 	else
-		set_context_ppgtt_from_shadow(workload, s->shadow[ring]);
+		set_context_ppgtt_from_shadow(workload, s->shadow[workload->ring_id]);
 
 	ret = intel_vgpu_sync_oos_pages(workload->vgpu);
 	if (ret) {
@@ -689,7 +735,7 @@ err_shadow_wa_ctx:
 err_shadow_batch:
 	release_shadow_batch_buffer(workload);
 err_unpin_mm:
-	intel_vgpu_unpin_mm(workload->shadow_mm);
+	intel_vgpu_shadow_mm_unpin(workload);
 	return ret;
 }
 
@@ -987,6 +1033,9 @@ static void complete_current_workload(struct intel_gvt *gvt, int ring_id)
 	}
 
 	workload->complete(workload);
+
+	intel_vgpu_shadow_mm_unpin(workload);
+	intel_vgpu_destroy_workload(workload);
 
 	atomic_dec(&s->running_workload_num);
 	wake_up(&scheduler->workload_complete_wq);
@@ -1410,6 +1459,16 @@ void intel_vgpu_destroy_workload(struct intel_vgpu_workload *workload)
 	release_shadow_batch_buffer(workload);
 	release_shadow_wa_ctx(&workload->wa_ctx);
 
+	if (!list_empty(&workload->lri_shadow_mm)) {
+		struct intel_vgpu_mm *m, *mm;
+		list_for_each_entry_safe(m, mm, &workload->lri_shadow_mm,
+					 ppgtt_mm.link) {
+			list_del(&m->ppgtt_mm.link);
+			intel_vgpu_mm_put(m);
+		}
+	}
+
+	GEM_BUG_ON(!list_empty(&workload->lri_shadow_mm));
 	if (workload->shadow_mm)
 		intel_vgpu_mm_put(workload->shadow_mm);
 
@@ -1428,6 +1487,7 @@ alloc_workload(struct intel_vgpu *vgpu)
 
 	INIT_LIST_HEAD(&workload->list);
 	INIT_LIST_HEAD(&workload->shadow_bb);
+	INIT_LIST_HEAD(&workload->lri_shadow_mm);
 
 	init_waitqueue_head(&workload->shadow_ctx_status_wq);
 	atomic_set(&workload->shadow_ctx_active, 0);
