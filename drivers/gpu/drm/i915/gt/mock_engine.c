@@ -326,7 +326,6 @@ int mock_engine_init(struct intel_engine_cs *engine)
 	intel_engine_init_breadcrumbs(engine);
 	intel_engine_init_execlists(engine);
 	intel_engine_init__pm(engine);
-	intel_engine_init_retire(engine);
 	intel_engine_pool_init(&engine->pool);
 
 	ce = create_kernel_context(engine);

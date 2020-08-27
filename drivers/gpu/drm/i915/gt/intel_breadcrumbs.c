@@ -29,7 +29,6 @@
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_gt_pm.h"
-#include "intel_gt_requests.h"
 
 static void irq_enable(struct intel_engine_cs *engine)
 {
@@ -131,17 +130,6 @@ __dma_fence_signal__notify(struct dma_fence *fence,
 	}
 }
 
-static void add_retire(struct intel_breadcrumbs *b, struct intel_timeline *tl)
-{
-	struct intel_engine_cs *engine =
-		container_of(b, struct intel_engine_cs, breadcrumbs);
-
-	if (unlikely(intel_engine_is_virtual(engine)))
-		engine = intel_virtual_engine_get_sibling(engine, 0);
-
-	intel_engine_add_retire(engine, tl);
-}
-
 static void signal_irq_work(struct irq_work *work)
 {
 	struct intel_breadcrumbs *b = container_of(work, typeof(*b), irq_work);
@@ -191,10 +179,8 @@ static void signal_irq_work(struct irq_work *work)
 		if (!list_is_first(pos, &ce->signals)) {
 			/* Advance the list to the first incomplete request */
 			__list_del_many(&ce->signals, pos);
-			if (&ce->signals == pos) { /* now empty */
+			if (&ce->signals == pos) /* now empty */
 				list_del_init(&ce->signal_link);
-				add_retire(b, ce->timeline);
-			}
 		}
 	}
 

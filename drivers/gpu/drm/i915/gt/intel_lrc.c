@@ -141,7 +141,6 @@
 #include "intel_engine_pm.h"
 #include "intel_gt.h"
 #include "intel_gt_pm.h"
-#include "intel_gt_requests.h"
 #include "intel_lrc_reg.h"
 #include "intel_mocs.h"
 #include "intel_reset.h"
@@ -1271,14 +1270,6 @@ __execlists_schedule_out(struct i915_request *rq,
 	 * schedule_out can race with schedule_in meaning that we should
 	 * refrain from doing non-trivial work here.
 	 */
-
-	/*
-	 * If we have just completed this context, the engine may now be
-	 * idle and we want to re-enter powersaving.
-	 */
-	if (list_is_last(&rq->link, &ce->timeline->requests) &&
-	    i915_request_completed(rq))
-		intel_engine_add_retire(engine, ce->timeline);
 
 	intel_engine_context_out(engine);
 	execlists_context_status_change(rq, INTEL_CONTEXT_SCHEDULE_OUT);
@@ -4955,6 +4946,7 @@ intel_execlists_create_virtual(struct intel_engine_cs **siblings,
 
 	intel_engine_init_active(&ve->base, ENGINE_VIRTUAL);
 	intel_engine_init_breadcrumbs(&ve->base);
+
 	intel_engine_init_execlists(&ve->base);
 	ve->base.breadcrumbs.irq_armed = true; /* fake HW, used for irq_work */
 
