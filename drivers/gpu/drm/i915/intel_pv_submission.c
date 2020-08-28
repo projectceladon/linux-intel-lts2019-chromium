@@ -52,13 +52,14 @@ static void pv_submit(struct intel_engine_cs *engine,
 		n++;
 	} while (out != end);
 
+	spin_lock(&pv->sub_lock[engine->id]);
 	pv_elsp->submitted = true;
 	writel(PV_ACTION_ELSP_SUBMISSION, execlists->submit_reg);
 
 #define done (READ_ONCE(pv_elsp->submitted) == false)
 	err = wait_for_atomic_us(done, 1000);
 #undef done
-
+	spin_unlock(&pv->sub_lock[engine->id]);
 	if (unlikely(err))
 		DRM_ERROR("PV (%s) workload submission failed\n", engine->name);
 

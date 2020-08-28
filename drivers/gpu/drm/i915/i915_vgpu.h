@@ -174,6 +174,7 @@ struct i915_virtual_gpu_pv {
 
        /* per engine PV workload submission data */
 	   struct pv_submission *pv_elsp[I915_NUM_ENGINES];
+	   spinlock_t sub_lock[I915_NUM_ENGINES];
 
        /* PV command buffer support */
        struct vgpu_pv_ct_buffer ctb;

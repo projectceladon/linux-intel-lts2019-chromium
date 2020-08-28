@@ -880,6 +880,7 @@ static int intel_vgpu_setup_shared_page(struct drm_i915_private *dev_priv,
 	for (i = 0; i < I915_NUM_ENGINES; i++) {
 		pv->pv_elsp[i] = (void *)base + PV_ELSP_OFF +  size * i;
 		pv->pv_elsp[i]->submitted = false;
+		spin_lock_init(&pv->sub_lock[i]);
 	}
 
 	/* setup PV irq data area */
