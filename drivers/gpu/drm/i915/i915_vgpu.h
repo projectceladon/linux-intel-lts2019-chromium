@@ -31,10 +31,10 @@
 
 #define PV_MAJOR               1
 #define PV_MINOR               0
-#define PV_MAX_ENGINES_NUM     (VECS1_HW + 1)
-#define PV_INTERRUPT_OFF (PAGE_SIZE/256)
-#define PV_ELSP_OFF            (PAGE_SIZE/8)
-#define PV_DESC_OFF            (PAGE_SIZE/4)
+//#define PV_MAX_ENGINES_NUM     (VECS1_HW + 1)
+#define PV_INTERRUPT_OFF (PAGE_SIZE/8)
+#define PV_ELSP_OFF            (PAGE_SIZE/4)
+#define PV_DESC_OFF            (PAGE_SIZE/256)
 #define PV_CMD_OFF             (PAGE_SIZE/2)
 
 /* ISR */

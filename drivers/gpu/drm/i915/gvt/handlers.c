@@ -1223,7 +1223,6 @@ static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 {
 	struct drm_i915_private *i915 = vgpu->gvt->dev_priv;
 	struct intel_vgpu_shadow_context *sctx;
-	struct i915_ppgtt *ppgtt;
 	struct intel_engine_cs *engine;
 	struct intel_context *ce;
 	u32 id = pvctx->eng_id;
@@ -1233,19 +1232,11 @@ static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 	if (!sctx)
 		return -ENOMEM;
 
-	ppgtt = i915_ppgtt_create(&i915->gt);
-	if (IS_ERR(ppgtt))
-		return -ENOMEM;
-
-	sctx->i915_context_pml4 = px_dma(ppgtt->pd);
-
 	engine = i915->engine[id];
 	ce = intel_context_create(engine);
 	if (IS_ERR(ce))
 		goto out;
 
-	i915_vm_put(ce->vm);
-	ce->vm = i915_vm_get(&ppgtt->vm);
 	intel_context_set_single_submission(ce);
 
 	/* Max ring buffer size */
@@ -1269,8 +1260,6 @@ static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
 	list_add_tail(&sctx->list, &vgpu->submission.shadow_ctxs[id]);
 	return ret;
 out:
-	px_dma(ppgtt->pd) = sctx->i915_context_pml4;
-	i915_vm_put(&ppgtt->vm);
 	return -ENOMEM;
 }
 
@@ -1306,7 +1295,6 @@ static void intel_vgpu_destroy_shadow_ctx(struct intel_vgpu *vgpu,
 	if (!sctx) {
 		return;
 	}
-	i915_vm_put(sctx->ce->vm);
 	intel_context_unpin(sctx->ce);
 	list_del(&sctx->list);
 	kfree(sctx);
@@ -2036,11 +2024,9 @@ static int handle_pv_submission(struct intel_vgpu *vgpu,
 	u32 submitted_off = offsetof(struct pv_submission, submitted);
 	bool submitted = false;
 	int i, ret;
-
 	execlist = &vgpu->submission.execlist[ring_id];
 	if (intel_gvt_read_shared_page(vgpu, base, &pv_data, sizeof(pv_data)))
 		return -EINVAL;
-
 	memcpy(&execlist->elsp_dwords.data, &pv_data.descs, 16);
 
 	desc[0] = get_desc_from_elsp_dwords(&execlist->elsp_dwords, 0);
@@ -2096,7 +2082,6 @@ static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 
 	if (WARN_ON(ring_id < 0 || ring_id >= I915_NUM_ENGINES))
 		return -EINVAL;
-
 	if (intel_vgpu_enabled_pv_cap(vgpu, PV_SUBMISSION) &&
 			data == PV_ACTION_ELSP_SUBMISSION)
 		return handle_pv_submission(vgpu, vgpu->gvt->dev_priv->engine[ring_id], ring_id);

@@ -404,6 +404,7 @@ static int vgpu_pv_vma_action(struct i915_vma *vma,
        if (1 + size > ARRAY_SIZE(data))
                return -EIO;
 
+	   memset(&pvvma, 0, sizeof(pvvma));
        num_pages = vma->node.size >> PAGE_SHIFT;
        pvvma.size = num_pages;
        pvvma.start = vma->node.start;
@@ -427,8 +428,10 @@ static int vgpu_pv_vma_action(struct i915_vma *vma,
        for_each_sgt_daddr(addr, sgt_iter, vma->pages) {
                gpas[i++] = addr | pte_flag;
        }
-       if (num_pages != i)
-               pvvma.size = i;
+       //if (num_pages != i)
+       //        pvvma.size = i;
+	   while (i < num_pages)
+		   gpas[i++] = vma->vm->scratch[0].encode;
 out:
        data[0] = action;
        memcpy(&data[1], &pvvma, sizeof(pvvma));
@@ -491,7 +494,7 @@ static int ppgtt_bind_vma_pv(struct i915_vma *vma,
        if (i915_gem_object_is_readonly(vma->obj))
                pte_flags |= PTE_READ_ONLY;
 
-	   pte_encode = gen8_pte_encode(0, cache_level, flags);
+	   pte_encode = gen8_pte_encode(0, cache_level, pte_flags);
 
        GEM_BUG_ON(!test_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)));
 
@@ -526,7 +529,7 @@ static int ggtt_bind_vma_pv(struct i915_vma *vma,
 	if (i915_gem_object_is_readonly(obj))
 		pte_flags |= PTE_READ_ONLY;
 
-	pte_flags = vma->vm->pte_encode(0, cache_level, flags);
+	pte_flags = vma->vm->pte_encode(0, cache_level, 0);
 	ret = vgpu_pv_vma_action(vma, PV_ACTION_GGTT_BIND, 0, pte_flags);
 	vma->page_sizes.gtt = I915_GTT_PAGE_SIZE;
 
@@ -593,7 +596,7 @@ void intel_vgpu_config_pv_caps(struct drm_i915_private *dev_priv,
 		ggtt = (struct i915_ggtt *)data;
 		ggtt->vm.insert_entries = gen8_ggtt_insert_entries_pv;
 		ggtt->vm.vma_ops.bind_vma    = ggtt_bind_vma_pv;
-		ggtt->vm.vma_ops.unbind_vma  = ggtt_unbind_vma_pv;
+		// ggtt->vm.vma_ops.unbind_vma  = ggtt_unbind_vma_pv;
 	}
 
 	if (cap == PV_SUBMISSION) {

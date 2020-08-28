@@ -67,9 +67,9 @@ static void pv_submit(struct intel_engine_cs *engine,
 
 static struct i915_request *schedule_in(struct i915_request *rq, int idx)
 {
-	trace_i915_request_in(rq, idx);
+	// trace_i915_request_in(rq, idx);
 
-	intel_gt_pm_get(rq->engine->gt);
+	__intel_gt_pm_get(rq->engine->gt);
 	return i915_request_get(rq);
 }
 
@@ -130,9 +130,9 @@ done:
 
 static void schedule_out(struct i915_request *rq)
 {
-	trace_i915_request_out(rq);
+	//trace_i915_request_out(rq);
 
-	intel_gt_pm_put(rq->engine->gt);
+	intel_gt_pm_put_async(rq->engine->gt);
 	i915_request_put(rq);
 }
 
