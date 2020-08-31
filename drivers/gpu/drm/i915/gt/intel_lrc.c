@@ -4222,6 +4222,7 @@ void intel_execlists_set_default_submission(struct intel_engine_cs *engine)
 			engine->flags |= I915_ENGINE_HAS_PREEMPTION;
 	} else {
 		intel_vgpu_config_pv_caps(engine->i915, PV_SUBMISSION, engine);
+		intel_vgpu_config_pv_caps(engine->i915,  PV_HW_CONTEXT, engine);
 	}
 
 	if (INTEL_GEN(engine->i915) >= 12)

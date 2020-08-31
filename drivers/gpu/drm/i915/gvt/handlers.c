@@ -2027,12 +2027,11 @@ static int submit_context_pv(struct intel_vgpu *vgpu,
 	((struct execlist_ctx_descriptor_format *)&((ed)->data[i * 2]))
 
 static int handle_pv_submission(struct intel_vgpu *vgpu,
-		const struct intel_engine_cs *engine)
+		const struct intel_engine_cs *engine, u32 ring_id)
 {
 	struct intel_vgpu_execlist *execlist;
 	struct pv_submission pv_data;
 	struct execlist_ctx_descriptor_format *desc[2];
-	u32 ring_id = engine->id;
 	u32 base = PV_ELSP_OFF + ring_id * sizeof(struct pv_submission);
 	u32 submitted_off = offsetof(struct pv_submission, submitted);
 	bool submitted = false;
@@ -2100,7 +2099,7 @@ static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 
 	if (intel_vgpu_enabled_pv_cap(vgpu, PV_SUBMISSION) &&
 			data == PV_ACTION_ELSP_SUBMISSION)
-		return handle_pv_submission(vgpu, vgpu->gvt->dev_priv->engine[ring_id]);
+		return handle_pv_submission(vgpu, vgpu->gvt->dev_priv->engine[ring_id], ring_id);
 
 	execlist = &vgpu->submission.execlist[ring_id];
 

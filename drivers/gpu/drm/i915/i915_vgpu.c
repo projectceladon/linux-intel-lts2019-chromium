@@ -50,6 +50,30 @@
  *
  */
 
+static u64 gen8_pte_encode(dma_addr_t addr,
+			   enum i915_cache_level level,
+			   u32 flags)
+{
+	gen8_pte_t pte = addr | _PAGE_PRESENT | _PAGE_RW;
+
+	if (unlikely(flags & PTE_READ_ONLY))
+		pte &= ~_PAGE_RW;
+
+	switch (level) {
+	case I915_CACHE_NONE:
+		pte |= PPAT_UNCACHED;
+		break;
+	case I915_CACHE_WT:
+		pte |= PPAT_DISPLAY_ELLC;
+		break;
+	default:
+		pte |= PPAT_CACHED;
+		break;
+	}
+
+	return pte;
+}
+
 /**
  * i915_detect_vgpu - detect virtual GPU
  * @dev_priv: i915 device private
@@ -467,7 +491,7 @@ static int ppgtt_bind_vma_pv(struct i915_vma *vma,
        if (i915_gem_object_is_readonly(vma->obj))
                pte_flags |= PTE_READ_ONLY;
 
-       pte_encode = vma->vm->pte_encode(0, cache_level, pte_flags);
+	   pte_encode = gen8_pte_encode(0, cache_level, flags);
 
        GEM_BUG_ON(!test_bit(I915_VMA_ALLOC_BIT, __i915_vma_flags(vma)));
 
@@ -856,7 +880,6 @@ static int intel_vgpu_setup_shared_page(struct drm_i915_private *dev_priv,
 	for (i = 0; i < I915_NUM_ENGINES; i++) {
 		pv->pv_elsp[i] = (void *)base + PV_ELSP_OFF +  size * i;
 		pv->pv_elsp[i]->submitted = false;
-		spin_lock_init(&pv->pv_elsp[i]->lock);
 	}
 
 	/* setup PV irq data area */
