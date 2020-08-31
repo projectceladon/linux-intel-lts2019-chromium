@@ -80,6 +80,7 @@ struct intel_shadow_wa_ctx {
 struct intel_vgpu_workload {
 	struct intel_vgpu *vgpu;
 	int ring_id;
+	struct intel_context *shadow_ctx;
 	struct i915_request *req;
 	/* if this workload has been dispatched to i915? */
 	bool dispatched;
@@ -87,6 +88,7 @@ struct intel_vgpu_workload {
 	int status;
 
 	struct intel_vgpu_mm *shadow_mm;
+	struct list_head lri_shadow_mm; /* For PPGTT load cmd */
 
 	/* different submission model may need different handler */
 	int (*prepare)(struct intel_vgpu_workload *);
@@ -156,11 +158,14 @@ intel_vgpu_execlist_submission_ops;
 
 struct intel_vgpu_workload *
 intel_vgpu_create_workload(struct intel_vgpu *vgpu, int ring_id,
-			   struct execlist_ctx_descriptor_format *desc);
+			   struct execlist_ctx_descriptor_format *desc,
+			   u64 ctx_gpa);
 
 void intel_vgpu_destroy_workload(struct intel_vgpu_workload *workload);
 
 void intel_vgpu_clean_workloads(struct intel_vgpu *vgpu,
 				intel_engine_mask_t engine_mask);
-
+void intel_vgpu_clean_shadow_ctx(struct intel_vgpu *vgpu);
+struct intel_vgpu_shadow_context * intel_vgpu_find_shadow_context(
+               struct intel_vgpu *vgpu, u64 ctx_gpa, u32 id);
 #endif

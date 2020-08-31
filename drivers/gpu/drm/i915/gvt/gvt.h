@@ -49,6 +49,8 @@
 #include "fb_decoder.h"
 #include "dmabuf.h"
 #include "page_track.h"
+#include "i915_vgpu.h"
+#include "i915_pvinfo.h"
 
 #define GVT_MAX_VGPU 8
 
@@ -139,6 +141,21 @@ enum {
 	INTEL_VGPU_GUC_SUBMISSION,
 };
 
+struct intel_vgpu_shadow_context {
+	struct intel_vgpu *vgpu;
+	struct intel_context *ce;
+	u64 i915_context_pml4;
+
+	u32 eng_id;
+	u64 ctx_gpa;
+	u64 guest_lrca;
+
+	struct kref ref;
+	atomic_t pincount;
+
+	struct list_head list;
+};
+
 struct intel_vgpu_submission_ops {
 	const char *name;
 	int (*init)(struct intel_vgpu *vgpu, intel_engine_mask_t engine_mask);
@@ -149,6 +166,7 @@ struct intel_vgpu_submission_ops {
 struct intel_vgpu_submission {
 	struct intel_vgpu_execlist execlist[I915_NUM_ENGINES];
 	struct list_head workload_q_head[I915_NUM_ENGINES];
+	struct list_head shadow_ctxs[I915_NUM_ENGINES];
 	struct intel_context *shadow[I915_NUM_ENGINES];
 	struct kmem_cache *workloads;
 	atomic_t running_workload_num;
@@ -229,6 +247,9 @@ struct intel_vgpu {
 	struct completion vblank_done;
 
 	u32 scan_nonprivbb;
+	u32 pv_caps;
+	u64 shared_page_gpa;
+	bool shared_page_enabled;
 };
 
 /* validating GM healthy status*/
@@ -542,6 +563,12 @@ static inline u64 intel_vgpu_get_bar_gpa(struct intel_vgpu *vgpu, int bar)
 			PCI_BASE_ADDRESS_MEM_MASK;
 }
 
+static inline bool intel_vgpu_enabled_pv_cap(struct intel_vgpu *vgpu,
+		enum pv_caps cap)
+{
+	return vgpu->shared_page_enabled && (vgpu->pv_caps & cap);
+}
+
 void intel_vgpu_clean_opregion(struct intel_vgpu *vgpu);
 int intel_vgpu_init_opregion(struct intel_vgpu *vgpu);
 int intel_vgpu_opregion_base_write_handler(struct intel_vgpu *vgpu, u32 gpa);
@@ -690,7 +717,10 @@ void intel_gvt_debugfs_add_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_debugfs_remove_vgpu(struct intel_vgpu *vgpu);
 void intel_gvt_debugfs_init(struct intel_gvt *gvt);
 void intel_gvt_debugfs_clean(struct intel_gvt *gvt);
-
+int intel_gvt_read_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len);
+int intel_gvt_write_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len);
 
 #include "trace.h"
 #include "mpt.h"

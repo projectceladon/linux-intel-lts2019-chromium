@@ -51,6 +51,7 @@
 #include "i915_irq.h"
 #include "i915_trace.h"
 #include "intel_pm.h"
+#include "i915_vgpu.h"
 
 /**
  * DOC: interrupt handling
@@ -2514,6 +2515,66 @@ static irqreturn_t gen11_irq_handler(int irq, void *arg)
 				   gen11_master_intr_enable);
 }
 
+static void __engine_mem_irq_handler(struct intel_engine_cs *engine, u8 *status)
+{
+	struct intel_gt __maybe_unused *gt = engine->gt;
+
+	if (READ_ONCE(status[ilog2(GT_RENDER_USER_INTERRUPT)]) == 0xFF) {
+		WRITE_ONCE(status[ilog2(GT_RENDER_USER_INTERRUPT)], 0x00);
+		intel_engine_signal_breadcrumbs(engine);
+		tasklet_hi_schedule(&engine->execlists.tasklet);
+	}
+}
+
+static irqreturn_t vgpu_irq_handler(int irq, void *arg)
+{
+	struct drm_i915_private * const dev_priv = arg;
+	struct intel_gt *gt = &dev_priv->gt;
+	struct i915_virtual_gpu_pv *pv = dev_priv->vgpu.pv;
+	u8 *vgpu_irq = pv->irq;
+	void __iomem * const regs = dev_priv->uncore.regs;
+	u32 master_ctl;
+	u8 * const source_base = vgpu_irq + VGPU_IRQ_SOURCE;
+	u8 * const status_base = vgpu_irq + VGPU_IRQ_STATUS;
+	u8 *source, value;
+	struct intel_engine_cs *engine;
+	enum intel_engine_id id;
+
+	if (!intel_irqs_enabled(dev_priv))
+		return IRQ_NONE;
+
+	if (!(dev_priv->vgpu.pv_caps & PV_INTERRUPT))
+		return gen8_irq_handler(irq, arg);
+
+	/* active gt engines */
+	for_each_engine(engine, gt, id) {
+		source = source_base + engine->id;
+		value = READ_ONCE(*source);
+		if (value == 0xff) {
+			WRITE_ONCE(*source, 0x00);
+			__engine_mem_irq_handler(engine, status_base +
+					engine->id * SZ_16);
+		}
+	}
+
+	/* display interrupt */
+	master_ctl = gen8_master_intr_disable(regs);
+	if (!master_ctl) {
+		gen8_master_intr_enable(regs);
+		return IRQ_HANDLED;
+	}
+
+	if (master_ctl & ~GEN8_GT_IRQS) {
+		disable_rpm_wakeref_asserts(&dev_priv->runtime_pm);
+		gen8_de_irq_handler(dev_priv, master_ctl);
+		enable_rpm_wakeref_asserts(&dev_priv->runtime_pm);
+	}
+	gen8_master_intr_enable(regs);
+
+	return IRQ_HANDLED;
+}
+
+
 /* Called from drm generic code, passed 'crtc' which
  * we use as a pipe index
  */
@@ -3964,6 +4025,8 @@ static irq_handler_t intel_irq_handler(struct drm_i915_private *dev_priv)
 		else
 			return i8xx_irq_handler;
 	} else {
+		if (intel_vgpu_active(dev_priv))
+			return vgpu_irq_handler;
 		if (INTEL_GEN(dev_priv) >= 11)
 			return gen11_irq_handler;
 		else if (INTEL_GEN(dev_priv) >= 8)

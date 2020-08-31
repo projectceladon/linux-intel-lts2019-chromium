@@ -47,6 +47,12 @@ void populate_pvinfo_page(struct intel_vgpu *vgpu)
 	vgpu_vreg_t(vgpu, vgtif_reg(vgt_caps)) = VGT_CAPS_FULL_PPGTT;
 	vgpu_vreg_t(vgpu, vgtif_reg(vgt_caps)) |= VGT_CAPS_HWSP_EMULATION;
 	vgpu_vreg_t(vgpu, vgtif_reg(vgt_caps)) |= VGT_CAPS_HUGE_GTT;
+	vgpu_vreg_t(vgpu, vgtif_reg(vgt_caps)) |= VGT_CAPS_PV;
+
+	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) = PV_PPGTT | PV_GGTT;
+	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_SUBMISSION;
+	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_HW_CONTEXT;
+	vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) |= PV_INTERRUPT;
 
 	vgpu_vreg_t(vgpu, vgtif_reg(avail_rs.mappable_gmadr.base)) =
 		vgpu_aperture_gmadr_base(vgpu);
@@ -61,6 +67,8 @@ void populate_pvinfo_page(struct intel_vgpu *vgpu)
 
 	vgpu_vreg_t(vgpu, vgtif_reg(cursor_x_hot)) = UINT_MAX;
 	vgpu_vreg_t(vgpu, vgtif_reg(cursor_y_hot)) = UINT_MAX;
+
+	vgpu_vreg64_t(vgpu, vgtif_reg(shared_page_gpa)) = 0;
 
 	gvt_dbg_core("Populate PVINFO PAGE for vGPU %d\n", vgpu->id);
 	gvt_dbg_core("aperture base [GMADR] 0x%llx size 0x%llx\n",
@@ -258,6 +266,7 @@ void intel_gvt_release_vgpu(struct intel_vgpu *vgpu)
 	mutex_lock(&vgpu->vgpu_lock);
 	intel_vgpu_clean_workloads(vgpu, ALL_ENGINES);
 	intel_vgpu_dmabuf_cleanup(vgpu);
+	intel_vgpu_clean_shadow_ctx(vgpu);
 	mutex_unlock(&vgpu->vgpu_lock);
 }
 
@@ -593,4 +602,45 @@ void intel_gvt_reset_vgpu(struct intel_vgpu *vgpu)
 	mutex_lock(&vgpu->vgpu_lock);
 	intel_gvt_reset_vgpu_locked(vgpu, true, 0);
 	mutex_unlock(&vgpu->vgpu_lock);
+}
+
+/**
+ * intel_gvt_read_shared_page - read content from shared page
+ */
+int intel_gvt_read_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len)
+{
+	int ret = -EINVAL;
+	unsigned long gpa;
+
+	if (offset >= PAGE_SIZE)
+		goto err;
+
+	gpa = vgpu->shared_page_gpa + offset;
+	ret = intel_gvt_hypervisor_read_gpa(vgpu, gpa, buf, len);
+	if (!ret)
+		return ret;
+err:
+	gvt_vgpu_err("read shared page (offset %x) failed", offset);
+	memset(buf, 0, len);
+	return ret;
+}
+
+int intel_gvt_write_shared_page(struct intel_vgpu *vgpu,
+		unsigned int offset, void *buf, unsigned long len)
+{
+	int ret = -EINVAL;
+	unsigned long gpa;
+
+	if (offset >= PAGE_SIZE)
+		goto err;
+
+	gpa = vgpu->shared_page_gpa + offset;
+	ret = intel_gvt_hypervisor_write_gpa(vgpu, gpa, buf, len);
+	if (!ret)
+		return ret;
+err:
+	gvt_vgpu_err("write shared page (offset %x) failed", offset);
+	memset(buf, 0, len);
+	return ret;
 }

@@ -39,6 +39,8 @@
 #include "i915_drv.h"
 #include "gvt.h"
 #include "i915_pvinfo.h"
+#include "gt/intel_context.h"
+#include "execlist.h"
 
 /* XXX FIXME i915 has changed PP_XXX definition */
 #define PCH_PP_STATUS  _MMIO(0xc7200)
@@ -839,7 +841,6 @@ static int trigger_aux_channel_interrupt(struct intel_vgpu *vgpu,
 		WARN_ON(true);
 		return -EINVAL;
 	}
-
 	intel_vgpu_trigger_virtual_event(vgpu, event);
 	return 0;
 }
@@ -1202,6 +1203,9 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 		break;
 	case 0x78010:	/* vgt_caps */
 	case 0x7881c:
+	case _vgtif_reg(pv_caps):
+	case _vgtif_reg(shared_page_gpa):
+	case _vgtif_reg(shared_page_gpa) + 4:
 		break;
 	default:
 		invalid_read = true;
@@ -1214,11 +1218,280 @@ static int pvinfo_mmio_read(struct intel_vgpu *vgpu, unsigned int offset,
 	return 0;
 }
 
+static int intel_vgpu_create_shadow_ctx(struct intel_vgpu *vgpu,
+		struct pv_hwctx *pvctx)
+{
+	struct drm_i915_private *i915 = vgpu->gvt->dev_priv;
+	struct intel_vgpu_shadow_context *sctx;
+	struct intel_engine_cs *engine;
+	struct intel_context *ce;
+	u32 id = pvctx->eng_id;
+	int ret;
+
+	sctx = kzalloc(sizeof(*sctx), GFP_KERNEL);
+	if (!sctx)
+		return -ENOMEM;
+
+	engine = i915->engine[id];
+	ce = intel_context_create(engine);
+	if (IS_ERR(ce))
+		goto out;
+
+	intel_context_set_single_submission(ce);
+
+	/* Max ring buffer size */
+	if (!intel_uc_uses_guc_submission(&engine->gt->uc)) {
+		const unsigned int ring_size = 512 * SZ_4K;
+
+		ce->ring = __intel_context_ring_size(ring_size);
+	}
+
+	ret = intel_context_pin(ce);
+	intel_context_put(ce);
+	if (ret)
+		goto out;
+
+	INIT_LIST_HEAD(&sctx->list);
+	sctx->vgpu = vgpu;
+	sctx->ce = ce;
+	sctx->ctx_gpa = pvctx->ctx_gpa;
+	sctx->eng_id = id;
+
+	list_add_tail(&sctx->list, &vgpu->submission.shadow_ctxs[id]);
+	return ret;
+out:
+	return -ENOMEM;
+}
+
+struct intel_vgpu_shadow_context * intel_vgpu_find_shadow_context(
+		struct intel_vgpu *vgpu, u64 ctx_gpa, u32 id)
+{
+	struct intel_vgpu_shadow_context *sctx = NULL;
+	struct list_head *pos;
+	bool found = false;
+
+	list_for_each(pos, &vgpu->submission.shadow_ctxs[id]) {
+		sctx = container_of(pos, struct intel_vgpu_shadow_context, list);
+		if (sctx->ctx_gpa == ctx_gpa) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found) {
+		return NULL;
+	}
+	return sctx;
+}
+
+static void intel_vgpu_destroy_shadow_ctx(struct intel_vgpu *vgpu,
+		struct pv_hwctx *pvctx)
+{
+	struct intel_vgpu_shadow_context *sctx = NULL;
+	u32 id = pvctx->eng_id;
+
+	sctx = intel_vgpu_find_shadow_context(vgpu, pvctx->ctx_gpa, id);
+
+	if (!sctx) {
+		return;
+	}
+	intel_context_unpin(sctx->ce);
+	list_del(&sctx->list);
+	kfree(sctx);
+}
+
+int intel_vgpu_handle_pv_hwctx(struct intel_vgpu *vgpu,
+		 u32 action, u32 data[])
+{
+	int ret = 0;
+	struct pv_hwctx *pv_ctx = (struct pv_hwctx *)data;
+
+	switch(action) {
+	case PV_ACTION_HWCTX_ALLOC:
+		intel_vgpu_create_shadow_ctx(vgpu, pv_ctx);
+		break;
+	case PV_ACTION_HWCTX_PIN:
+		break;
+	case PV_ACTION_HWCTX_UNPIN:
+		break;
+	case PV_ACTION_HWCTX_RESET:
+		break;
+	case PV_ACTION_HWCTX_DESTROY:
+		intel_vgpu_destroy_shadow_ctx(vgpu, pv_ctx);
+		break;
+	}
+	return ret;
+}
+
+static inline unsigned int ct_header_get_len(u32 header)
+{
+	return (header >> PV_CT_MSG_LEN_SHIFT) & PV_CT_MSG_LEN_MASK;
+}
+
+static inline unsigned int ct_header_get_action(u32 header)
+{
+	return (header >> PV_CT_MSG_ACTION_SHIFT) & PV_CT_MSG_ACTION_MASK;
+}
+
+static int fetch_pv_command_buffer(struct intel_vgpu *vgpu,
+		struct vgpu_pv_ct_buffer_desc *desc,
+		u32 *fence, u32 *action, u32 *data)
+{
+	u32 head, tail, len, size, off;
+	u32 cmd_head;
+	u32 avail;
+	u32 ret;
+
+	/* fetch command descriptor */
+	off = PV_DESC_OFF;
+	ret = intel_gvt_read_shared_page(vgpu, off, desc, sizeof(*desc));
+	if (ret)
+		return ret;
+
+	GEM_BUG_ON(desc->size % 4);
+	GEM_BUG_ON(desc->head % 4);
+	GEM_BUG_ON(desc->tail % 4);
+	GEM_BUG_ON(tail >= size);
+	GEM_BUG_ON(head >= size);
+
+	/* tail == head condition indicates empty */
+	head = desc->head/4;
+	tail = desc->tail/4;
+	size = desc->size/4;
+
+	if (unlikely((tail - head) == 0))
+		return -ENODATA;
+
+	/* fetch command head */
+	off = desc->addr + head * 4;
+	ret = intel_gvt_read_shared_page(vgpu, off, &cmd_head, 4);
+	head = (head + 1) % size;
+	if (ret)
+		goto err;
+
+	len = ct_header_get_len(cmd_head) - 1;
+	*action = ct_header_get_action(cmd_head);
+
+	/* fetch command fence */
+	off = desc->addr + head * 4;
+	ret = intel_gvt_read_shared_page(vgpu, off, fence, 4);
+	head = (head + 1) % size;
+	if (ret)
+		goto err;
+
+	/* no command data */
+	if (len == 0)
+		goto err;
+
+	/* fetch command data */
+	avail = size - head;
+	if (len <= avail) {
+		off =  desc->addr + head * 4;
+		ret = intel_gvt_read_shared_page(vgpu, off, data, len * 4);
+		head = (head + len) % size;
+		if (ret)
+			goto err;
+	} else {
+		/* swap case */
+		off =  desc->addr + head * 4;
+		ret = intel_gvt_read_shared_page(vgpu, off, data, avail * 4);
+		head = (head + avail) % size;
+		if (ret)
+			goto err;
+
+		off = desc->addr;
+		ret = intel_gvt_read_shared_page(vgpu, off, &data[avail],
+				(len - avail) * 4);
+		head = (head + len - avail) % size;
+		if (ret)
+			goto err;
+	}
+
+err:
+	desc->head = head * 4;
+	return ret;
+}
+
+static int handle_pv_actions(struct intel_vgpu *vgpu)
+{
+	struct vgpu_pv_ct_buffer_desc desc;
+	struct intel_vgpu_mm *mm;
+	struct pv_vma *vma;
+	u64 pdp, start, length;
+	u32 fence, action;
+	u32 data[32];
+	int ret;
+
+	ret = fetch_pv_command_buffer(vgpu, &desc, &fence, &action, data);
+	if (ret)
+		return ret;
+
+	switch (action) {
+	case PV_ACTION_PPGTT_L4_ALLOC:
+	case PV_ACTION_PPGTT_L4_CLEAR:
+	case PV_ACTION_PPGTT_L4_INSERT:
+	case PV_ACTION_PPGTT_BIND:
+	case PV_ACTION_PPGTT_UNBIND:
+		vma = (struct pv_vma *)data;
+		pdp = vma->pml4;
+		start = vma->start;
+		length = vma->size << PAGE_SHIFT;
+		mm = intel_vgpu_find_ppgtt_mm(vgpu, &pdp);
+		if (!mm) {
+			gvt_vgpu_err("failed to find pdp 0x%llx\n", pdp);
+			ret = -EINVAL;
+			enter_failsafe_mode(vgpu, GVT_FAILSAFE_GUEST_ERR);
+		}
+
+		if (action == PV_ACTION_PPGTT_L4_ALLOC) {
+			ret = mm->ppgtt->vm.allocate_va_range(&mm->ppgtt->vm,
+					start, length);
+			if (ret)
+				gvt_vgpu_err("failed to alloc %llx\n", pdp);
+			break;
+		}
+
+		if (action == PV_ACTION_PPGTT_L4_CLEAR) {
+			mm->ppgtt->vm.clear_range(&mm->ppgtt->vm,
+					start, length);
+			break;
+		}
+
+		ret = intel_vgpu_handle_pv_vma(vgpu, mm, action, data);
+		break;
+	case PV_ACTION_GGTT_INSERT:
+	case PV_ACTION_GGTT_BIND:
+	case PV_ACTION_GGTT_UNBIND:
+		ret = intel_vgpu_handle_pv_vma(vgpu, NULL, action, data);
+		break;
+	case PV_ACTION_HWCTX_ALLOC:
+	case PV_ACTION_HWCTX_PIN:
+	case PV_ACTION_HWCTX_UNPIN:
+	case PV_ACTION_HWCTX_RESET:
+	case PV_ACTION_HWCTX_DESTROY:
+		ret = intel_vgpu_handle_pv_hwctx(vgpu, action, data);
+	default:
+		break;
+	}
+
+	/* write command descriptor back */
+	desc.fence = fence;
+	desc.status = ret;
+
+	ret = intel_gvt_write_shared_page(vgpu, PV_DESC_OFF,
+			&desc, sizeof(desc));
+	return ret;
+}
+
 static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 {
 	enum intel_gvt_gtt_type root_entry_type = GTT_TYPE_PPGTT_ROOT_L4_ENTRY;
 	struct intel_vgpu_mm *mm;
 	u64 *pdps;
+	unsigned long gpa, gfn;
+	u16 ver_major = PV_MAJOR;
+	u16 ver_minor = PV_MINOR;
+	int ret = 0;
 
 	pdps = (u64 *)&vgpu_vreg64_t(vgpu, vgtif_reg(pdp[0]));
 
@@ -1232,6 +1505,22 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	case VGT_G2V_PPGTT_L3_PAGE_TABLE_DESTROY:
 	case VGT_G2V_PPGTT_L4_PAGE_TABLE_DESTROY:
 		return intel_vgpu_put_ppgtt_mm(vgpu, pdps);
+	case VGT_G2V_SHARED_PAGE_SETUP:
+		gpa = vgpu_vreg64_t(vgpu, vgtif_reg(shared_page_gpa));
+		gfn = gpa >> PAGE_SHIFT;
+		if (!intel_gvt_hypervisor_is_valid_gfn(vgpu, gfn)) {
+			vgpu_vreg_t(vgpu, vgtif_reg(pv_caps)) = 0;
+			return 0;
+		}
+		vgpu->shared_page_gpa = gpa;
+		vgpu->shared_page_enabled = true;
+
+		intel_gvt_write_shared_page(vgpu, 0, &ver_major, 2);
+		intel_gvt_write_shared_page(vgpu, 2, &ver_minor, 2);
+		break;
+	case VGT_G2V_PV_SEND_TRIGGER:
+		ret = handle_pv_actions(vgpu);
+		break;
 	case VGT_G2V_EXECLIST_CONTEXT_CREATE:
 	case VGT_G2V_EXECLIST_CONTEXT_DESTROY:
 	case 1:	/* Remove this in guest driver. */
@@ -1239,7 +1528,7 @@ static int handle_g2v_notification(struct intel_vgpu *vgpu, int notification)
 	default:
 		gvt_vgpu_err("Invalid PV notification %d\n", notification);
 	}
-	return 0;
+	return ret;
 }
 
 static int send_display_ready_uevent(struct intel_vgpu *vgpu, int ready)
@@ -1272,6 +1561,10 @@ static int pvinfo_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 	case _vgtif_reg(g2v_notify):
 		handle_g2v_notification(vgpu, data);
 		break;
+	case _vgtif_reg(pv_caps):
+		DRM_INFO("vgpu id=%d pv caps =0x%x\n", vgpu->id, data);
+		vgpu->pv_caps = data;
+		break;
 	/* add xhot and yhot to handled list to avoid error log */
 	case _vgtif_reg(cursor_x_hot):
 	case _vgtif_reg(cursor_y_hot):
@@ -1285,6 +1578,8 @@ static int pvinfo_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 	case _vgtif_reg(pdp[3].hi):
 	case _vgtif_reg(execlist_context_descriptor_lo):
 	case _vgtif_reg(execlist_context_descriptor_hi):
+	case _vgtif_reg(shared_page_gpa):
+	case _vgtif_reg(shared_page_gpa) + 4:
 		break;
 	case _vgtif_reg(rsv5[0])..._vgtif_reg(rsv5[3]):
 		invalid_write = true;
@@ -1679,6 +1974,104 @@ static int mmio_read_from_hw(struct intel_vgpu *vgpu,
 	return intel_vgpu_default_mmio_read(vgpu, offset, p_data, bytes);
 }
 
+static int pv_prepare_workload(struct intel_vgpu_workload *workload)
+{
+	return 0;
+}
+
+static int pv_complete_workload(struct intel_vgpu_workload *workload)
+{
+	return 0;
+}
+
+static int submit_context_pv(struct intel_vgpu *vgpu,
+			  const struct intel_engine_cs *engine,
+			  struct execlist_ctx_descriptor_format *desc,
+			  bool emulate_schedule_in,
+			  u64 ctx_gpa)
+{
+	struct intel_vgpu_submission *s = &vgpu->submission;
+	struct intel_vgpu_workload *workload = NULL;
+
+	workload = intel_vgpu_create_workload(vgpu, engine->id, desc, ctx_gpa);
+	if (IS_ERR(workload))
+		return PTR_ERR(workload);
+
+	workload->prepare = pv_prepare_workload;
+	workload->complete = pv_complete_workload;
+	workload->emulate_schedule_in = emulate_schedule_in;
+
+	if (emulate_schedule_in)
+		workload->elsp_dwords = s->execlist[engine->id].elsp_dwords;
+
+	gvt_dbg_el("workload %p emulate schedule_in %d\n", workload,
+		   emulate_schedule_in);
+
+	intel_vgpu_queue_workload(workload);
+	return 0;
+}
+
+#define get_desc_from_elsp_dwords(ed, i) \
+	((struct execlist_ctx_descriptor_format *)&((ed)->data[i * 2]))
+
+static int handle_pv_submission(struct intel_vgpu *vgpu,
+		const struct intel_engine_cs *engine, u32 ring_id)
+{
+	struct intel_vgpu_execlist *execlist;
+	struct pv_submission pv_data;
+	struct execlist_ctx_descriptor_format *desc[2];
+	u32 base = PV_ELSP_OFF + ring_id * sizeof(struct pv_submission);
+	u32 submitted_off = offsetof(struct pv_submission, submitted);
+	bool submitted = false;
+	int i, ret;
+	execlist = &vgpu->submission.execlist[ring_id];
+	if (intel_gvt_read_shared_page(vgpu, base, &pv_data, sizeof(pv_data)))
+		return -EINVAL;
+	memcpy(&execlist->elsp_dwords.data, &pv_data.descs, 16);
+
+	desc[0] = get_desc_from_elsp_dwords(&execlist->elsp_dwords, 0);
+	desc[1] = get_desc_from_elsp_dwords(&execlist->elsp_dwords, 1);
+
+	if (!desc[0]->valid) {
+		gvt_vgpu_err("invalid elsp submission, desc0 is invalid\n");
+		goto inv_desc;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(desc); i++) {
+		if (!desc[i]->valid)
+			continue;
+		if (!desc[i]->privilege_access) {
+			gvt_vgpu_err("unexpected GGTT elsp submission\n");
+			goto inv_desc;
+		}
+	}
+
+	/* submit workload */
+	for (i = 0; i < ARRAY_SIZE(desc); i++) {
+		if (!desc[i]->valid)
+			continue;
+
+		if (intel_vgpu_enabled_pv_cap(vgpu, PV_HW_CONTEXT))
+			ret = submit_context_pv(vgpu, engine, desc[i],
+					i == 0, pv_data.ctx_gpa[i]);
+		else
+			ret = submit_context_pv(vgpu, engine, desc[i], i == 0, 0);
+		if (ret) {
+			gvt_vgpu_err("failed to submit desc %d\n", i);
+			return ret;
+		}
+	}
+
+	submitted_off += base;
+	ret = intel_gvt_write_shared_page(vgpu, submitted_off, &submitted, 1);
+	return ret;
+
+inv_desc:
+	gvt_vgpu_err("descriptors content: desc0 %08x %08x desc1 %08x %08x\n",
+		     desc[0]->udw, desc[0]->ldw, desc[1]->udw, desc[1]->ldw);
+	return -EINVAL;
+}
+
 static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 		void *p_data, unsigned int bytes)
 {
@@ -1689,6 +2082,9 @@ static int elsp_mmio_write(struct intel_vgpu *vgpu, unsigned int offset,
 
 	if (WARN_ON(ring_id < 0 || ring_id >= I915_NUM_ENGINES))
 		return -EINVAL;
+	if (intel_vgpu_enabled_pv_cap(vgpu, PV_SUBMISSION) &&
+			data == PV_ACTION_ELSP_SUBMISSION)
+		return handle_pv_submission(vgpu, vgpu->gvt->dev_priv->engine[ring_id], ring_id);
 
 	execlist = &vgpu->submission.execlist[ring_id];
 

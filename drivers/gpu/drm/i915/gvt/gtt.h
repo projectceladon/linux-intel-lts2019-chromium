@@ -141,6 +141,7 @@ struct intel_gvt_partial_pte {
 
 struct intel_vgpu_mm {
 	enum intel_gvt_mm_type type;
+	struct i915_ppgtt *ppgtt;
 	struct intel_vgpu *vgpu;
 
 	struct kref ref;
@@ -160,6 +161,7 @@ struct intel_vgpu_mm {
 
 			struct list_head list;
 			struct list_head lru_list;
+			struct list_head link; /* possible LRI shadow mm list */
 		} ppgtt_mm;
 		struct {
 			void *virtual_ggtt;
@@ -277,5 +279,9 @@ int intel_vgpu_emulate_ggtt_mmio_read(struct intel_vgpu *vgpu,
 
 int intel_vgpu_emulate_ggtt_mmio_write(struct intel_vgpu *vgpu,
 	unsigned int off, void *p_data, unsigned int bytes);
+
+int intel_vgpu_handle_pv_vma(struct intel_vgpu *vgpu,
+	struct intel_vgpu_mm *mm,
+	u32 action, u32 data[]);
 
 #endif /* _GVT_GTT_H_ */

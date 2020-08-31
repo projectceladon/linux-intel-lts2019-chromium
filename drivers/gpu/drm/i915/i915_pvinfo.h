@@ -48,6 +48,8 @@ enum vgt_g2v_type {
 	VGT_G2V_PPGTT_L4_PAGE_TABLE_DESTROY,
 	VGT_G2V_EXECLIST_CONTEXT_CREATE,
 	VGT_G2V_EXECLIST_CONTEXT_DESTROY,
+	VGT_G2V_SHARED_PAGE_SETUP,
+	VGT_G2V_PV_SEND_TRIGGER,
 	VGT_G2V_MAX,
 };
 
@@ -57,6 +59,7 @@ enum vgt_g2v_type {
 #define VGT_CAPS_FULL_PPGTT		BIT(2)
 #define VGT_CAPS_HWSP_EMULATION		BIT(3)
 #define VGT_CAPS_HUGE_GTT		BIT(4)
+#define VGT_CAPS_PV		BIT(5)
 
 struct vgt_if {
 	u64 magic;		/* VGT_MAGIC */
@@ -109,7 +112,11 @@ struct vgt_if {
 	u32 execlist_context_descriptor_lo;
 	u32 execlist_context_descriptor_hi;
 
-	u32  rsv7[0x200 - 24];    /* pad to one page */
+	u32 pv_caps;
+
+	u64 shared_page_gpa;
+
+	u32  rsv7[0x200 - 27];    /* pad to one page */
 } __packed;
 
 #define vgtif_offset(x) (offsetof(struct vgt_if, x))
