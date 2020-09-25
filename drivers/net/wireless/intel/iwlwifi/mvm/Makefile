@@ -8,6 +8,7 @@ iwlmvm-y += tt.o offloading.o tdls.o
 iwlmvm-y += ftm-responder.o ftm-initiator.o
 iwlmvm-$(CONFIG_IWLWIFI_DEBUGFS) += debugfs.o debugfs-vif.o
 iwlmvm-$(CONFIG_IWLWIFI_LEDS) += led.o
+iwlmvm-y += vendor-cmd.o
 iwlmvm-$(CONFIG_PM) += d3.o
 
 ccflags-y += -I $(srctree)/$(src)/../
