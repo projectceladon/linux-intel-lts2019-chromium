@@ -546,8 +546,8 @@ static int cros_typec_configure_mux(struct cros_typec_data *typec, int port_num,
 		return ret;
 
 	ret = usb_role_switch_set_role(typec->ports[port_num]->role_sw,
-				       pd_ctrl->role & PD_CTRL_RESP_ROLE_DATA
-				       ? USB_ROLE_HOST : USB_ROLE_DEVICE);
+					pd_ctrl->role & PD_CTRL_RESP_ROLE_DATA
+					? USB_ROLE_HOST : USB_ROLE_DEVICE);
 	if (ret)
 		return ret;
 

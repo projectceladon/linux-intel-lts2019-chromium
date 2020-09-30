@@ -44,8 +44,10 @@
 #include <media/cec-notifier.h>
 
 #include "i915_drv.h"
+#include "intel_de.h"
 
 struct drm_printer;
+struct __intel_global_objs_state;
 
 /*
  * Display related stuff
@@ -131,14 +133,16 @@ struct intel_encoder {
 	u16 cloneable;
 	u8 pipe_mask;
 	enum intel_hotplug_state (*hotplug)(struct intel_encoder *encoder,
-					    struct intel_connector *connector,
-					    bool irq_received);
+					    struct intel_connector *connector);
 	enum intel_output_type (*compute_output_type)(struct intel_encoder *,
 						      struct intel_crtc_state *,
 						      struct drm_connector_state *);
 	int (*compute_config)(struct intel_encoder *,
 			      struct intel_crtc_state *,
 			      struct drm_connector_state *);
+	int (*compute_config_late)(struct intel_encoder *,
+				   struct intel_crtc_state *,
+				   struct drm_connector_state *);
 	void (*update_prepare)(struct intel_atomic_state *,
 			       struct intel_encoder *,
 			       struct intel_crtc *);
@@ -213,6 +217,9 @@ struct intel_panel {
 		bool util_pin_active_low;	/* bxt+ */
 		u8 controller;		/* bxt+ only */
 		struct pwm_device *pwm;
+
+		/* DPCD backlight */
+		u8 pwmgen_bit_count;
 
 		struct backlight_device *device;
 
@@ -418,6 +425,9 @@ struct intel_connector {
 	struct edid *edid;
 	struct edid *detect_edid;
 
+	/* Number of times hotplug detection was tried after an HPD interrupt */
+	int hotplug_retries;
+
 	/* since POLL and HPD connectors may use the same HPD line keep the native
 	   state of connector->polled in case hotplug storm detection changes it */
 	u8 polled;
@@ -458,25 +468,8 @@ struct intel_atomic_state {
 
 	intel_wakeref_t wakeref;
 
-	struct {
-		/*
-		 * Logical state of cdclk (used for all scaling, watermark,
-		 * etc. calculations and checks). This is computed as if all
-		 * enabled crtcs were active.
-		 */
-		struct intel_cdclk_state logical;
-
-		/*
-		 * Actual state of cdclk, can be different from the logical
-		 * state only when all crtc's are DPMS off.
-		 */
-		struct intel_cdclk_state actual;
-
-		int force_min_cdclk;
-		bool force_min_cdclk_changed;
-		/* pipe to which cd2x update is synchronized */
-		enum pipe pipe;
-	} cdclk;
+	struct __intel_global_objs_state *global_objs;
+	int num_global_objs;
 
 	bool dpll_set, modeset;
 
@@ -491,10 +484,6 @@ struct intel_atomic_state {
 	u8 active_pipe_changes;
 
 	u8 active_pipes;
-	/* minimum acceptable cdclk for each pipe */
-	int min_cdclk[I915_MAX_PIPES];
-	/* minimum acceptable voltage level for each pipe */
-	u8 min_voltage_level[I915_MAX_PIPES];
 
 	struct intel_shared_dpll_state shared_dpll[I915_NUM_PLLS];
 
@@ -508,14 +497,11 @@ struct intel_atomic_state {
 
 	/*
 	 * active_pipes
-	 * min_cdclk[]
-	 * min_voltage_level[]
-	 * cdclk.*
 	 */
 	bool global_state_changed;
 
-	/* Gen9+ only */
-	struct skl_ddb_values wm_results;
+	/* Number of enabled DBuf slices */
+	u8 enabled_dbuf_slices_mask;
 
 	struct i915_sw_fence commit_ready;
 
@@ -659,7 +645,6 @@ struct intel_crtc_scaler_state {
 
 struct intel_pipe_wm {
 	struct intel_wm_level wm[5];
-	u32 linetime;
 	bool fbc_wm_enabled;
 	bool pipe_enabled;
 	bool sprites_enabled;
@@ -675,7 +660,6 @@ struct skl_plane_wm {
 
 struct skl_pipe_wm {
 	struct skl_plane_wm planes[I915_MAX_PLANES];
-	u32 linetime;
 };
 
 enum vlv_wm_level {
@@ -1045,6 +1029,10 @@ struct intel_crtc_state {
 		u8 slice_count;
 		struct drm_dsc_config config;
 	} dsc;
+
+	/* HSW+ linetime watermarks */
+	u16 linetime;
+	u16 ips_linetime;
 
 	/* Forward Error correction State */
 	bool fec_enable;
@@ -1437,9 +1425,9 @@ struct intel_load_detect_pipe {
 };
 
 static inline struct intel_encoder *
-intel_attached_encoder(struct drm_connector *connector)
+intel_attached_encoder(struct intel_connector *connector)
 {
-	return to_intel_connector(connector)->encoder;
+	return connector->encoder;
 }
 
 static inline bool intel_encoder_is_dig_port(struct intel_encoder *encoder)
@@ -1456,32 +1444,38 @@ static inline bool intel_encoder_is_dig_port(struct intel_encoder *encoder)
 }
 
 static inline struct intel_digital_port *
-enc_to_dig_port(struct drm_encoder *encoder)
+enc_to_dig_port(struct intel_encoder *encoder)
 {
-	struct intel_encoder *intel_encoder = to_intel_encoder(encoder);
+	struct intel_encoder *intel_encoder = encoder;
 
 	if (intel_encoder_is_dig_port(intel_encoder))
-		return container_of(encoder, struct intel_digital_port,
+		return container_of(&encoder->base, struct intel_digital_port,
 				    base.base);
 	else
 		return NULL;
 }
 
 static inline struct intel_digital_port *
-conn_to_dig_port(struct intel_connector *connector)
+intel_attached_dig_port(struct intel_connector *connector)
 {
-	return enc_to_dig_port(&intel_attached_encoder(&connector->base)->base);
+	return enc_to_dig_port(intel_attached_encoder(connector));
 }
 
 static inline struct intel_dp_mst_encoder *
-enc_to_mst(struct drm_encoder *encoder)
+enc_to_mst(struct intel_encoder *encoder)
 {
-	return container_of(encoder, struct intel_dp_mst_encoder, base.base);
+	return container_of(&encoder->base, struct intel_dp_mst_encoder,
+			    base.base);
 }
 
-static inline struct intel_dp *enc_to_intel_dp(struct drm_encoder *encoder)
+static inline struct intel_dp *enc_to_intel_dp(struct intel_encoder *encoder)
 {
 	return &enc_to_dig_port(encoder)->dp;
+}
+
+static inline struct intel_dp *intel_attached_dp(struct intel_connector *connector)
+{
+	return enc_to_intel_dp(intel_attached_encoder(connector));
 }
 
 static inline bool intel_encoder_is_dp(struct intel_encoder *encoder)
@@ -1492,14 +1486,14 @@ static inline bool intel_encoder_is_dp(struct intel_encoder *encoder)
 		return true;
 	case INTEL_OUTPUT_DDI:
 		/* Skip pure HDMI/DVI DDI encoders */
-		return i915_mmio_reg_valid(enc_to_intel_dp(&encoder->base)->output_reg);
+		return i915_mmio_reg_valid(enc_to_intel_dp(encoder)->output_reg);
 	default:
 		return false;
 	}
 }
 
 static inline struct intel_lspcon *
-enc_to_intel_lspcon(struct drm_encoder *encoder)
+enc_to_intel_lspcon(struct intel_encoder *encoder)
 {
 	return &enc_to_dig_port(encoder)->lspcon;
 }

@@ -117,7 +117,7 @@ struct lpass_variant {
 	struct reg_field rdma_enable;
 	struct reg_field rdma_dyncclk;
 
-	/* RD_DMA Register fields */
+	/* WR_DMA Register fields */
 	struct reg_field wrdma_bursten;
 	struct reg_field wrdma_wpscnt;
 	struct reg_field wrdma_intf;

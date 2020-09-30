@@ -175,9 +175,9 @@ static struct lpass_variant sc7180_data = {
 	.wrdma_enable		= REG_FIELD_ID(0x18000, 0, 0, 4, 0x1000),
 
 	.clk_name		= (const char*[]) {
-				   "noc",
+				   "pcnoc-sway-clk",
 				   "audio-core",
-				   "sysnoc_mport",
+				   "pcnoc-mport-clk",
 				},
 	.num_clks		= 3,
 	.dai_driver		= sc7180_lpass_cpu_dai_driver,
@@ -187,8 +187,8 @@ static struct lpass_variant sc7180_data = {
 				   "null",
 				},
 	.dai_bit_clk_names      = (const char *[]) {
-				   "pri_ibit",
-				   "sec_ibit",
+				   "mi2s-bit-clk0",
+				   "mi2s-bit-clk1",
 				},
 	.init			= sc7180_lpass_init,
 	.exit			= sc7180_lpass_exit,
@@ -197,9 +197,10 @@ static struct lpass_variant sc7180_data = {
 };
 
 static const struct of_device_id sc7180_lpass_cpu_device_id[] = {
-	{.compatible = "qcom,lpass-cpu-sc7180", .data = &sc7180_data},
+	{.compatible = "qcom,sc7180-lpass-cpu", .data = &sc7180_data},
 	{}
 };
+MODULE_DEVICE_TABLE(of, sc7180_lpass_cpu_device_id);
 
 static struct platform_driver sc7180_lpass_cpu_platform_driver = {
 	.driver = {
@@ -207,7 +208,7 @@ static struct platform_driver sc7180_lpass_cpu_platform_driver = {
 		.of_match_table = of_match_ptr(sc7180_lpass_cpu_device_id),
 	},
 	.probe = asoc_qcom_lpass_cpu_platform_probe,
-	.remove = asoc_qcom_lpass_cpu_platform_probe,
+	.remove = asoc_qcom_lpass_cpu_platform_remove,
 };
 
 module_platform_driver(sc7180_lpass_cpu_platform_driver);

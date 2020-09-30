@@ -722,6 +722,7 @@ error:
 	kfree(wbuf);
 error_1:
 	kfree(wr_msg);
+	bus->defer_msg.msg = NULL;
 	return ret;
 }
 
@@ -848,9 +849,10 @@ static int do_bank_switch(struct sdw_stream_runtime *stream)
 error:
 	list_for_each_entry(m_rt, &stream->master_list, stream_node) {
 		bus = m_rt->bus;
-
-		kfree(bus->defer_msg.msg->buf);
-		kfree(bus->defer_msg.msg);
+		if (bus->defer_msg.msg) {
+			kfree(bus->defer_msg.msg->buf);
+			kfree(bus->defer_msg.msg);
+		}
 	}
 
 msg_unlock:
@@ -1869,6 +1871,13 @@ static int set_stream(struct snd_pcm_substream *substream,
 	return ret;
 }
 
+/**
+ * sdw_startup_stream() - Startup SoundWire stream
+ *
+ * @sdw_substream: Soundwire stream
+ *
+ * Documentation/driver-api/soundwire/stream.rst explains this API in detail
+ */
 int sdw_startup_stream(void *sdw_substream)
 {
 	struct snd_pcm_substream *substream = sdw_substream;
@@ -1907,6 +1916,13 @@ error:
 }
 EXPORT_SYMBOL(sdw_startup_stream);
 
+/**
+ * sdw_shutdown_stream() - Shutdown SoundWire stream
+ *
+ * @sdw_substream: Soundwire stream
+ *
+ * Documentation/driver-api/soundwire/stream.rst explains this API in detail
+ */
 void sdw_shutdown_stream(void *sdw_substream)
 {
 	struct snd_pcm_substream *substream = sdw_substream;

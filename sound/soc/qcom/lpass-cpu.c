@@ -111,7 +111,8 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 	unsigned int channels = params_channels(params);
 	unsigned int rate = params_rate(params);
 	unsigned int mode;
-	int bitwidth, ret, regval;
+	unsigned int regval;
+	int bitwidth, ret;
 
 	bitwidth = snd_pcm_format_width(format);
 	if (bitwidth < 0) {
@@ -221,7 +222,11 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		ret = regmap_fields_write(i2sctl->spkmode, id,
 					 LPAIF_I2SCTL_SPKMODE(mode));
-
+		if (ret) {
+			dev_err(dai->dev, "error writing to i2sctl spkr mode: %d\n",
+				ret);
+			return ret;
+		}
 		if (channels >= 2)
 			ret = regmap_fields_write(i2sctl->spkmono, id,
 						 LPAIF_I2SCTL_SPKMONO_STEREO);
@@ -231,7 +236,11 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 	} else {
 		ret = regmap_fields_write(i2sctl->micmode, id,
 					 LPAIF_I2SCTL_MICMODE(mode));
-
+		if (ret) {
+			dev_err(dai->dev, "error writing to i2sctl mic mode: %d\n",
+				ret);
+			return ret;
+		}
 		if (channels >= 2)
 			ret = regmap_fields_write(i2sctl->micmono, id,
 						 LPAIF_I2SCTL_MICMONO_STEREO);
@@ -566,7 +575,7 @@ int asoc_qcom_lpass_cpu_platform_probe(struct platform_device *pdev)
 
 	of_lpass_cpu_parse_dai_data(dev, drvdata);
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "lpass-lpaif");
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
 	drvdata->lpaif = devm_ioremap_resource(dev, res);
 	if (IS_ERR((void const __force *)drvdata->lpaif)) {

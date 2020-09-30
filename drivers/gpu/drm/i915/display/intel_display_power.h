@@ -76,6 +76,7 @@ enum intel_display_power_domain {
 	POWER_DOMAIN_MODESET,
 	POWER_DOMAIN_GT_IRQ,
 	POWER_DOMAIN_DPLL_DC_OFF,
+	POWER_DOMAIN_TC_COLD_OFF,
 	POWER_DOMAIN_INIT,
 
 	POWER_DOMAIN_NUM,
@@ -306,6 +307,11 @@ intel_display_power_put_async(struct drm_i915_private *i915,
 	__intel_display_power_put_async(i915, domain, -1);
 }
 #endif
+
+enum dbuf_slice {
+	DBUF_S1,
+	DBUF_S2,
+};
 
 #define with_intel_display_power(i915, domain, wf) \
 	for ((wf) = intel_display_power_get((i915), (domain)); (wf); \

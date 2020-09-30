@@ -101,12 +101,12 @@ static int lpass_platform_pcmops_open(struct snd_soc_component *component,
 				      struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(soc_runtime, 0);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct lpass_variant *v = drvdata->variant;
 	int ret, dma_ch, dir = substream->stream;
-	struct lpass_pcm_data *data = NULL;
+	struct lpass_pcm_data *data;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -158,8 +158,9 @@ static int lpass_platform_pcmops_close(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct lpass_variant *v = drvdata->variant;
-	struct lpass_pcm_data *data = runtime->private_data;
+	struct lpass_pcm_data *data;
 
+	data = runtime->private_data;
 	drvdata->substream[data->dma_ch] = NULL;
 	if (v->free_dma_channel)
 		v->free_dma_channel(drvdata, data->dma_ch);
@@ -172,18 +173,18 @@ static int lpass_platform_pcmops_hw_params(struct snd_soc_component *component,
 					   struct snd_pcm_substream *substream,
 					   struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	struct lpass_pcm_data *pcm_data = rt->private_data;
 	struct lpass_variant *v = drvdata->variant;
 	snd_pcm_format_t format = params_format(params);
 	unsigned int channels = params_channels(params);
+	unsigned int regval;
 	struct lpaif_dmactl *dmactl;
-	int dir = substream->stream;
-	int id, bitwidth;
+	int id, dir = substream->stream;
+	int bitwidth;
 	int ret, dma_port = pcm_data->i2s_port + v->dmactl_audif_start;
-
 
 	if (dir ==  SNDRV_PCM_STREAM_PLAYBACK) {
 		dmactl = drvdata->rd_dmactl;
@@ -201,28 +202,38 @@ static int lpass_platform_pcmops_hw_params(struct snd_soc_component *component,
 	}
 
 	ret = regmap_fields_write(dmactl->bursten, id, LPAIF_DMACTL_BURSTEN_INCR4);
-	ret = regmap_fields_write(dmactl->fifowm, id, LPAIF_DMACTL_FIFOWM_8);
-	ret = regmap_fields_write(dmactl->intf, id, LPAIF_DMACTL_AUDINTF(dma_port));
+	if (ret) {
+		dev_err(soc_runtime->dev, "error updating bursten field: %d\n", ret);
+		return ret;
+	}
+
+	regmap_fields_write(dmactl->fifowm, id, LPAIF_DMACTL_FIFOWM_8);
+	if (ret) {
+		dev_err(soc_runtime->dev, "error updating fifowm field: %d\n", ret);
+		return ret;
+	}
+
+	regmap_fields_write(dmactl->intf, id, LPAIF_DMACTL_AUDINTF(dma_port));
+	if (ret) {
+		dev_err(soc_runtime->dev, "error updating audintf field: %d\n", ret);
+		return ret;
+	}
 
 	switch (bitwidth) {
 	case 16:
 		switch (channels) {
 		case 1:
 		case 2:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_ONE);
+			regval = LPAIF_DMACTL_WPSCNT_ONE;
 			break;
 		case 4:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_TWO);
+			regval = LPAIF_DMACTL_WPSCNT_TWO;
 			break;
 		case 6:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_THREE);
+			regval = LPAIF_DMACTL_WPSCNT_THREE;
 			break;
 		case 8:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_FOUR);
+			regval = LPAIF_DMACTL_WPSCNT_FOUR;
 			break;
 		default:
 			dev_err(soc_runtime->dev,
@@ -235,24 +246,19 @@ static int lpass_platform_pcmops_hw_params(struct snd_soc_component *component,
 	case 32:
 		switch (channels) {
 		case 1:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_ONE);
+			regval = LPAIF_DMACTL_WPSCNT_ONE;
 			break;
 		case 2:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_TWO);
+			regval = LPAIF_DMACTL_WPSCNT_TWO;
 			break;
 		case 4:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_FOUR);
+			regval = LPAIF_DMACTL_WPSCNT_FOUR;
 			break;
 		case 6:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_SIX);
+			regval = LPAIF_DMACTL_WPSCNT_SIX;
 			break;
 		case 8:
-			ret = regmap_fields_write(dmactl->wpscnt, id,
-						 LPAIF_DMACTL_WPSCNT_EIGHT);
+			regval = LPAIF_DMACTL_WPSCNT_EIGHT;
 			break;
 		default:
 			dev_err(soc_runtime->dev,
@@ -267,6 +273,7 @@ static int lpass_platform_pcmops_hw_params(struct snd_soc_component *component,
 		return -EINVAL;
 	}
 
+	ret = regmap_fields_write(dmactl->wpscnt, id, regval);
 	if (ret) {
 		dev_err(soc_runtime->dev, "error writing to dmactl reg: %d\n",
 			ret);
@@ -279,7 +286,7 @@ static int lpass_platform_pcmops_hw_params(struct snd_soc_component *component,
 static int lpass_platform_pcmops_hw_free(struct snd_soc_component *component,
 					 struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	struct lpass_pcm_data *pcm_data = rt->private_data;
@@ -300,7 +307,7 @@ static int lpass_platform_pcmops_prepare(struct snd_soc_component *component,
 					 struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	struct lpass_pcm_data *pcm_data = rt->private_data;
@@ -358,7 +365,7 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 					 struct snd_pcm_substream *substream,
 					 int cmd)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	struct lpass_pcm_data *pcm_data = rt->private_data;
@@ -437,7 +444,7 @@ static snd_pcm_uframes_t lpass_platform_pcmops_pointer(
 		struct snd_soc_component *component,
 		struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_data *drvdata = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	struct lpass_pcm_data *pcm_data = rt->private_data;
@@ -481,7 +488,7 @@ static irqreturn_t lpass_dma_interrupt_handler(
 			struct lpass_data *drvdata,
 			int chan, u32 interrupts)
 {
-	struct snd_soc_pcm_runtime *soc_runtime = substream->private_data;
+	struct snd_soc_pcm_runtime *soc_runtime = asoc_substream_to_rtd(substream);
 	struct lpass_variant *v = drvdata->variant;
 	irqreturn_t ret = IRQ_NONE;
 	int rv;
@@ -631,7 +638,7 @@ int asoc_qcom_lpass_platform_register(struct platform_device *pdev)
 	struct lpass_variant *v = drvdata->variant;
 	int ret;
 
-	drvdata->lpaif_irq = platform_get_irq_byname(pdev, "lpass-irq-lpaif");
+	drvdata->lpaif_irq = platform_get_irq(pdev, 0);
 	if (drvdata->lpaif_irq < 0)
 		return -ENODEV;
 

@@ -14,10 +14,14 @@
 static inline int _soc_dai_ret(struct snd_soc_dai *dai,
 			       const char *func, int ret)
 {
+	/* Positive, Zero values are not errors */
+	if (ret >= 0)
+		return ret;
+
+	/* Negative values might be errors */
 	switch (ret) {
 	case -EPROBE_DEFER:
 	case -ENOTSUPP:
-	case 0:
 		break;
 	default:
 		dev_err(dai->dev,
@@ -294,13 +298,15 @@ int snd_soc_dai_digital_mute(struct snd_soc_dai *dai, int mute,
 {
 	int ret = -ENOTSUPP;
 
+	/*
+	 * ignore if direction was CAPTURE
+	 * and it had .no_capture_mute flag
+	 */
 	if (dai->driver->ops &&
-	    dai->driver->ops->mute_stream)
+	    dai->driver->ops->mute_stream &&
+	    (direction == SNDRV_PCM_STREAM_PLAYBACK ||
+	     !dai->driver->ops->no_capture_mute))
 		ret = dai->driver->ops->mute_stream(dai, mute, direction);
-	else if (direction == SNDRV_PCM_STREAM_PLAYBACK &&
-		 dai->driver->ops &&
-		 dai->driver->ops->digital_mute)
-		ret = dai->driver->ops->digital_mute(dai, mute);
 
 	return soc_dai_ret(dai, ret);
 }
@@ -386,6 +392,46 @@ bool snd_soc_dai_stream_valid(struct snd_soc_dai *dai, int dir)
 	/* If the codec specifies any channels at all, it supports the stream */
 	return stream->channels_min;
 }
+
+/*
+ * snd_soc_dai_link_set_capabilities() - set dai_link properties based on its DAIs
+ */
+void snd_soc_dai_link_set_capabilities(struct snd_soc_dai_link *dai_link)
+{
+	struct snd_soc_dai_link_component *cpu;
+	struct snd_soc_dai_link_component *codec;
+	struct snd_soc_dai *dai;
+	bool supported[SNDRV_PCM_STREAM_LAST + 1];
+	bool supported_cpu;
+	bool supported_codec;
+	int direction;
+	int i;
+
+	for_each_pcm_streams(direction) {
+		supported_cpu = false;
+		supported_codec = false;
+
+		for_each_link_cpus(dai_link, i, cpu) {
+			dai = snd_soc_find_dai_with_mutex(cpu);
+			if (dai && snd_soc_dai_stream_valid(dai, direction)) {
+				supported_cpu = true;
+				break;
+			}
+		}
+		for_each_link_codecs(dai_link, i, codec) {
+			dai = snd_soc_find_dai_with_mutex(codec);
+			if (dai && snd_soc_dai_stream_valid(dai, direction)) {
+				supported_codec = true;
+				break;
+			}
+		}
+		supported[direction] = supported_cpu && supported_codec;
+	}
+
+	dai_link->dpcm_playback = supported[SNDRV_PCM_STREAM_PLAYBACK];
+	dai_link->dpcm_capture  = supported[SNDRV_PCM_STREAM_CAPTURE];
+}
+EXPORT_SYMBOL_GPL(snd_soc_dai_link_set_capabilities);
 
 void snd_soc_dai_action(struct snd_soc_dai *dai,
 			int stream, int action)

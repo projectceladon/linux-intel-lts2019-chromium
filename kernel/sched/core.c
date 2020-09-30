@@ -4813,9 +4813,14 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		return next;
 	}
 
-	prev->sched_class->put_prev_task(rq, prev);
-	if (!rq->nr_running)
-		newidle_balance(rq, rf);
+
+#ifdef CONFIG_SMP
+	for_class_range(class, prev->sched_class, &idle_sched_class) {
+		if (class->balance(rq, prev, rf))
+			break;
+	}
+#endif
+	put_prev_task(rq, prev);
 
 	smt_mask = cpu_smt_mask(cpu);
 
@@ -8071,9 +8076,6 @@ int task_set_core_sched(int set, struct task_struct *tsk)
 
 	if (!set)
 		sched_core_put();
-
-	pr_alert("coresched: prctl success: %s/%d %lx (fork: %d)\n", tsk->comm,
-		 tsk->pid, tsk->core_cookie, tsk != current);
 	return 0;
 }
 #endif
