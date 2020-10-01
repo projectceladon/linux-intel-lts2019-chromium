@@ -6536,30 +6536,39 @@ static void rtl8169_net_suspend(struct net_device *dev)
 
 #ifdef CONFIG_PM
 
+static int rtl8169_net_resume(struct rtl8169_private *tp)
+{
+	rtl_rar_set(tp, tp->dev->dev_addr);
+
+	if (tp->TxDescArray)
+		rtl8169_up(tp);
+
+	netif_device_attach(tp->dev);
+
+	return 0;
+}
+
 static int __maybe_unused rtl8169_suspend(struct device *device)
 {
 	struct net_device *dev = dev_get_drvdata(device);
 	struct rtl8169_private *tp = netdev_priv(dev);
 
 	rtl8169_net_suspend(dev);
-	clk_disable_unprepare(tp->clk);
+	if (!device_may_wakeup(tp_to_dev(tp)))
+		clk_disable_unprepare(tp->clk);
 
 	return 0;
 }
 
-static int rtl8169_resume(struct device *device)
+static int __maybe_unused rtl8169_resume(struct device *device)
 {
 	struct net_device *dev = dev_get_drvdata(device);
 	struct rtl8169_private *tp = netdev_priv(dev);
 
-	rtl_rar_set(tp, dev->dev_addr);
+	if (!device_may_wakeup(tp_to_dev(tp)))
+		clk_prepare_enable(tp->clk);
 
-	clk_prepare_enable(tp->clk);
-
-	if (tp->TxDescArray)
-		rtl8169_up(tp);
-
-	return 0;
+	return rtl8169_net_resume(tp);
 }
 
 static int rtl8169_runtime_suspend(struct device *device)
@@ -6591,7 +6600,7 @@ static int rtl8169_runtime_resume(struct device *device)
 	__rtl8169_set_wol(tp, tp->saved_wolopts);
 	rtl_unlock_work(tp);
 
-	return rtl8169_resume(device);
+	return rtl8169_net_resume(tp);
 }
 
 static int rtl8169_runtime_idle(struct device *device)
