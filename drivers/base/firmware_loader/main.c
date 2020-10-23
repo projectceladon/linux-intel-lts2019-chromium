@@ -112,6 +112,7 @@ static bool fw_get_builtin_firmware(struct firmware *fw, const char *name,
 	struct builtin_fw *b_fw;
 
 	for (b_fw = __start_builtin_fw; b_fw != __end_builtin_fw; b_fw++) {
+        printk("%s request firmware for %s, b_fw:%llx\n", __func__, name, b_fw);
 		if (strcmp(name, b_fw->name) == 0) {
 			fw->size = b_fw->size;
 			fw->data = b_fw->data;
@@ -216,6 +217,7 @@ static int alloc_lookup_fw_priv(const char *fw_name,
 
 	spin_lock(&fwc->lock);
 	if (!(opt_flags & FW_OPT_NOCACHE)) {
+        printk("%s request firmware for %s\n", __func__, fw_name);
 		tmp = __lookup_fw_priv(fw_name);
 		if (tmp) {
 			kref_get(&tmp->ref);
@@ -702,6 +704,7 @@ _request_firmware_prepare(struct firmware **firmware_p, const char *name,
 		return -ENOMEM;
 	}
 
+    dev_err(device, "%s request firmware for %s\n", __func__, name);
 	if (fw_get_builtin_firmware(firmware, name, dbuf, size)) {
 		dev_dbg(device, "using built-in %s\n", name);
 		return 0; /* assigned */
@@ -768,6 +771,7 @@ _request_firmware(const struct firmware **firmware_p, const char *name,
 		goto out;
 	}
 
+    dev_err(device, "%s request firmware for %s\n", __func__, name);
 	ret = _request_firmware_prepare(&fw, name, device, buf, size,
 					opt_flags);
 	if (ret <= 0) /* error or already assigned */
