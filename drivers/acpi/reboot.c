@@ -4,6 +4,8 @@
 #include <linux/acpi.h>
 #include <acpi/reboot.h>
 
+#include <linux/delay.h>
+
 #ifdef CONFIG_PCI
 static void acpi_pci_reboot(struct acpi_generic_address *rr, u8 reset_value)
 {
@@ -52,6 +54,10 @@ void acpi_reboot(void)
 		return;
 
 	reset_value = acpi_gbl_FADT.reset_value;
+	pr_crit("native_machi reset_reg->address=0x%llx !!!!!!!!!!!!!\n", rr->address);
+	pr_crit("native_machi acpi_gbl_FADT.reset_value=0x%x !!!!!!!!!!!!!\n", acpi_gbl_FADT.reset_value);
+//	pr_crit("force reset_value: 0x0e and stay dead loop !!!!!!!!!!!!!\n");
+	udelay(5000);
 
 	/* The reset register can only exist in I/O, Memory or PCI config space
 	 * on a device on bus 0. */
