@@ -138,6 +138,10 @@ struct acpi_button {
 	bool suspended;
 };
 
+/* does userspace want to see KEY_POWER at resume? */
+static bool __read_mostly key_power_at_resume = true;
+module_param(key_power_at_resume, bool, 0644);
+
 static BLOCKING_NOTIFIER_HEAD(acpi_lid_notifier);
 static struct acpi_device *lid_device;
 static u8 lid_init_state = ACPI_BUTTON_LID_INIT_METHOD;
@@ -426,7 +430,7 @@ static void acpi_button_notify(struct acpi_device *device, u32 event)
 			int keycode;
 
 			acpi_pm_wakeup_event(&device->dev);
-			if (button->suspended)
+			if (button->suspended && !key_power_at_resume)
 				break;
 
 			keycode = test_bit(KEY_SLEEP, input->keybit) ?
