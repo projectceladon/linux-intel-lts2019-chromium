@@ -67,6 +67,7 @@ msm-y := \
 	disp/dpu1/dpu_hw_pingpong.o \
 	disp/dpu1/dpu_hw_sspp.o \
 	disp/dpu1/dpu_hw_dspp.o \
+	disp/dpu1/dpu_hw_merge3d.o \
 	disp/dpu1/dpu_hw_top.o \
 	disp/dpu1/dpu_hw_util.o \
 	disp/dpu1/dpu_hw_vbif.o \
@@ -110,8 +111,6 @@ msm-$(CONFIG_DRM_MSM_DP)+= dp/dp_aux.o \
 	dp/dp_panel.o \
 	dp/dp_parser.o \
 	dp/dp_power.o \
-	dp/dp_pll.o \
-	dp/dp_pll_10nm.o \
 	dp/dp_audio.o
 
 msm-$(CONFIG_DRM_FBDEV_EMULATION) += msm_fbdev.o

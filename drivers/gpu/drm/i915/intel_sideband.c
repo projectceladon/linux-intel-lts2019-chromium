@@ -60,7 +60,7 @@ static void __vlv_punit_get(struct drm_i915_private *i915)
 	 * to the Valleyview P-unit and not all sideband communications.
 	 */
 	if (IS_VALLEYVIEW(i915)) {
-		pm_qos_update_request(&i915->sb_qos, 0);
+		cpu_latency_qos_update_request(&i915->sb_qos, 0);
 		on_each_cpu(ping, NULL, 1);
 	}
 }
@@ -68,7 +68,8 @@ static void __vlv_punit_get(struct drm_i915_private *i915)
 static void __vlv_punit_put(struct drm_i915_private *i915)
 {
 	if (IS_VALLEYVIEW(i915))
-		pm_qos_update_request(&i915->sb_qos, PM_QOS_DEFAULT_VALUE);
+		cpu_latency_qos_update_request(&i915->sb_qos,
+					       PM_QOS_DEFAULT_VALUE);
 
 	iosf_mbi_punit_release();
 }
@@ -335,7 +336,7 @@ void intel_sbi_write(struct drm_i915_private *i915, u16 reg, u32 value,
 	intel_sbi_rw(i915, reg, destination, &value, false);
 }
 
-static inline int gen6_check_mailbox_status(u32 mbox)
+static int gen6_check_mailbox_status(u32 mbox)
 {
 	switch (mbox & GEN6_PCODE_ERROR_MASK) {
 	case GEN6_PCODE_SUCCESS:
@@ -355,7 +356,7 @@ static inline int gen6_check_mailbox_status(u32 mbox)
 	}
 }
 
-static inline int gen7_check_mailbox_status(u32 mbox)
+static int gen7_check_mailbox_status(u32 mbox)
 {
 	switch (mbox & GEN6_PCODE_ERROR_MASK) {
 	case GEN6_PCODE_SUCCESS:
@@ -370,6 +371,8 @@ static inline int gen7_check_mailbox_status(u32 mbox)
 		return -ENXIO;
 	case GEN11_PCODE_LOCKED:
 		return -EBUSY;
+	case GEN11_PCODE_REJECTED:
+		return -EACCES;
 	case GEN7_PCODE_MIN_FREQ_TABLE_GT_RATIO_OUT_OF_RANGE:
 		return -EOVERFLOW;
 	default:

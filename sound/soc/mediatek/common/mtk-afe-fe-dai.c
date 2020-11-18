@@ -129,10 +129,6 @@ int mtk_afe_fe_hw_params(struct snd_pcm_substream *substream,
 	unsigned int rate = params_rate(params);
 	snd_pcm_format_t format = params_format(params);
 
-	ret = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
-	if (ret < 0)
-		return ret;
-
 	if (afe->request_dram_resource)
 		afe->request_dram_resource(afe->dev);
 
@@ -193,7 +189,7 @@ int mtk_afe_fe_hw_free(struct snd_pcm_substream *substream,
 	if (afe->release_dram_resource)
 		afe->release_dram_resource(afe->dev);
 
-	return snd_pcm_lib_free_pages(substream);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_afe_fe_hw_free);
 
@@ -546,8 +542,13 @@ int mtk_memif_set_format(struct mtk_base_afe *afe,
 		break;
 	case SNDRV_PCM_FORMAT_S32_LE:
 	case SNDRV_PCM_FORMAT_U32_LE:
-		hd_audio = 1;
-		hd_align = 1;
+		if (afe->memif_32bit_supported) {
+			hd_audio = 2;
+			hd_align = 0;
+		} else {
+			hd_audio = 1;
+			hd_align = 1;
+		}
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
 	case SNDRV_PCM_FORMAT_U24_LE:
@@ -560,10 +561,10 @@ int mtk_memif_set_format(struct mtk_base_afe *afe,
 	}
 
 	mtk_regmap_update_bits(afe->regmap, memif->data->hd_reg,
-			       1, hd_audio, memif->data->hd_shift);
+			       0x3, hd_audio, memif->data->hd_shift);
 
 	mtk_regmap_update_bits(afe->regmap, memif->data->hd_align_reg,
-			       1, hd_align, memif->data->hd_align_mshift);
+			       0x1, hd_align, memif->data->hd_align_mshift);
 
 	return 0;
 }

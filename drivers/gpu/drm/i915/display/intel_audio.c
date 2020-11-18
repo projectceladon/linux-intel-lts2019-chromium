@@ -821,15 +821,13 @@ void intel_init_audio_hooks(struct drm_i915_private *dev_priv)
 }
 
 static int glk_force_audio_cdclk_commit(struct intel_atomic_state *state,
+					struct intel_crtc *crtc,
 					bool enable)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
 	struct intel_cdclk_state *cdclk_state;
-	struct intel_crtc *crtc;
 	int ret;
 
 	/* need to hold at least one crtc lock for the global state */
-	crtc = intel_get_crtc_for_pipe(dev_priv, PIPE_A);
 	ret = drm_modeset_lock(&crtc->base.mutex, state->base.acquire_ctx);
 	if (ret)
 		return ret;
@@ -853,7 +851,12 @@ static void glk_force_audio_cdclk(struct drm_i915_private *dev_priv,
 {
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_atomic_state *state;
+	struct intel_crtc *crtc;
 	int ret;
+
+	crtc = intel_get_first_crtc(dev_priv);
+	if (!crtc)
+		return;
 
 	drm_modeset_acquire_init(&ctx, 0);
 	state = drm_atomic_state_alloc(&dev_priv->drm);
@@ -863,7 +866,8 @@ static void glk_force_audio_cdclk(struct drm_i915_private *dev_priv,
 	state->acquire_ctx = &ctx;
 
 retry:
-	ret = glk_force_audio_cdclk_commit(to_intel_atomic_state(state), enable);
+	ret = glk_force_audio_cdclk_commit(to_intel_atomic_state(state), crtc,
+					   enable);
 	if (ret == -EDEADLK) {
 		drm_atomic_state_clear(state);
 		drm_modeset_backoff(&ctx);
@@ -889,7 +893,7 @@ static unsigned long i915_audio_component_get_power(struct device *kdev)
 	ret = intel_display_power_get(dev_priv, POWER_DOMAIN_AUDIO);
 
 	if (dev_priv->audio_power_refcount++ == 0) {
-		if (IS_TIGERLAKE(dev_priv) || IS_ICELAKE(dev_priv)) {
+		if (INTEL_GEN(dev_priv) >= 9) {
 			intel_de_write(dev_priv, AUD_FREQ_CNTRL,
 				       dev_priv->audio_freq_cntrl);
 			drm_dbg_kms(&dev_priv->drm,
@@ -1171,7 +1175,7 @@ static void i915_audio_component_init(struct drm_i915_private *dev_priv)
 		return;
 	}
 
-	if (IS_TIGERLAKE(dev_priv) || IS_ICELAKE(dev_priv)) {
+	if (INTEL_GEN(dev_priv) >= 9) {
 		dev_priv->audio_freq_cntrl = intel_de_read(dev_priv,
 							   AUD_FREQ_CNTRL);
 		drm_dbg_kms(&dev_priv->drm,

@@ -601,6 +601,13 @@ int tb_port_add_nfc_credits(struct tb_port *port, int credits)
 	if (credits == 0 || port->sw->is_unplugged)
 		return 0;
 
+	/*
+	 * USB4 restricts programming NFC buffers to lane adapters only
+	 * so skip other ports.
+	 */
+	if (tb_switch_is_usb4(port->sw) && !tb_port_is_null(port))
+		return 0;
+
 	nfc_credits = port->config.nfc_credits & ADP_CS_4_NFC_BUFFERS_MASK;
 	nfc_credits += credits;
 
@@ -783,7 +790,7 @@ static int tb_port_alloc_hopid(struct tb_port *port, bool in, int min_hopid,
 	 * NHI can use HopIDs 1-max for other adapters HopIDs 0-7 are
 	 * reserved.
 	 */
-	if (port->config.type != TB_TYPE_NHI && min_hopid < TB_PATH_MIN_HOPID)
+	if (!tb_port_is_nhi(port) && min_hopid < TB_PATH_MIN_HOPID)
 		min_hopid = TB_PATH_MIN_HOPID;
 
 	if (max_hopid < 0 || max_hopid > port_max_hopid)
@@ -2511,6 +2518,7 @@ int tb_switch_add(struct tb_switch *sw)
 		pm_request_autosuspend(&sw->dev);
 	}
 
+	tb_switch_debugfs_init(sw);
 	return 0;
 }
 
@@ -2525,6 +2533,8 @@ int tb_switch_add(struct tb_switch *sw)
 void tb_switch_remove(struct tb_switch *sw)
 {
 	struct tb_port *port;
+
+	tb_switch_debugfs_remove(sw);
 
 	if (sw->rpm) {
 		pm_runtime_get_sync(&sw->dev);

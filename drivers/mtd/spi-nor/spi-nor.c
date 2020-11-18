@@ -2493,6 +2493,26 @@ static const struct flash_info spi_nor_ids[] = {
 			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
 			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
 	},
+	{
+		"w25q32jwm", INFO(0xef8016, 0, 64 * 1024,  64,
+			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+	},
+	{
+		"w25q64jwm", INFO(0xef8017, 0, 64 * 1024, 128,
+			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+	},
+	{
+		"w25q128jwm", INFO(0xef8018, 0, 64 * 1024, 256,
+			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+	},
+	{
+		"w25q256jwm", INFO(0xef8019, 0, 64 * 1024, 512,
+			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
+			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
+	},
 	{ "w25x64", INFO(0xef3017, 0, 64 * 1024, 128, SECT_4K) },
 	{ "w25q64", INFO(0xef4017, 0, 64 * 1024, 128, SECT_4K) },
 	{
@@ -2518,22 +2538,6 @@ static const struct flash_info spi_nor_ids[] = {
 			     SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
 	{ "w25m512jv", INFO(0xef7119, 0, 64 * 1024, 1024,
 			SECT_4K | SPI_NOR_QUAD_READ | SPI_NOR_DUAL_READ) },
-	{ "w25q32jwxxIM", INFO(0xef8016, 0, 64 * 1024,  64,
-		SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-		SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
-	},
-	{ "w25q64jwxxIM", INFO(0xef8017, 0, 64 * 1024, 128,
-		SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-		SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
-	},
-	{ "w25q128jwxxIM", INFO(0xef8018, 0, 64 * 1024, 256,
-		SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-		SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
-	},
-	{ "w25q256jwxxIM", INFO(0xef8019, 0, 64 * 1024, 512,
-		SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
-		SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
-	},
 
 	/* Catalyst / On Semiconductor -- non-JEDEC */
 	{ "cat25c11", CAT25_INFO(  16, 8, 16, 1, SPI_NOR_NO_ERASE | SPI_NOR_NO_FR) },
@@ -4501,11 +4505,10 @@ static void spi_nor_sfdp_init_params(struct spi_nor *nor)
 
 	memcpy(&sfdp_params, &nor->params, sizeof(sfdp_params));
 
-	if (spi_nor_parse_sfdp(nor, &sfdp_params)) {
+	if (spi_nor_parse_sfdp(nor, &nor->params)) {
+		memcpy(&nor->params, &sfdp_params, sizeof(nor->params));
 		nor->addr_width = 0;
 		nor->flags &= ~SNOR_F_4B_OPCODES;
-	} else {
-		memcpy(&nor->params, &sfdp_params, sizeof(nor->params));
 	}
 }
 

@@ -735,6 +735,28 @@ void intel_uncore_forcewake_put(struct intel_uncore *uncore,
 }
 
 /**
+ * intel_uncore_forcewake_flush - flush the delayed release
+ * @uncore: the intel_uncore structure
+ * @fw_domains: forcewake domains to flush
+ */
+void intel_uncore_forcewake_flush(struct intel_uncore *uncore,
+				  enum forcewake_domains fw_domains)
+{
+	struct intel_uncore_forcewake_domain *domain;
+	unsigned int tmp;
+
+	if (!uncore->funcs.force_wake_put)
+		return;
+
+	fw_domains &= uncore->fw_domains;
+	for_each_fw_domain_masked(domain, fw_domains, uncore, tmp) {
+		WRITE_ONCE(domain->active, false);
+		if (hrtimer_cancel(&domain->timer))
+			intel_uncore_fw_release_timer(&domain->timer);
+	}
+}
+
+/**
  * intel_uncore_forcewake_put__locked - grab forcewake domain references
  * @uncore: the intel_uncore structure
  * @fw_domains: forcewake domains to get reference on
@@ -1189,6 +1211,18 @@ unclaimed_reg_debug(struct intel_uncore *uncore,
 		spin_unlock(&uncore->debug->lock);
 }
 
+#define __vgpu_read(x) \
+static u##x \
+vgpu_read##x(struct intel_uncore *uncore, i915_reg_t reg, bool trace) { \
+	u##x val = __raw_uncore_read##x(uncore, reg); \
+	trace_i915_reg_rw(false, reg, val, sizeof(val), trace); \
+	return val; \
+}
+__vgpu_read(8)
+__vgpu_read(16)
+__vgpu_read(32)
+__vgpu_read(64)
+
 #define GEN2_READ_HEADER(x) \
 	u##x val = 0; \
 	assert_rpm_wakelock_held(uncore->rpm);
@@ -1393,6 +1427,16 @@ __gen_reg_write_funcs(gen8);
 #undef __gen_reg_write_funcs
 #undef GEN6_WRITE_FOOTER
 #undef GEN6_WRITE_HEADER
+
+#define __vgpu_write(x) \
+static void \
+vgpu_write##x(struct intel_uncore *uncore, i915_reg_t reg, u##x val, bool trace) { \
+	trace_i915_reg_rw(true, reg, val, sizeof(val), trace); \
+	__raw_uncore_write##x(uncore, reg, val); \
+}
+__vgpu_write(8)
+__vgpu_write(16)
+__vgpu_write(32)
 
 #define ASSIGN_RAW_WRITE_MMIO_VFUNCS(uncore, x) \
 do { \
@@ -1713,7 +1757,10 @@ static void uncore_raw_init(struct intel_uncore *uncore)
 {
 	GEM_BUG_ON(intel_uncore_has_forcewake(uncore));
 
-	if (IS_GEN(uncore->i915, 5)) {
+	if (intel_vgpu_active(uncore->i915)) {
+		ASSIGN_RAW_WRITE_MMIO_VFUNCS(uncore, vgpu);
+		ASSIGN_RAW_READ_MMIO_VFUNCS(uncore, vgpu);
+	} else if (IS_GEN(uncore->i915, 5)) {
 		ASSIGN_RAW_WRITE_MMIO_VFUNCS(uncore, gen5);
 		ASSIGN_RAW_READ_MMIO_VFUNCS(uncore, gen5);
 	} else {

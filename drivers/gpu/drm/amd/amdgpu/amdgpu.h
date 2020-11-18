@@ -188,6 +188,8 @@ extern int amdgpu_cik_support;
 #define AMDGPUFB_CONN_LIMIT			4
 #define AMDGPU_BIOS_NUM_SCRATCH			16
 
+#define AMDGPU_VBIOS_VGA_ALLOCATION		(9 * 1024 * 1024) /* reserve 8MB for vga emulator and 1 MB for FB */
+
 /* hard reset data */
 #define AMDGPU_ASIC_RESET_DATA                  0x39d5e86b
 
@@ -815,7 +817,6 @@ struct amdgpu_device {
 	bool				is_atom_fw;
 	uint8_t				*bios;
 	uint32_t			bios_size;
-	struct amdgpu_bo		*stolen_vga_memory;
 	struct amdgpu_bo		*discovery_memory;
 	uint32_t			bios_scratch_reg_offset;
 	uint32_t			bios_scratch[AMDGPU_BIOS_NUM_SCRATCH];

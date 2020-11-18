@@ -32,6 +32,7 @@
 #include <drm/drm_debugfs.h>
 
 #include "gem/i915_gem_context.h"
+#include "gt/intel_gt_clock_utils.h"
 #include "gt/intel_gt_pm.h"
 #include "gt/intel_gt_requests.h"
 #include "gt/intel_reset.h"
@@ -325,6 +326,7 @@ static void print_context_stats(struct seq_file *m,
 		}
 		i915_gem_context_unlock_engines(ctx);
 
+		mutex_lock(&ctx->mutex);
 		if (!IS_ERR_OR_NULL(ctx->file_priv)) {
 			struct file_stats stats = {
 				.vm = rcu_access_pointer(ctx->vm),
@@ -345,6 +347,7 @@ static void print_context_stats(struct seq_file *m,
 
 			print_file_stats(m, name, stats);
 		}
+		mutex_unlock(&ctx->mutex);
 
 		spin_lock(&i915->gem.contexts.lock);
 		list_safe_reset_next(ctx, cn, link);
@@ -930,21 +933,30 @@ static int i915_frequency_info(struct seq_file *m, void *unused)
 		seq_printf(m, "RPDECLIMIT: 0x%08x\n", rpdeclimit);
 		seq_printf(m, "RPNSWREQ: %dMHz\n", reqf);
 		seq_printf(m, "CAGF: %dMHz\n", cagf);
-		seq_printf(m, "RP CUR UP EI: %d (%dus)\n",
-			   rpupei, GT_PM_INTERVAL_TO_US(dev_priv, rpupei));
-		seq_printf(m, "RP CUR UP: %d (%dus)\n",
-			   rpcurup, GT_PM_INTERVAL_TO_US(dev_priv, rpcurup));
-		seq_printf(m, "RP PREV UP: %d (%dus)\n",
-			   rpprevup, GT_PM_INTERVAL_TO_US(dev_priv, rpprevup));
+		seq_printf(m, "RP CUR UP EI: %d (%dns)\n",
+			   rpupei,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt, rpupei));
+		seq_printf(m, "RP CUR UP: %d (%dun)\n",
+			   rpcurup,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt, rpcurup));
+		seq_printf(m, "RP PREV UP: %d (%dns)\n",
+			   rpprevup,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt, rpprevup));
 		seq_printf(m, "Up threshold: %d%%\n",
 			   rps->power.up_threshold);
 
-		seq_printf(m, "RP CUR DOWN EI: %d (%dus)\n",
-			   rpdownei, GT_PM_INTERVAL_TO_US(dev_priv, rpdownei));
-		seq_printf(m, "RP CUR DOWN: %d (%dus)\n",
-			   rpcurdown, GT_PM_INTERVAL_TO_US(dev_priv, rpcurdown));
-		seq_printf(m, "RP PREV DOWN: %d (%dus)\n",
-			   rpprevdown, GT_PM_INTERVAL_TO_US(dev_priv, rpprevdown));
+		seq_printf(m, "RP CUR DOWN EI: %d (%dns)\n",
+			   rpdownei,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt,
+						      rpdownei));
+		seq_printf(m, "RP CUR DOWN: %d (%dns)\n",
+			   rpcurdown,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt,
+						      rpcurdown));
+		seq_printf(m, "RP PREV DOWN: %d (%dns)\n",
+			   rpprevdown,
+			   intel_gt_pm_interval_to_ns(&dev_priv->gt,
+						      rpprevdown));
 		seq_printf(m, "Down threshold: %d%%\n",
 			   rps->power.down_threshold);
 
@@ -1407,7 +1419,8 @@ static int i915_rps_boost_info(struct seq_file *m, void *data)
 	struct drm_i915_private *dev_priv = node_to_i915(m->private);
 	struct intel_rps *rps = &dev_priv->gt.rps;
 
-	seq_printf(m, "RPS enabled? %d\n", rps->enabled);
+	seq_printf(m, "RPS enabled? %s\n", yesno(intel_rps_is_enabled(rps)));
+	seq_printf(m, "RPS active? %s\n", yesno(intel_rps_is_active(rps)));
 	seq_printf(m, "GPU busy? %s\n", yesno(dev_priv->gt.awake));
 	seq_printf(m, "Boosts outstanding? %d\n",
 		   atomic_read(&rps->num_waiters));
@@ -1427,7 +1440,7 @@ static int i915_rps_boost_info(struct seq_file *m, void *data)
 
 	seq_printf(m, "Wait boosts: %d\n", atomic_read(&rps->boosts));
 
-	if (INTEL_GEN(dev_priv) >= 6 && rps->enabled && dev_priv->gt.awake) {
+	if (INTEL_GEN(dev_priv) >= 6 && intel_rps_is_active(rps)) {
 		u32 rpup, rpupei;
 		u32 rpdown, rpdownei;
 

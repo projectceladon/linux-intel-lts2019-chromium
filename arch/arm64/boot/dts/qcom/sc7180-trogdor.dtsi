@@ -6,6 +6,7 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/sound/sc7180-lpass.h>
@@ -13,6 +14,23 @@
 /* PMICs depend on spmi_bus label and so must come after SoC */
 #include "pm6150.dtsi"
 #include "pm6150l.dtsi"
+
+/ {
+	thermal-zones {
+		charger-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+
+			thermal-sensors = <&pm6150_adc_tm 1>;
+
+			trips {
+				temperature = <125000>;
+				hysteresis = <1000>;
+				type = "critical";
+			};
+		};
+	};
+};
 
 /*
  * Reserved memory changes
@@ -40,7 +58,7 @@
 		};
 
 		mpss_mem: memory@86000000 {
-			reg = <0x0 0x86000000 0x0 0x8c00000>;
+			reg = <0x0 0x86000000 0x0 0x2000000>;
 			no-map;
 		};
 
@@ -175,6 +193,21 @@
 		vin-supply = <&pp3300_a>;
 	};
 
+	pp3300_hub: pp3300-hub {
+		compatible = "regulator-fixed";
+		regulator-name = "pp3300_hub";
+
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+
+		gpio = <&tlmm 84 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&en_pp3300_hub>;
+
+		vin-supply = <&pp3300_a>;
+	};
+
 	/* BOARD-SPECIFIC TOP LEVEL NODES */
 
 	backlight: backlight {
@@ -209,6 +242,7 @@
 			gpios = <&tlmm 52 GPIO_ACTIVE_LOW>;
 			linux,code = <SW_PEN_INSERTED>;
 			linux,input-type = <EV_SW>;
+			wakeup-event-action = <EV_ACT_DEASSERTED>;
 			wakeup-source;
 		};
 	};
@@ -246,9 +280,9 @@
 		};
 	};
 
-	sound {
-		compatible = "qcom,sc7180-sndcard-rt5682-m98357-1mic";
-		model = "sc7180-snd-card";
+	sound: sound  {
+		compatible = "google,sc7180-trogdor";
+		model = "sc7180-rt5682-max98357a-1mic";
 
 		audio-routing =
 			"Headphone Jack", "HPOL",
@@ -280,6 +314,23 @@
 				sound-dai = <&max98357a>;
 			};
 		};
+
+		dai-link@2 {
+			link-name = "MultiMedia2";
+			reg = <2>;
+			cpu {
+				sound-dai = <&lpass_cpu 2>;
+			};
+
+			codec {
+				sound-dai = <&msm_dp>;
+			};
+		};
+	};
+
+	usb_hub: usb-hub {
+		compatible = "realtek,rts5411", "onboard-usb-hub";
+		vdd-supply = <&pp3300_hub>;
 	};
 };
 
@@ -530,13 +581,10 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		pp3300_hub:
 		pp3300_l7c: ldo7 {
 			regulator-min-microvolt = <3304000>;
 			regulator-max-microvolt = <3304000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-			regulator-always-on;
-			regulator-boot-on;
 		};
 
 		pp1800_brij_vccio:
@@ -639,6 +687,10 @@
 	};
 };
 
+&camcc {
+	status = "disabled";
+};
+
 &dsi0 {
 	status = "okay";
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
@@ -706,7 +758,6 @@ edp_brij_i2c: &i2c2 {
 };
 
 ap_sar_sensor_i2c: &i2c5 {
-	status = "okay";
 	clock-frequency = <400000>;
 
 	ap_sar_sensor: proximity@28 {
@@ -805,6 +856,9 @@ hp_i2c: &i2c9 {
 		reg = <MI2S_SECONDARY>;
 		qcom,playback-sd-lines = <0>;
 	};
+	hdmi-primary@0 {
+		reg = <LPASS_DP_RX>;
+	};
 };
 
 &mdp {
@@ -822,6 +876,25 @@ hp_i2c: &i2c9 {
 	data-lanes = <0 1>;
 	vdda-1p2-supply = <&vdda_usb_ss_dp_1p2>;
 	vdda-0p9-supply = <&vdda_usb_ss_dp_core>;
+};
+
+&pm6150_adc {
+	charger-thermistor@4f {
+		reg = <ADC5_AMUX_THM3_100K_PU>;
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+};
+
+&pm6150_adc_tm {
+	status = "okay";
+
+	charger-thermistor@1 {
+		reg = <1>;
+		io-channels = <&pm6150_adc ADC5_AMUX_THM3_100K_PU>;
+		qcom,ratiometric;
+		qcom,hw-settle-time-us = <200>;
+	};
 };
 
 &pm6150_pwrkey {
@@ -867,7 +940,20 @@ hp_i2c: &i2c9 {
 	cd-gpios = <&tlmm 69 GPIO_ACTIVE_LOW>;
 };
 
+&spi0 {
+	pinctrl-0 = <&qup_spi0_cs_gpio>;
+	cs-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
+};
+
+&spi6 {
+	pinctrl-0 = <&qup_spi6_cs_gpio>;
+	cs-gpios = <&tlmm 62 GPIO_ACTIVE_LOW>;
+};
+
 ap_spi_fp: &spi10 {
+	pinctrl-0 = <&qup_spi10_cs_gpio>;
+	cs-gpios = <&tlmm 89 GPIO_ACTIVE_LOW>;
+
 	cros_ec_fp: ec@0 {
 		compatible = "google,cros-ec-spi";
 		reg = <0>;
@@ -912,6 +998,22 @@ ap_spi_fp: &spi10 {
 
 &usb_1_dwc3 {
 	dr_mode = "host";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* 2.0 hub on port 1 */
+	hub@1 {
+		compatible = "usbbda,5411";
+		reg = <1>;
+		hub = <&usb_hub>;
+	};
+
+	/* 3.0 hub on port 2 */
+	hub@2 {
+		compatible = "usbbda,411";
+		reg = <2>;
+		hub = <&usb_hub>;
+	};
 };
 
 &usb_1_hsphy {
@@ -1027,7 +1129,7 @@ ap_spi_fp: &spi10 {
 	};
 };
 
-&qup_spi0_default {
+&qup_spi0_cs_gpio {
 	pinconf {
 		pins = "gpio34", "gpio35", "gpio36", "gpio37";
 		drive-strength = <2>;
@@ -1035,7 +1137,7 @@ ap_spi_fp: &spi10 {
 	};
 };
 
-&qup_spi6_default {
+&qup_spi6_cs_gpio {
 	pinconf {
 		pins = "gpio59", "gpio60", "gpio61", "gpio62";
 		drive-strength = <2>;
@@ -1043,7 +1145,7 @@ ap_spi_fp: &spi10 {
 	};
 };
 
-&qup_spi10_default {
+&qup_spi10_cs_gpio {
 	pinconf {
 		pins = "gpio86", "gpio87", "gpio88", "gpio89";
 		drive-strength = <2>;
@@ -1249,6 +1351,19 @@ ap_spi_fp: &spi10 {
 
 		pinconf {
 			pins = "gpio30";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	en_pp3300_hub: en-pp3300-hub {
+		pinmux {
+			pins = "gpio84";
+			function = "gpio";
+		};
+
+		pinconf {
+			pins = "gpio84";
 			drive-strength = <2>;
 			bias-disable;
 		};

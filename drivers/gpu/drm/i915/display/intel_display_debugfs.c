@@ -597,6 +597,11 @@ static void intel_hdcp_info(struct seq_file *m,
 {
 	bool hdcp_cap, hdcp2_cap;
 
+	if (!intel_connector->hdcp.shim) {
+		seq_puts(m, "No Connector Support");
+		goto out;
+	}
+
 	hdcp_cap = intel_hdcp_capable(intel_connector);
 	hdcp2_cap = intel_hdcp2_capable(intel_connector);
 
@@ -608,6 +613,7 @@ static void intel_hdcp_info(struct seq_file *m,
 	if (!hdcp_cap && !hdcp2_cap)
 		seq_puts(m, "None");
 
+out:
 	seq_puts(m, "\n");
 }
 
@@ -624,10 +630,6 @@ static void intel_dp_info(struct seq_file *m,
 
 	drm_dp_downstream_debug(m, intel_dp->dpcd, intel_dp->downstream_ports,
 				&intel_dp->aux);
-	if (intel_connector->hdcp.shim) {
-		seq_puts(m, "\tHDCP version: ");
-		intel_hdcp_info(m, intel_connector);
-	}
 }
 
 static void intel_dp_mst_info(struct seq_file *m,
@@ -651,10 +653,6 @@ static void intel_hdmi_info(struct seq_file *m,
 	struct intel_hdmi *intel_hdmi = enc_to_intel_hdmi(intel_encoder);
 
 	seq_printf(m, "\taudio support: %s\n", yesno(intel_hdmi->has_audio));
-	if (intel_connector->hdcp.shim) {
-		seq_puts(m, "\tHDCP version: ");
-		intel_hdcp_info(m, intel_connector);
-	}
 }
 
 static void intel_lvds_info(struct seq_file *m,
@@ -709,6 +707,9 @@ static void intel_connector_info(struct seq_file *m,
 	default:
 		break;
 	}
+
+	seq_puts(m, "\tHDCP version: ");
+	intel_hdcp_info(m, intel_connector);
 
 	seq_printf(m, "\tmodes:\n");
 	list_for_each_entry(mode, &connector->modes, head)
@@ -1149,7 +1150,7 @@ static int i915_dp_mst_info(struct seq_file *m, void *unused)
 	struct drm_i915_private *dev_priv = node_to_i915(m->private);
 	struct drm_device *dev = &dev_priv->drm;
 	struct intel_encoder *intel_encoder;
-	struct intel_digital_port *intel_dig_port;
+	struct intel_digital_port *dig_port;
 	struct drm_connector *connector;
 	struct drm_connector_list_iter conn_iter;
 
@@ -1162,14 +1163,14 @@ static int i915_dp_mst_info(struct seq_file *m, void *unused)
 		if (!intel_encoder || intel_encoder->type == INTEL_OUTPUT_DP_MST)
 			continue;
 
-		intel_dig_port = enc_to_dig_port(intel_encoder);
-		if (!intel_dig_port->dp.can_mst)
+		dig_port = enc_to_dig_port(intel_encoder);
+		if (!dig_port->dp.can_mst)
 			continue;
 
 		seq_printf(m, "MST Source Port [ENCODER:%d:%s]\n",
-			   intel_dig_port->base.base.base.id,
-			   intel_dig_port->base.base.name);
-		drm_dp_mst_dump_topology(m, &intel_dig_port->dp.mst_mgr);
+			   dig_port->base.base.base.id,
+			   dig_port->base.base.name);
+		drm_dp_mst_dump_topology(m, &dig_port->dp.mst_mgr);
 	}
 	drm_connector_list_iter_end(&conn_iter);
 
@@ -1321,6 +1322,16 @@ static int i915_displayport_test_data_show(struct seq_file *m, void *data)
 					   intel_dp->compliance.test_data.vdisplay);
 				seq_printf(m, "bpc: %u\n",
 					   intel_dp->compliance.test_data.bpc);
+			} else if (intel_dp->compliance.test_type ==
+				   DP_TEST_LINK_PHY_TEST_PATTERN) {
+				seq_printf(m, "pattern: %d\n",
+					   intel_dp->compliance.test_data.phytest.phy_pattern);
+				seq_printf(m, "Number of lanes: %d\n",
+					   intel_dp->compliance.test_data.phytest.num_lanes);
+				seq_printf(m, "Link Rate: %d\n",
+					   intel_dp->compliance.test_data.phytest.link_rate);
+				seq_printf(m, "level: %02x\n",
+					   intel_dp->train_set[0]);
 			}
 		} else
 			seq_puts(m, "0");
@@ -1353,7 +1364,7 @@ static int i915_displayport_test_type_show(struct seq_file *m, void *data)
 
 		if (encoder && connector->status == connector_status_connected) {
 			intel_dp = enc_to_intel_dp(encoder);
-			seq_printf(m, "%02lx", intel_dp->compliance.test_type);
+			seq_printf(m, "%02lx\n", intel_dp->compliance.test_type);
 		} else
 			seq_puts(m, "0");
 	}
@@ -1969,10 +1980,6 @@ static int i915_hdcp_sink_capability_show(struct seq_file *m, void *data)
 
 	if (connector->status != connector_status_connected)
 		return -ENODEV;
-
-	/* HDCP is supported by connector */
-	if (!intel_connector->hdcp.shim)
-		return -EINVAL;
 
 	seq_printf(m, "%s:%d HDCP version: ", connector->name,
 		   connector->base.id);

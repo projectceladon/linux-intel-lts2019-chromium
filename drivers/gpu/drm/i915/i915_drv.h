@@ -33,6 +33,8 @@
 #include <uapi/drm/i915_drm.h>
 #include <uapi/drm/drm_fourcc.h>
 
+#include <asm/hypervisor.h>
+
 #include <linux/io-mapping.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
@@ -144,6 +146,8 @@ enum hpd_pin {
 
 struct i915_hotplug {
 	struct delayed_work hotplug_work;
+
+	const u32 *hpd, *pch_hpd;
 
 	struct {
 		unsigned long last_jiffies;
@@ -517,6 +521,7 @@ struct i915_psr {
 	u32 dc3co_exit_delay;
 	struct delayed_work idle_work;
 	bool force_mode_changed;
+	struct drm_dp_vsc_sdp vsc;
 };
 
 #define QUIRK_LVDS_SSC_DISABLE (1<<1)
@@ -525,6 +530,7 @@ struct i915_psr {
 #define QUIRK_PIN_SWIZZLED_PAGES (1<<5)
 #define QUIRK_INCREASE_T12_DELAY (1<<6)
 #define QUIRK_INCREASE_DDI_DISABLED_TIME (1<<7)
+#define QUIRK_SHIFT_EDP_BACKLIGHT_BRIGHTNESS (1<<8)
 
 struct intel_fbdev;
 struct intel_fbc_work;
@@ -1543,6 +1549,12 @@ IS_SUBPLATFORM(const struct drm_i915_private *i915,
 #define IS_ICL_WITH_PORT_F(dev_priv) \
 	IS_SUBPLATFORM(dev_priv, INTEL_ICELAKE, INTEL_SUBPLATFORM_PORTF)
 
+#define IS_TGL_U(dev_priv) \
+	IS_SUBPLATFORM(dev_priv, INTEL_TIGERLAKE, INTEL_SUBPLATFORM_ULT)
+
+#define IS_TGL_Y(dev_priv) \
+	IS_SUBPLATFORM(dev_priv, INTEL_TIGERLAKE, INTEL_SUBPLATFORM_ULX)
+
 #define SKL_REVID_A0		0x0
 #define SKL_REVID_B0		0x1
 #define SKL_REVID_C0		0x2
@@ -1694,7 +1706,7 @@ IS_SUBPLATFORM(const struct drm_i915_private *i915,
 #define HAS_DDI(dev_priv)		 (INTEL_INFO(dev_priv)->display.has_ddi)
 #define HAS_FPGA_DBG_UNCLAIMED(dev_priv) (INTEL_INFO(dev_priv)->has_fpga_dbg)
 #define HAS_PSR(dev_priv)		 (INTEL_INFO(dev_priv)->display.has_psr)
-#define HAS_TRANSCODER_EDP(dev_priv)	 (INTEL_INFO(dev_priv)->trans_offsets[TRANSCODER_EDP] != 0)
+#define HAS_TRANSCODER(dev_priv, trans)	 ((INTEL_INFO(dev_priv)->cpu_transcoder_mask & BIT(trans)) != 0)
 
 #define HAS_RC6(dev_priv)		 (INTEL_INFO(dev_priv)->has_rc6)
 #define HAS_RC6p(dev_priv)		 (INTEL_INFO(dev_priv)->has_rc6p)
@@ -1740,7 +1752,8 @@ IS_SUBPLATFORM(const struct drm_i915_private *i915,
 #define HAS_DISPLAY(dev_priv) (INTEL_INFO(dev_priv)->pipe_mask != 0)
 
 /* Only valid when HAS_DISPLAY() is true */
-#define INTEL_DISPLAY_ENABLED(dev_priv) (WARN_ON(!HAS_DISPLAY(dev_priv)), !i915_modparams.disable_display)
+#define INTEL_DISPLAY_ENABLED(dev_priv) \
+		(drm_WARN_ON(&(dev_priv)->drm, !HAS_DISPLAY(dev_priv)), !i915_modparams.disable_display)
 
 static inline bool intel_vtd_active(void)
 {
@@ -1748,7 +1761,9 @@ static inline bool intel_vtd_active(void)
 	if (intel_iommu_gfx_mapped)
 		return true;
 #endif
-	return false;
+
+	/* Running as a guest, we assume the host is enforcing VT'd */
+	return !hypervisor_is_type(X86_HYPER_NATIVE);
 }
 
 static inline bool intel_scanout_needs_vtd_wa(struct drm_i915_private *dev_priv)

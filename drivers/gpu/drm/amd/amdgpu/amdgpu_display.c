@@ -297,7 +297,7 @@ int amdgpu_display_crtc_set_config(struct drm_mode_set *set,
 	   take the current one */
 	if (active && !adev->have_disp_power_ref) {
 		adev->have_disp_power_ref = true;
-		goto out;
+		return ret;
 	}
 	/* if we have no active crtcs, then drop the power ref
 	   we got before */
@@ -371,11 +371,13 @@ void amdgpu_display_print_display_setup(struct drm_device *dev)
 	struct amdgpu_connector *amdgpu_connector;
 	struct drm_encoder *encoder;
 	struct amdgpu_encoder *amdgpu_encoder;
+	struct drm_connector_list_iter iter;
 	uint32_t devices;
 	int i = 0;
 
+	drm_connector_list_iter_begin(dev, &iter);
 	DRM_INFO("AMDGPU Display Connectors\n");
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+	drm_for_each_connector_iter(connector, &iter) {
 		amdgpu_connector = to_amdgpu_connector(connector);
 		DRM_INFO("Connector %d:\n", i);
 		DRM_INFO("  %s\n", connector->name);
@@ -439,6 +441,7 @@ void amdgpu_display_print_display_setup(struct drm_device *dev)
 		}
 		i++;
 	}
+	drm_connector_list_iter_end(&iter);
 }
 
 /**
@@ -573,14 +576,14 @@ amdgpu_display_user_framebuffer_create(struct drm_device *dev,
 
 	amdgpu_fb = kzalloc(sizeof(*amdgpu_fb), GFP_KERNEL);
 	if (amdgpu_fb == NULL) {
-		drm_gem_object_put_unlocked(obj);
+		drm_gem_object_put(obj);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	ret = amdgpu_display_framebuffer_init(dev, amdgpu_fb, mode_cmd, obj);
 	if (ret) {
 		kfree(amdgpu_fb);
-		drm_gem_object_put_unlocked(obj);
+		drm_gem_object_put(obj);
 		return ERR_PTR(ret);
 	}
 

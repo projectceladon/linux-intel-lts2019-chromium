@@ -1165,9 +1165,11 @@ static inline void sdhci_auto_cmd_select(struct sdhci_host *host,
 	/*
 	 * In case of Version 4.10 or later, use of 'Auto CMD Auto
 	 * Select' is recommended rather than use of 'Auto CMD12
-	 * Enable' or 'Auto CMD23 Enable'.
+	 * Enable' or 'Auto CMD23 Enable'. We require Version 4 Mode
+	 * here because some controllers (e.g sdhci-of-dwmshc) expect it.
 	 */
-	if (host->version >= SDHCI_SPEC_410 && (use_cmd12 || use_cmd23)) {
+	if (host->version >= SDHCI_SPEC_410 && host->v4_mode &&
+	    (use_cmd12 || use_cmd23)) {
 		*mode |= SDHCI_TRNS_AUTO_SEL;
 
 		ctrl2 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
@@ -2017,13 +2019,12 @@ void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		host->timing = ios->timing;
 
 		if (!(host->quirks2 & SDHCI_QUIRK2_PRESET_VALUE_BROKEN) &&
-		    !mmc_doing_retune(mmc) &&
-		    ((ios->timing == MMC_TIMING_UHS_SDR12) ||
-		     (ios->timing == MMC_TIMING_UHS_SDR25) ||
-		     (ios->timing == MMC_TIMING_UHS_SDR50) ||
-		     (ios->timing == MMC_TIMING_UHS_SDR104) ||
-		     (ios->timing == MMC_TIMING_UHS_DDR50) ||
-		     (ios->timing == MMC_TIMING_MMC_DDR52))) {
+				((ios->timing == MMC_TIMING_UHS_SDR12) ||
+				 (ios->timing == MMC_TIMING_UHS_SDR25) ||
+				 (ios->timing == MMC_TIMING_UHS_SDR50) ||
+				 (ios->timing == MMC_TIMING_UHS_SDR104) ||
+				 (ios->timing == MMC_TIMING_UHS_DDR50) ||
+				 (ios->timing == MMC_TIMING_MMC_DDR52))) {
 			u16 preset;
 
 			sdhci_enable_preset_value(host, true);

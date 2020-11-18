@@ -1136,9 +1136,9 @@ static void cancel_adv_timeout(struct hci_dev *hdev)
 }
 
 /* This function requires the caller holds hdev->lock */
-static void hci_suspend_adv_instances(struct hci_request *req)
+void __hci_req_pause_adv_instances(struct hci_request *req)
 {
-	bt_dev_dbg(req->hdev, "Suspending advertising instances");
+	bt_dev_dbg(req->hdev, "Pausing advertising instances");
 
 	/* Call to disable any advertisements active on the controller.
 	 * This will succeed even if no advertisements are configured.
@@ -1151,7 +1151,7 @@ static void hci_suspend_adv_instances(struct hci_request *req)
 }
 
 /* This function requires the caller holds hdev->lock */
-static void hci_resume_adv_instances(struct hci_request *req)
+static void __hci_req_resume_adv_instances(struct hci_request *req)
 {
 	struct adv_info *adv;
 
@@ -1172,6 +1172,17 @@ static void hci_resume_adv_instances(struct hci_request *req)
 						req->hdev->cur_adv_instance,
 						true);
 	}
+}
+
+/* This function requires the caller holds hdev->lock */
+int hci_req_resume_adv_instances(struct hci_dev *hdev)
+{
+	struct hci_request req;
+
+	hci_req_init(&req, hdev);
+	__hci_req_resume_adv_instances(&req);
+
+	return hci_req_run(&req, NULL);
 }
 
 static void suspend_req_complete(struct hci_dev *hdev, u8 status, u16 opcode)
@@ -1228,7 +1239,7 @@ void hci_req_prepare_suspend(struct hci_dev *hdev, enum suspended_state next)
 
 		/* Pause other advertisements */
 		if (hdev->adv_instance_cnt)
-			hci_suspend_adv_instances(&req);
+			__hci_req_pause_adv_instances(&req);
 
 		hdev->advertising_paused = true;
 		hdev->advertising_old_state = old_state;
@@ -1295,7 +1306,7 @@ void hci_req_prepare_suspend(struct hci_dev *hdev, enum suspended_state next)
 
 		/* Resume other advertisements */
 		if (hdev->adv_instance_cnt)
-			hci_resume_adv_instances(&req);
+			__hci_req_resume_adv_instances(&req);
 
 		/* Unpause discovery */
 		hdev->discovery_paused = false;
@@ -1445,6 +1456,7 @@ static bool is_advertising_allowed(struct hci_dev *hdev, bool connectable)
 void __hci_req_enable_advertising(struct hci_request *req)
 {
 	struct hci_dev *hdev = req->hdev;
+	struct adv_info *adv_instance;
 	struct hci_cp_le_set_adv_param cp;
 	u8 own_addr_type, enable = 0x01;
 	bool connectable;
@@ -1452,6 +1464,7 @@ void __hci_req_enable_advertising(struct hci_request *req)
 	u32 flags;
 
 	flags = get_adv_instance_flags(hdev, hdev->cur_adv_instance);
+	adv_instance = hci_find_adv_instance(hdev, hdev->cur_adv_instance);
 
 	/* If the "connectable" instance flag was not set, then choose between
 	 * ADV_IND and ADV_NONCONN_IND based on the global connectable setting.
@@ -1483,11 +1496,16 @@ void __hci_req_enable_advertising(struct hci_request *req)
 
 	memset(&cp, 0, sizeof(cp));
 
-	if (connectable) {
-		cp.type = LE_ADV_IND;
-
+	if (adv_instance) {
+		adv_min_interval = adv_instance->min_interval;
+		adv_max_interval = adv_instance->max_interval;
+	} else {
 		adv_min_interval = hdev->le_adv_min_interval;
 		adv_max_interval = hdev->le_adv_max_interval;
+	}
+
+	if (connectable) {
+		cp.type = LE_ADV_IND;
 	} else {
 		if (get_cur_adv_instance_scan_rsp_len(hdev))
 			cp.type = LE_ADV_SCAN_IND;
@@ -1498,9 +1516,6 @@ void __hci_req_enable_advertising(struct hci_request *req)
 		    hci_dev_test_flag(hdev, HCI_LIMITED_DISCOVERABLE)) {
 			adv_min_interval = DISCOV_LE_FAST_ADV_INT_MIN;
 			adv_max_interval = DISCOV_LE_FAST_ADV_INT_MAX;
-		} else {
-			adv_min_interval = hdev->le_adv_min_interval;
-			adv_max_interval = hdev->le_adv_max_interval;
 		}
 	}
 
@@ -1608,11 +1623,14 @@ void __hci_req_update_scan_rsp_data(struct hci_request *req, u8 instance)
 
 		memset(&cp, 0, sizeof(cp));
 
-		if (instance)
+		/* Extended scan response data doesn't allow a response to be
+		 * set if the instance isn't scannable.
+		 */
+		if (get_adv_instance_scan_rsp_len(hdev, instance))
 			len = create_instance_scan_rsp_data(hdev, instance,
 							    cp.data);
 		else
-			len = create_default_scan_rsp_data(hdev, cp.data);
+			len = 0;
 
 		if (hdev->scan_rsp_data_len == len &&
 		    !memcmp(cp.data, hdev->scan_rsp_data, len))
@@ -1633,14 +1651,11 @@ void __hci_req_update_scan_rsp_data(struct hci_request *req, u8 instance)
 
 		memset(&cp, 0, sizeof(cp));
 
-		/* Extended scan response data doesn't allow a response to be
-		 * set if the instance isn't scannable.
-		 */
-		if (get_adv_instance_scan_rsp_len(hdev, instance))
+		if (instance)
 			len = create_instance_scan_rsp_data(hdev, instance,
 							    cp.data);
 		else
-			len = 0;
+			len = create_default_scan_rsp_data(hdev, cp.data);
 
 		if (hdev->scan_rsp_data_len == len &&
 		    !memcmp(cp.data, hdev->scan_rsp_data, len))
@@ -2053,9 +2068,15 @@ int __hci_req_setup_ext_adv_instance(struct hci_request *req, u8 instance)
 
 	memset(&cp, 0, sizeof(cp));
 
-	/* In ext adv set param interval is 3 octets */
-	hci_cpu_to_le24(hdev->le_adv_min_interval, cp.min_interval);
-	hci_cpu_to_le24(hdev->le_adv_max_interval, cp.max_interval);
+	if (adv_instance) {
+		hci_cpu_to_le24(adv_instance->min_interval, cp.min_interval);
+		hci_cpu_to_le24(adv_instance->max_interval, cp.max_interval);
+		cp.tx_power = adv_instance->tx_power;
+	} else {
+		hci_cpu_to_le24(hdev->le_adv_min_interval, cp.min_interval);
+		hci_cpu_to_le24(hdev->le_adv_max_interval, cp.max_interval);
+		cp.tx_power = HCI_ADV_TX_POWER_NO_PREFERENCE;
+	}
 
 	secondary_adv = (flags & MGMT_ADV_FLAG_SEC_MASK);
 
@@ -2078,7 +2099,6 @@ int __hci_req_setup_ext_adv_instance(struct hci_request *req, u8 instance)
 
 	cp.own_addr_type = own_addr_type;
 	cp.channel_map = hdev->le_adv_channel_map;
-	cp.tx_power = 127;
 	cp.handle = instance;
 
 	if (flags & MGMT_ADV_FLAG_SEC_2M) {

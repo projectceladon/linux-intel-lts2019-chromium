@@ -97,7 +97,7 @@ static void remote_function(void *data)
  * retry due to any failures in smp_call_function_single(), such as if the
  * task_cpu() goes offline concurrently.
  *
- * returns @func return value or -ESRCH when the process isn't running
+ * returns @func return value or -ESRCH or -ENXIO when the process isn't running
  */
 static int
 task_function_call(struct task_struct *p, remote_function_f func, void *info)
@@ -113,7 +113,8 @@ task_function_call(struct task_struct *p, remote_function_f func, void *info)
 	for (;;) {
 		ret = smp_call_function_single(task_cpu(p), remote_function,
 					       &data, 1);
-		ret = !ret ? data.ret : -EAGAIN;
+		if (!ret)
+			ret = data.ret;
 
 		if (ret != -EAGAIN)
 			break;
@@ -1258,7 +1259,7 @@ static void put_ctx(struct perf_event_context *ctx)
  * function.
  *
  * Lock order:
- *    cred_guard_mutex
+ *    exec_update_mutex
  *	task_struct::perf_event_mutex
  *	  perf_event_context::mutex
  *	    perf_event::child_mutex;
@@ -9419,6 +9420,7 @@ perf_event_parse_addr_filter(struct perf_event *event, char *fstr,
 			if (token == IF_SRC_FILE || token == IF_SRC_FILEADDR) {
 				int fpos = token == IF_SRC_FILE ? 2 : 1;
 
+				kfree(filename);
 				filename = match_strdup(&args[fpos]);
 				if (!filename) {
 					ret = -ENOMEM;
@@ -9465,16 +9467,13 @@ perf_event_parse_addr_filter(struct perf_event *event, char *fstr,
 				 */
 				ret = -EOPNOTSUPP;
 				if (!event->ctx->task)
-					goto fail_free_name;
+					goto fail;
 
 				/* look up the path and grab its inode */
 				ret = kern_path(filename, LOOKUP_FOLLOW,
 						&filter->path);
 				if (ret)
-					goto fail_free_name;
-
-				kfree(filename);
-				filename = NULL;
+					goto fail;
 
 				ret = -EINVAL;
 				if (!filter->path.dentry ||
@@ -9494,13 +9493,13 @@ perf_event_parse_addr_filter(struct perf_event *event, char *fstr,
 	if (state != IF_STATE_ACTION)
 		goto fail;
 
+	kfree(filename);
 	kfree(orig);
 
 	return 0;
 
-fail_free_name:
-	kfree(filename);
 fail:
+	kfree(filename);
 	free_filters_list(filters);
 	kfree(orig);
 
@@ -11009,14 +11008,14 @@ int ksys_perf_event_open(struct perf_event_attr __user * attr_uptr, pid_t pid,
 	}
 
 	if (task) {
-		err = mutex_lock_interruptible(&task->signal->cred_guard_mutex);
+		err = mutex_lock_interruptible(&task->signal->exec_update_mutex);
 		if (err)
 			goto err_task;
 
 		/*
 		 * Reuse ptrace permission checks for now.
 		 *
-		 * We must hold cred_guard_mutex across this and any potential
+		 * We must hold exec_update_mutex across this and any potential
 		 * perf_install_in_context() call for this new event to
 		 * serialize against exec() altering our credentials (and the
 		 * perf_event_exit_task() that could imply).
@@ -11305,7 +11304,7 @@ int ksys_perf_event_open(struct perf_event_attr __user * attr_uptr, pid_t pid,
 	mutex_unlock(&ctx->mutex);
 
 	if (task) {
-		mutex_unlock(&task->signal->cred_guard_mutex);
+		mutex_unlock(&task->signal->exec_update_mutex);
 		put_task_struct(task);
 	}
 
@@ -11341,7 +11340,7 @@ err_alloc:
 		free_event(event);
 err_cred:
 	if (task)
-		mutex_unlock(&task->signal->cred_guard_mutex);
+		mutex_unlock(&task->signal->exec_update_mutex);
 err_task:
 	if (task)
 		put_task_struct(task);
@@ -11653,7 +11652,7 @@ static void perf_event_exit_task_context(struct task_struct *child, int ctxn)
 /*
  * When a child task exits, feed back event values to parent events.
  *
- * Can be called with cred_guard_mutex held when called from
+ * Can be called with exec_update_mutex held when called from
  * install_exec_creds().
  */
 void perf_event_exit_task(struct task_struct *child)
