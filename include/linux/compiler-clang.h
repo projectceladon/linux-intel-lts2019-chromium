@@ -54,7 +54,4 @@
 #define __norecordmcount \
 	__attribute__((__section__(".text..ftrace")))
 #endif
-
-
-#define __nocfi		__attribute__((__no_sanitize__("cfi")))
 #endif
