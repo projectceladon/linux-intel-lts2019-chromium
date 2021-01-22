@@ -1,27 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2015 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
-#include <linux/module.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
-#include <linux/of_platform.h>
-#endif
 #include <linux/platform_device.h>
 #include <linux/trusty/smcall.h>
 #include <linux/trusty/trusty.h>
 #include <linux/notifier.h>
+#include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/log2.h>
 #include <asm/page.h>
@@ -30,11 +18,15 @@
 #define TRUSTY_LOG_SIZE (PAGE_SIZE * 2)
 #define TRUSTY_LINE_BUFFER_SIZE 256
 
-#ifdef CONFIG_64BIT
-static uint64_t g_vmm_debug_buf;
-#else
-static uint32_t g_vmm_debug_buf;
-#endif
+/*
+ * If we log too much and a UART or other slow source is connected, we can stall
+ * out another thread which is doing printk.
+ *
+ * Trusty crash logs are currently ~16 lines, so 100 should include context and
+ * the crash most of the time.
+ */
+static struct ratelimit_state trusty_log_rate_limit =
+	RATELIMIT_STATE_INIT("trusty_log", 1 * HZ, 100);
 
 struct trusty_log_state {
 	struct device *dev;
@@ -46,9 +38,11 @@ struct trusty_log_state {
 	 */
 	spinlock_t lock;
 	struct log_rb *log;
-	uint32_t get;
+	u32 get;
 
 	struct page *log_pages;
+	struct scatterlist sg;
+	trusty_shared_mem_id_t log_pages_shared_mem_id;
 
 	struct notifier_block call_notifier;
 	struct notifier_block panic_notifier;
@@ -60,8 +54,8 @@ static int log_read_line(struct trusty_log_state *s, int put, int get)
 	struct log_rb *log = s->log;
 	int i;
 	char c = '\0';
-	size_t max_to_read = min((size_t)(put - get),
-				 sizeof(s->line_buffer) - 1);
+	size_t max_to_read =
+		min_t(size_t, put - get, sizeof(s->line_buffer) - 1);
 	size_t mask = log->sz - 1;
 
 	for (i = 0; i < max_to_read && c != '\n';)
@@ -71,13 +65,14 @@ static int log_read_line(struct trusty_log_state *s, int put, int get)
 	return i;
 }
 
-static void trusty_dump_logs(struct trusty_log_state *s, bool dump_panic_log)
+static void trusty_dump_logs(struct trusty_log_state *s)
 {
 	struct log_rb *log = s->log;
-	uint32_t get, put, alloc;
+	u32 get, put, alloc;
 	int read_chars;
 
-	BUG_ON(!is_power_of_2(log->sz));
+	if (WARN_ON(!is_power_of_2(log->sz)))
+		return;
 
 	/*
 	 * For this ring buffer, at any given point, alloc >= put >= get.
@@ -103,13 +98,13 @@ static void trusty_dump_logs(struct trusty_log_state *s, bool dump_panic_log)
 		 * have been corrupted by the producer.
 		 */
 		if (alloc - get > log->sz) {
-			pr_err("trusty: log overflow.");
+			dev_err(s->dev, "log overflow.");
 			get = alloc - log->sz;
 			continue;
 		}
 
-		if (dump_panic_log)
-			pr_info("trusty: %s", s->line_buffer);
+		if (__ratelimit(&trusty_log_rate_limit))
+			dev_info(s->dev, "%s", s->line_buffer);
 
 		get += read_chars;
 	}
@@ -127,11 +122,7 @@ static int trusty_log_call_notify(struct notifier_block *nb,
 
 	s = container_of(nb, struct trusty_log_state, call_notifier);
 	spin_lock_irqsave(&s->lock, flags);
-#ifdef CONFIG_DEBUG_INFO
-	trusty_dump_logs(s, true);
-#else
-	trusty_dump_logs(s, false);
-#endif
+	trusty_dump_logs(s);
 	spin_unlock_irqrestore(&s->lock, flags);
 	return NOTIFY_OK;
 }
@@ -146,93 +137,10 @@ static int trusty_log_panic_notify(struct notifier_block *nb,
 	 * though this is racy.
 	 */
 	s = container_of(nb, struct trusty_log_state, panic_notifier);
-	pr_info("trusty-log panic notifier - trusty version %s",
-		trusty_version_str_get(s->trusty_dev));
-	trusty_dump_logs(s, true);
+	dev_info(s->dev, "panic notifier - trusty version %s",
+		 trusty_version_str_get(s->trusty_dev));
+	trusty_dump_logs(s);
 	return NOTIFY_OK;
-}
-
-static void trusty_vmm_dump_header(struct deadloop_dump *dump)
-{
-	struct dump_header *header;
-
-	if (!dump)
-		return;
-
-	header = &(dump->header);
-	pr_info("-----------VMM PANIC HEADER-----------\n");
-	pr_info("VMM version = %s\n", header->vmm_version);
-	pr_info("Signature = %s\n", header->signature);
-	pr_info("Error_info = %s\n", header->error_info);
-	pr_info("Cpuid = %d\n", header->cpuid);
-	pr_info("-----------END OF VMM PANIC HEADER-----------\n");
-}
-
-static void trusty_vmm_dump_data(struct deadloop_dump *dump)
-{
-	struct dump_data *dump_data;
-	char *p, *pstr;
-
-	if (!dump)
-		return;
-
-	dump_data = &(dump->data);
-
-	pr_info("-----------VMM PANIC DATA INFO-----------\n");
-	pstr = (char *)dump_data->data;
-	for (p = pstr; p < ((char *)dump_data->data + dump_data->length); p++) {
-		if (*p == '\r') {
-			*p = 0x00;
-		} else if (*p == '\n') {
-			*p = 0x00;
-			pr_info("%s\n", pstr);
-			pstr = (char *)(p + 1);
-		}
-	}
-	/* dump the characters in the last line */
-	if ((pstr - (char *)(dump_data->data)) < dump_data->length) {
-		*p = 0x00;
-		pr_info("%s\n", pstr);
-	}
-	pr_info("-----------END OF VMM PANIC DATA INFO-----------\n");
-}
-
-static int trusty_vmm_panic_notify(struct notifier_block *nb,
-				   unsigned long action, void *data)
-{
-	struct deadloop_dump *dump_info = NULL;
-
-	if (g_vmm_debug_buf) {
-		dump_info = (struct deadloop_dump *)g_vmm_debug_buf;
-
-		if (dump_info->is_valid) {
-			pr_info("trusty-vmm panic start!\n");
-			trusty_vmm_dump_header(dump_info);
-			trusty_vmm_dump_data(dump_info);
-			pr_info("trusty-vmm panic dump end!\n");
-		}
-	}
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block trusty_vmm_panic_nb = {
-	.notifier_call = trusty_vmm_panic_notify,
-	.priority = 0,
-};
-
-#define TRUSTY_VMCALL_DUMP_INIT  0x74727507
-static int trusty_vmm_dump_init(void *gva)
-{
-	int ret = -1;
-
-	__asm__ __volatile__(
-		"vmcall"
-		: "=a"(ret)
-		: "a"(TRUSTY_VMCALL_DUMP_INIT), "D"(gva)
-	);
-
-	return ret;
 }
 
 static bool trusty_supports_logging(struct device *device)
@@ -242,41 +150,31 @@ static bool trusty_supports_logging(struct device *device)
 	result = trusty_std_call32(device, SMC_SC_SHARED_LOG_VERSION,
 				   TRUSTY_LOG_API_VERSION, 0, 0);
 	if (result == SM_ERR_UNDEFINED_SMC) {
-		pr_info("trusty-log not supported on secure side.\n");
+		dev_info(device, "trusty-log not supported on secure side.\n");
 		return false;
 	} else if (result < 0) {
-		pr_err("trusty std call (SMC_SC_SHARED_LOG_VERSION) failed: %d\n",
-		       result);
+		dev_err(device,
+			"trusty std call (SMC_SC_SHARED_LOG_VERSION) failed: %d\n",
+			result);
 		return false;
 	}
 
-	if (result == TRUSTY_LOG_API_VERSION) {
-		return true;
-	} else {
-		pr_info("trusty-log unsupported api version: %d, supported: %d\n",
-			result, TRUSTY_LOG_API_VERSION);
+	if (result != TRUSTY_LOG_API_VERSION) {
+		dev_info(device, "unsupported api version: %d, supported: %d\n",
+			 result, TRUSTY_LOG_API_VERSION);
 		return false;
 	}
+	return true;
 }
 
 static int trusty_log_probe(struct platform_device *pdev)
 {
 	struct trusty_log_state *s;
 	int result;
-	int vmm_id;
-	phys_addr_t pa;
-	struct deadloop_dump *dump;
+	trusty_shared_mem_id_t mem_id;
 
-	vmm_id = trusty_detect_vmm();
-	if (vmm_id < 0) {
-		dev_err(&pdev->dev, "Cannot detect VMM which supports trusty!");
-		return -EINVAL;
-	}
-
-	dev_dbg(&pdev->dev, "%s\n", __func__);
-	if (!trusty_supports_logging(pdev->dev.parent)) {
+	if (!trusty_supports_logging(pdev->dev.parent))
 		return -ENXIO;
-	}
 
 	s = kzalloc(sizeof(*s), GFP_KERNEL);
 	if (!s) {
@@ -296,14 +194,23 @@ static int trusty_log_probe(struct platform_device *pdev)
 	}
 	s->log = page_address(s->log_pages);
 
-	pa = page_to_phys(s->log_pages);
+	sg_init_one(&s->sg, s->log, TRUSTY_LOG_SIZE);
+	result = trusty_share_memory_compat(s->trusty_dev, &mem_id, &s->sg, 1,
+					    PAGE_KERNEL);
+	if (result) {
+		dev_err(s->dev, "trusty_share_memory failed: %d\n", result);
+		goto err_share_memory;
+	}
+	s->log_pages_shared_mem_id = mem_id;
+
 	result = trusty_std_call32(s->trusty_dev,
 				   SMC_SC_SHARED_LOG_ADD,
-				   (u32)(pa), (u32)HIULINT(pa),
+				   (u32)(mem_id), (u32)(mem_id >> 32),
 				   TRUSTY_LOG_SIZE);
 	if (result < 0) {
-		pr_err("trusty std call (SMC_SC_SHARED_LOG_ADD) failed: %d %pa\n",
-		       result, &pa);
+		dev_err(s->dev,
+			"trusty std call (SMC_SC_SHARED_LOG_ADD) failed: %d 0x%llx\n",
+			result, mem_id);
 		goto error_std_call;
 	}
 
@@ -324,54 +231,27 @@ static int trusty_log_probe(struct platform_device *pdev)
 			"failed to register panic notifier\n");
 		goto error_panic_notifier;
 	}
-
-	if(vmm_id == VMM_ID_EVMM) {
-		/* allocate debug buffer for vmm panic dump */
-		g_vmm_debug_buf = __get_free_pages(GFP_KERNEL | __GFP_ZERO, 2);
-		if (!g_vmm_debug_buf) {
-			result = -ENOMEM;
-			goto error_alloc_vmm;
-		}
-
-		dump = (struct deadloop_dump *)g_vmm_debug_buf;
-		dump->version_of_this_struct = VMM_DUMP_VERSION;
-		dump->size_of_this_struct = sizeof(struct deadloop_dump);
-		dump->is_valid = false;
-
-		/* shared the buffer to vmm by VMCALL */
-		result = trusty_vmm_dump_init(dump);
-		if (result < 0) {
-			dev_err(&pdev->dev,
-				"failed to share the dump buffer to VMM\n");
-			goto error_vmm_panic_notifier;
-		}
-
-		/* register the panic notifier for vmm */
-		result = atomic_notifier_chain_register(&panic_notifier_list,
-					&trusty_vmm_panic_nb);
-		if (result < 0) {
-			dev_err(&pdev->dev,
-				"failed to register vmm panic notifier\n");
-			goto error_vmm_panic_notifier;
-		}
-	}
-
 	platform_set_drvdata(pdev, s);
 
 	return 0;
 
-error_vmm_panic_notifier:
-	free_page(g_vmm_debug_buf);
-error_alloc_vmm:
-	atomic_notifier_chain_unregister(&panic_notifier_list,
-			&s->panic_notifier);
 error_panic_notifier:
 	trusty_call_notifier_unregister(s->trusty_dev, &s->call_notifier);
 error_call_notifier:
 	trusty_std_call32(s->trusty_dev, SMC_SC_SHARED_LOG_RM,
-			  (u32)pa, (u32)HIULINT(pa), 0);
+			  (u32)mem_id, (u32)(mem_id >> 32), 0);
 error_std_call:
-	__free_pages(s->log_pages, get_order(TRUSTY_LOG_SIZE));
+	if (WARN_ON(trusty_reclaim_memory(s->trusty_dev, mem_id, &s->sg, 1))) {
+		dev_err(&pdev->dev, "trusty_revoke_memory failed: %d 0x%llx\n",
+			result, mem_id);
+		/*
+		 * It is not safe to free this memory if trusty_revoke_memory
+		 * fails. Leak it in that case.
+		 */
+	} else {
+err_share_memory:
+		__free_pages(s->log_pages, get_order(TRUSTY_LOG_SIZE));
+	}
 error_alloc_log:
 	kfree(s);
 error_alloc_state:
@@ -382,25 +262,31 @@ static int trusty_log_remove(struct platform_device *pdev)
 {
 	int result;
 	struct trusty_log_state *s = platform_get_drvdata(pdev);
-	phys_addr_t pa = page_to_phys(s->log_pages);
+	trusty_shared_mem_id_t mem_id = s->log_pages_shared_mem_id;
 
-	dev_dbg(&pdev->dev, "%s\n", __func__);
-
-	atomic_notifier_chain_unregister(&panic_notifier_list,
-					&trusty_vmm_panic_nb);
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &s->panic_notifier);
 	trusty_call_notifier_unregister(s->trusty_dev, &s->call_notifier);
 
 	result = trusty_std_call32(s->trusty_dev, SMC_SC_SHARED_LOG_RM,
-				   (u32)pa, (u32)HIULINT(pa), 0);
+				   (u32)mem_id, (u32)(mem_id >> 32), 0);
 	if (result) {
-		pr_err("trusty std call (SMC_SC_SHARED_LOG_RM) failed: %d\n",
-		       result);
+		dev_err(&pdev->dev,
+			"trusty std call (SMC_SC_SHARED_LOG_RM) failed: %d\n",
+			result);
 	}
-	__free_pages(s->log_pages, get_order(TRUSTY_LOG_SIZE));
+	result = trusty_reclaim_memory(s->trusty_dev, mem_id, &s->sg, 1);
+	if (WARN_ON(result)) {
+		dev_err(&pdev->dev,
+			"trusty failed to remove shared memory: %d\n", result);
+	} else {
+		/*
+		 * It is not safe to free this memory if trusty_revoke_memory
+		 * fails. Leak it in that case.
+		 */
+		__free_pages(s->log_pages, get_order(TRUSTY_LOG_SIZE));
+	}
 	kfree(s);
-	free_page(g_vmm_debug_buf);
 
 	return 0;
 }
@@ -410,15 +296,18 @@ static const struct of_device_id trusty_test_of_match[] = {
 	{},
 };
 
+MODULE_DEVICE_TABLE(trusty, trusty_test_of_match);
+
 static struct platform_driver trusty_log_driver = {
 	.probe = trusty_log_probe,
 	.remove = trusty_log_remove,
 	.driver = {
 		.name = "trusty-log",
-		.owner = THIS_MODULE,
 		.of_match_table = trusty_test_of_match,
 	},
 };
 
 module_platform_driver(trusty_log_driver);
-MODULE_LICENSE("GPL");
+
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("Trusty logging driver");

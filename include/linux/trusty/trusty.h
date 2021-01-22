@@ -1,24 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2013 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 #ifndef __LINUX_TRUSTY_TRUSTY_H
 #define __LINUX_TRUSTY_TRUSTY_H
 
 #include <linux/kernel.h>
 #include <linux/trusty/sm_err.h>
+#include <linux/types.h>
 #include <linux/device.h>
 #include <linux/pagemap.h>
-#include <asm/hypervisor.h>
 
 
 #if IS_ENABLED(CONFIG_TRUSTY)
@@ -60,15 +51,25 @@ const char *trusty_version_str_get(struct device *dev);
 u32 trusty_get_api_version(struct device *dev);
 
 struct ns_mem_page_info {
-	uint64_t attr;
+	u64 paddr;
+	u8 ffa_mem_attr;
+	u8 ffa_mem_perm;
+	u64 compat_attr;
 };
 
 int trusty_encode_page_info(struct ns_mem_page_info *inf,
 			    struct page *page, pgprot_t pgprot);
 
-int trusty_call32_mem_buf(struct device *dev, u32 smcnr,
-			  struct page *page,  u32 size,
-			  pgprot_t pgprot);
+struct scatterlist;
+typedef u64 trusty_shared_mem_id_t;
+int trusty_share_memory(struct device *dev, trusty_shared_mem_id_t *id,
+			struct scatterlist *sglist, unsigned int nents,
+			pgprot_t pgprot);
+int trusty_share_memory_compat(struct device *dev, trusty_shared_mem_id_t *id,
+			       struct scatterlist *sglist, unsigned int nents,
+			       pgprot_t pgprot);
+int trusty_reclaim_memory(struct device *dev, trusty_shared_mem_id_t id,
+			  struct scatterlist *sglist, unsigned int nents);
 
 struct trusty_nop {
 	struct list_head node;
@@ -105,12 +106,13 @@ static const char *vmm_signature[] = {
 /* Detect VMM and return vmm_id */
 static inline int trusty_detect_vmm(void)
 {
+#if IS_ENABLED(CONFIG_TRUSTY)
 	int i;
 	for (i = 0; i < VMM_SUPPORTED_NUM; i++) {
 		if (hypervisor_cpuid_base(vmm_signature[i], 0))
 			return i;
 	}
-
+#endif
 	return -EINVAL;
 }
 
@@ -120,4 +122,5 @@ static inline int trusty_detect_vmm(void)
 #else
 #define HIULINT(x) 0
 #endif
+
 #endif

@@ -165,7 +165,6 @@ static int trusty_timer_remove(struct platform_device *pdev)
 	struct trusty_timer_dev_state *s = platform_get_drvdata(pdev);
 	struct trusty_timer *tt;
 
-
 	dev_dbg(&pdev->dev, "%s\n", __func__);
 
 	/* unregister notifier */

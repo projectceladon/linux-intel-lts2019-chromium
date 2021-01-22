@@ -1,18 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
-#include <linux/module.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -23,14 +13,14 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/irqdomain.h>
-#include <linux/of_irq.h>
 #include <linux/trusty/smcall.h>
 #include <linux/trusty/sm_err.h>
 #include <linux/trusty/trusty.h>
 
-#define IRQ_VECTOR_OFFSET 0x30
-#define IRQ_FOR_LK_TIMER 1
+#ifdef CONFIG_X86_64
+extern int trusty_x86_64_release_reserved_vector(unsigned int vector);
+extern void trusty_x86_64_retrigger_irq(unsigned int irq);
+#endif
 
 struct trusty_irq {
 	struct trusty_irq_state *is;
@@ -38,6 +28,7 @@ struct trusty_irq {
 	unsigned int irq;
 	bool percpu;
 	bool enable;
+	bool doorbell;
 	struct trusty_irq __percpu *percpu_ptr;
 };
 
@@ -53,20 +44,10 @@ struct trusty_irq_state {
 	spinlock_t normal_irqs_lock;
 	struct trusty_irq_irqset __percpu *percpu_irqs;
 	struct notifier_block trusty_call_notifier;
-	/* CPU hotplug instances for online */
-	struct hlist_node node;
+	struct hlist_node cpuhp_node;
 };
 
-static enum cpuhp_state trusty_irq_online;
-
-#define TRUSTY_VMCALL_PENDING_INTR 0x74727505
-static inline void set_pending_intr_to_lk(uint8_t vector)
-{
-	__asm__ __volatile__(
-		"vmcall"
-		::"a"(TRUSTY_VMCALL_PENDING_INTR), "b"(vector)
-		);
-}
+static int trusty_irq_cpuhp_slot = -1;
 
 static void trusty_irq_enable_pending_irqs(struct trusty_irq_state *is,
 					   struct trusty_irq_irqset *irqset,
@@ -152,7 +133,8 @@ static int trusty_irq_call_notify(struct notifier_block *nb,
 {
 	struct trusty_irq_state *is;
 
-	BUG_ON(!irqs_disabled());
+	if (WARN_ON(!irqs_disabled()))
+		return NOTIFY_DONE;
 
 	if (action != TRUSTY_CALL_PREPARE)
 		return NOTIFY_DONE;
@@ -167,7 +149,7 @@ static int trusty_irq_call_notify(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-irqreturn_t trusty_irq_handler(int irq, void *data)
+static irqreturn_t trusty_irq_handler(int irq, void *data)
 {
 	struct trusty_irq *trusty_irq = data;
 	struct trusty_irq_state *is = trusty_irq->is;
@@ -177,9 +159,9 @@ irqreturn_t trusty_irq_handler(int irq, void *data)
 		__func__, irq, trusty_irq->irq, smp_processor_id(),
 		trusty_irq->enable);
 
-	WARN_ON(irq != IRQ_FOR_LK_TIMER);
-
-	set_pending_intr_to_lk(irq+IRQ_VECTOR_OFFSET);
+#ifdef CONFIG_X86_64
+	trusty_x86_64_retrigger_irq(irq);
+#endif
 
 	if (trusty_irq->percpu) {
 		disable_percpu_irq(irq);
@@ -187,14 +169,13 @@ irqreturn_t trusty_irq_handler(int irq, void *data)
 	} else {
 		disable_irq_nosync(irq);
 		irqset = &is->normal_irqs;
+		spin_lock(&is->normal_irqs_lock);
+		if (trusty_irq->enable) {
+			hlist_del(&trusty_irq->node);
+			hlist_add_head(&trusty_irq->node, &irqset->pending);
+		}
+		spin_unlock(&is->normal_irqs_lock);
 	}
-
-	spin_lock(&is->normal_irqs_lock);
-	if (trusty_irq->enable) {
-		hlist_del(&trusty_irq->node);
-		hlist_add_head(&trusty_irq->node, &irqset->pending);
-	}
-	spin_unlock(&is->normal_irqs_lock);
 
 	trusty_enqueue_nop(is->trusty_dev, NULL);
 
@@ -206,32 +187,32 @@ irqreturn_t trusty_irq_handler(int irq, void *data)
 static int trusty_irq_cpu_up(unsigned int cpu, struct hlist_node *node)
 {
 	unsigned long irq_flags;
-	struct trusty_irq_state *is = hlist_entry_safe(node, struct trusty_irq_state, node);
+	struct trusty_irq_state *is;
 
-	if(is == NULL)
-		return 0;
+	is = container_of(node, struct trusty_irq_state, cpuhp_node);
 
-	dev_dbg(is->dev, "%s: cpu %d\n", __func__, smp_processor_id());
+	dev_dbg(is->dev, "%s: cpu %d\n", __func__, cpu);
 
 	local_irq_save(irq_flags);
 	trusty_irq_enable_irqset(is, this_cpu_ptr(is->percpu_irqs));
 	local_irq_restore(irq_flags);
+
 	return 0;
 }
 
 static int trusty_irq_cpu_down(unsigned int cpu, struct hlist_node *node)
 {
 	unsigned long irq_flags;
-	struct trusty_irq_state *is = hlist_entry_safe(node, struct trusty_irq_state, node);
+	struct trusty_irq_state *is;
 
-	if(is == NULL)
-		return 0;
+	is = container_of(node, struct trusty_irq_state, cpuhp_node);
 
-	dev_dbg(is->dev, "%s: cpu %d\n", __func__, smp_processor_id());
+	dev_dbg(is->dev, "%s: cpu %d\n", __func__, cpu);
 
 	local_irq_save(irq_flags);
 	trusty_irq_disable_irqset(is, this_cpu_ptr(is->percpu_irqs));
 	local_irq_restore(irq_flags);
+
 	return 0;
 }
 
@@ -247,10 +228,16 @@ static int trusty_irq_create_irq_mapping(struct trusty_irq_state *is, int irq)
 
 	/* check if "interrupt-ranges" property is present */
 	if (!of_find_property(is->dev->of_node, "interrupt-ranges", NULL)) {
+#ifdef CONFIG_X86_64
+		/* IRQ number which retrieved from Trusty side is vector number */
+		return trusty_x86_64_release_reserved_vector(irq);
+#else
 		/* fallback to old behavior to be backward compatible with
 		 * systems that do not need IRQ domains.
 		 */
 		return irq;
+#endif
+
 	}
 
 	/* find irq range */
@@ -315,39 +302,6 @@ static int trusty_irq_create_irq_mapping(struct trusty_irq_state *is, int irq)
 	return (!ret) ? -EINVAL : ret;
 }
 
-static inline void trusty_irq_unmask(struct irq_data *data)
-{
-	return;
-}
-
-static inline void trusty_irq_mask(struct irq_data *data)
-{
-	return;
-}
-
-static void trusty_irq_enable(struct irq_data *data)
-{
-	return;
-}
-
-static void trusty_irq_disable(struct irq_data *data)
-{
-	return;
-}
-
-void trusty_irq_eoi(struct irq_data *data)
-{
-	return;
-}
-static struct irq_chip trusty_irq_chip = {
-		.name = "TRUSY-IRQ",
-		.irq_mask = trusty_irq_mask,
-		.irq_unmask = trusty_irq_unmask,
-		.irq_enable = trusty_irq_enable,
-		.irq_disable = trusty_irq_disable,
-		.irq_eoi = trusty_irq_eoi,
-};
-
 static int trusty_irq_init_normal_irq(struct trusty_irq_state *is, int tirq)
 {
 	int ret;
@@ -357,7 +311,12 @@ static int trusty_irq_init_normal_irq(struct trusty_irq_state *is, int tirq)
 
 	dev_dbg(is->dev, "%s: irq %d\n", __func__, tirq);
 
-	irq = tirq;
+	irq = trusty_irq_create_irq_mapping(is, tirq);
+	if (irq < 0) {
+		dev_err(is->dev,
+			"trusty_irq_create_irq_mapping failed (%d)\n", irq);
+		return irq;
+	}
 
 	trusty_irq = kzalloc(sizeof(*trusty_irq), GFP_KERNEL);
 	if (!trusty_irq)
@@ -371,17 +330,8 @@ static int trusty_irq_init_normal_irq(struct trusty_irq_state *is, int tirq)
 	hlist_add_head(&trusty_irq->node, &is->normal_irqs.inactive);
 	spin_unlock_irqrestore(&is->normal_irqs_lock, irq_flags);
 
-	ret = irq_alloc_desc_at(irq, 0);
-	if (ret >= 0)
-		irq_set_chip_and_handler_name(irq, &trusty_irq_chip, handle_edge_irq, "trusty-irq");
-	else if (ret != -EEXIST) {
-		dev_err(is->dev, "can't allocate irq desc %d\n", ret);
-		goto err_request_irq;
-	}
-
 	ret = request_irq(irq, trusty_irq_handler, IRQF_NO_THREAD,
-			  "trusty-irq", trusty_irq);
-
+			  "trusty", trusty_irq);
 	if (ret) {
 		dev_err(is->dev, "request_irq failed %d\n", ret);
 		goto err_request_irq;
@@ -396,7 +346,8 @@ err_request_irq:
 	return ret;
 }
 
-static int trusty_irq_init_per_cpu_irq(struct trusty_irq_state *is, int tirq)
+static int trusty_irq_init_per_cpu_irq(struct trusty_irq_state *is, int tirq,
+				       unsigned int type)
 {
 	int ret;
 	int irq;
@@ -420,8 +371,6 @@ static int trusty_irq_init_per_cpu_irq(struct trusty_irq_state *is, int tirq)
 		struct trusty_irq *trusty_irq;
 		struct trusty_irq_irqset *irqset;
 
-		if (cpu >= NR_CPUS)
-			return -EINVAL;
 		trusty_irq = per_cpu_ptr(trusty_irq_handler_data, cpu);
 		irqset = per_cpu_ptr(is->percpu_irqs, cpu);
 
@@ -429,6 +378,7 @@ static int trusty_irq_init_per_cpu_irq(struct trusty_irq_state *is, int tirq)
 		hlist_add_head(&trusty_irq->node, &irqset->inactive);
 		trusty_irq->irq = irq;
 		trusty_irq->percpu = true;
+		trusty_irq->doorbell = type == TRUSTY_IRQ_TYPE_DOORBELL;
 		trusty_irq->percpu_ptr = trusty_irq_handler_data;
 	}
 
@@ -445,8 +395,6 @@ err_request_percpu_irq:
 	for_each_possible_cpu(cpu) {
 		struct trusty_irq *trusty_irq;
 
-		if (cpu >= NR_CPUS)
-			return -EINVAL;
 		trusty_irq = per_cpu_ptr(trusty_irq_handler_data, cpu);
 		hlist_del(&trusty_irq->node);
 	}
@@ -456,28 +404,25 @@ err_request_percpu_irq:
 }
 
 static int trusty_smc_get_next_irq(struct trusty_irq_state *is,
-				   unsigned long min_irq, bool per_cpu)
+				   unsigned long min_irq, unsigned int type)
 {
 	return trusty_fast_call32(is->trusty_dev, SMC_FC_GET_NEXT_IRQ,
-				  min_irq, per_cpu, 0);
+				  min_irq, type, 0);
 }
 
 static int trusty_irq_init_one(struct trusty_irq_state *is,
-			       int irq, bool per_cpu)
+			       int irq, unsigned int type)
 {
 	int ret;
 
-	irq = trusty_smc_get_next_irq(is, irq, per_cpu);
+	irq = trusty_smc_get_next_irq(is, irq, type);
 	if (irq < 0)
 		return irq;
-	dev_info(is->dev, "irq from lk = %d\n", irq);
 
-	WARN_ON(irq-IRQ_VECTOR_OFFSET != IRQ_FOR_LK_TIMER);
-
-	if (per_cpu)
-		ret = trusty_irq_init_per_cpu_irq(is, irq-IRQ_VECTOR_OFFSET);
+	if (type != TRUSTY_IRQ_TYPE_NORMAL)
+		ret = trusty_irq_init_per_cpu_irq(is, irq, type);
 	else
-		ret = trusty_irq_init_normal_irq(is, irq-IRQ_VECTOR_OFFSET);
+		ret = trusty_irq_init_normal_irq(is, irq);
 
 	if (ret) {
 		dev_warn(is->dev,
@@ -492,6 +437,9 @@ static void trusty_irq_free_irqs(struct trusty_irq_state *is)
 {
 	struct trusty_irq *irq;
 	struct hlist_node *n;
+#ifndef CONFIG_X86_64
+	unsigned int cpu;
+#endif
 
 	hlist_for_each_entry_safe(irq, n, &is->normal_irqs.inactive, node) {
 		dev_dbg(is->dev, "%s: irq %d\n", __func__, irq->irq);
@@ -499,7 +447,7 @@ static void trusty_irq_free_irqs(struct trusty_irq_state *is)
 		hlist_del(&irq->node);
 		kfree(irq);
 	}
-/*
+#ifndef CONFIG_X86_64
 	hlist_for_each_entry_safe(irq, n,
 				  &this_cpu_ptr(is->percpu_irqs)->inactive,
 				  node) {
@@ -515,21 +463,8 @@ static void trusty_irq_free_irqs(struct trusty_irq_state *is)
 			hlist_del(&irq_tmp->node);
 		}
 		free_percpu(trusty_irq_handler_data);
-	} */
-}
-
-static int trusty_irq_cpu_notif_add(struct trusty_irq_state *is)
-{
-	int ret;
-
-	ret = cpuhp_state_add_instance(trusty_irq_online, &is->node);
-
-	return ret;
-}
-
-static void trusty_irq_cpu_notif_remove(struct trusty_irq_state *is)
-{
-	cpuhp_state_remove_instance(trusty_irq_online, &is->node);
+	}
+#endif
 }
 
 static int trusty_irq_probe(struct platform_device *pdev)
@@ -538,14 +473,6 @@ static int trusty_irq_probe(struct platform_device *pdev)
 	int irq;
 	unsigned long irq_flags;
 	struct trusty_irq_state *is;
-
-	ret = trusty_detect_vmm();
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Cannot detect VMM which supports trusty!");
-		return -EINVAL;
-	}
-
-	dev_dbg(&pdev->dev, "%s\n", __func__);
 
 	is = kzalloc(sizeof(*is), GFP_KERNEL);
 	if (!is) {
@@ -573,18 +500,27 @@ static int trusty_irq_probe(struct platform_device *pdev)
 		goto err_trusty_call_notifier_register;
 	}
 
+#ifndef CONFIG_X86_64
 	for (irq = 0; irq >= 0;)
-		irq = trusty_irq_init_one(is, irq, false);
+		irq = trusty_irq_init_one(is, irq, TRUSTY_IRQ_TYPE_PER_CPU);
+#endif
+	for (irq = 0; irq >= 0;)
+		irq = trusty_irq_init_one(is, irq, TRUSTY_IRQ_TYPE_NORMAL);
+#ifndef CONFIG_X86_64
+	for (irq = 0; irq >= 0;)
+		irq = trusty_irq_init_one(is, irq, TRUSTY_IRQ_TYPE_DOORBELL);
+#endif
 
-	ret = trusty_irq_cpu_notif_add(is);
-	if (ret) {
-		dev_err(&pdev->dev, "register_cpu_notifier failed %d\n", ret);
-		goto err_register_hotcpu_notifier;
+	ret = cpuhp_state_add_instance(trusty_irq_cpuhp_slot, &is->cpuhp_node);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "cpuhp_state_add_instance failed %d\n",
+			ret);
+		goto err_add_cpuhp_instance;
 	}
 
 	return 0;
 
-err_register_hotcpu_notifier:
+err_add_cpuhp_instance:
 	spin_lock_irqsave(&is->normal_irqs_lock, irq_flags);
 	trusty_irq_disable_irqset(is, &is->normal_irqs);
 	spin_unlock_irqrestore(&is->normal_irqs_lock, irq_flags);
@@ -601,12 +537,15 @@ err_alloc_is:
 
 static int trusty_irq_remove(struct platform_device *pdev)
 {
+	int ret;
 	unsigned long irq_flags;
 	struct trusty_irq_state *is = platform_get_drvdata(pdev);
 
-	dev_dbg(&pdev->dev, "%s\n", __func__);
+	ret = cpuhp_state_remove_instance(trusty_irq_cpuhp_slot,
+					  &is->cpuhp_node);
+	if (WARN_ON(ret))
+		return ret;
 
-	trusty_irq_cpu_notif_remove(is);
 	spin_lock_irqsave(&is->normal_irqs_lock, irq_flags);
 	trusty_irq_disable_irqset(is, &is->normal_irqs);
 	spin_unlock_irqrestore(&is->normal_irqs_lock, irq_flags);
@@ -626,12 +565,13 @@ static const struct of_device_id trusty_test_of_match[] = {
 	{},
 };
 
+MODULE_DEVICE_TABLE(trusty, trusty_test_of_match);
+
 static struct platform_driver trusty_irq_driver = {
 	.probe = trusty_irq_probe,
 	.remove = trusty_irq_remove,
 	.driver	= {
 		.name = "trusty-irq",
-		.owner = THIS_MODULE,
 		.of_match_table = trusty_test_of_match,
 	},
 };
@@ -640,31 +580,39 @@ static int __init trusty_irq_driver_init(void)
 {
 	int ret;
 
-	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN, "x86/trustyirq:online",
-			trusty_irq_cpu_up, trusty_irq_cpu_down);
+	/* allocate dynamic cpuhp state slot */
+	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
+				      "trusty-irq:cpu:online",
+				      trusty_irq_cpu_up,
+				      trusty_irq_cpu_down);
 	if (ret < 0)
-		goto out;
-	trusty_irq_online = ret;
+		return ret;
+	trusty_irq_cpuhp_slot = ret;
 
+	/* Register platform driver */
 	ret = platform_driver_register(&trusty_irq_driver);
-	if (ret)
-		goto err_dead;
+	if (ret < 0)
+		goto err_driver_register;
 
-	return 0;
-err_dead:
-	cpuhp_remove_multi_state(trusty_irq_online);
-out:
+	return ret;
+
+err_driver_register:
+	/* undo cpuhp slot allocation */
+	cpuhp_remove_multi_state(trusty_irq_cpuhp_slot);
+	trusty_irq_cpuhp_slot = -1;
+
 	return ret;
 }
 
 static void __exit trusty_irq_driver_exit(void)
 {
-	cpuhp_remove_multi_state(trusty_irq_online);
 	platform_driver_unregister(&trusty_irq_driver);
+	cpuhp_remove_multi_state(trusty_irq_cpuhp_slot);
+	trusty_irq_cpuhp_slot = -1;
 }
 
 module_init(trusty_irq_driver_init);
 module_exit(trusty_irq_driver_exit);
 
 MODULE_LICENSE("GPL v2");
-
+MODULE_DESCRIPTION("Trusty IRQ driver");

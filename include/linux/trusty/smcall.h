@@ -1,24 +1,9 @@
+/* SPDX-License-Identifier: MIT */
 /*
- * Copyright (c) 2013-2016 Google Inc. All rights reserved
+ * Copyright (c) 2013-2014 Google Inc. All rights reserved
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * Trusty and TF-A also have a copy of this header.
+ * Please keep the copies in sync.
  */
 #ifndef __LINUX_TRUSTY_SMCALL_H
 #define __LINUX_TRUSTY_SMCALL_H
@@ -32,10 +17,10 @@
 #define SMC_ENTITY(smc_nr)	(((smc_nr) & 0x3F000000) >> 24)
 #define SMC_FUNCTION(smc_nr)	((smc_nr) & 0x0000FFFF)
 
-#define SMC_NR(entity, fn, fastcall, smc64) ((((fastcall) & 0x1) << 31) | \
-					     (((smc64) & 0x1) << 30) | \
-					     (((entity) & 0x3F) << 24) | \
-					     ((fn) & 0xFFFF) \
+#define SMC_NR(entity, fn, fastcall, smc64) ((((fastcall) & 0x1U) << 31) | \
+					     (((smc64) & 0x1U) << 30) | \
+					     (((entity) & 0x3FU) << 24) | \
+					     ((fn) & 0xFFFFU) \
 					    )
 
 #define SMC_FASTCALL_NR(entity, fn)	SMC_NR((entity), (fn), 1, 0)
@@ -52,6 +37,7 @@
 #define	SMC_ENTITY_TRUSTED_APP		48	/* Trusted Application calls */
 #define	SMC_ENTITY_TRUSTED_OS		50	/* Trusted OS calls */
 #define	SMC_ENTITY_LOGGING		51	/* Used for secure -> nonsecure logging */
+#define	SMC_ENTITY_TEST			52	/* Used for secure -> nonsecure tests */
 #define	SMC_ENTITY_SECURE_MONITOR	60	/* Trusted OS calls internal to secure monitor */
 
 /* FC = Fast call, SC = Standard call */
@@ -90,11 +76,11 @@
 #define SMC_FC_RESERVED		SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 0)
 #define SMC_FC_FIQ_EXIT		SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 1)
 #define SMC_FC_REQUEST_FIQ	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 2)
-#define SMC_FC_GET_NEXT_IRQ	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 3)
-#define SMC_FC_FIQ_ENTER	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 4)
 
-#define SMC_FC64_SET_FIQ_HANDLER SMC_FASTCALL64_NR(SMC_ENTITY_SECURE_MONITOR, 5)
-#define SMC_FC64_GET_FIQ_REGS	SMC_FASTCALL64_NR(SMC_ENTITY_SECURE_MONITOR, 6)
+#define TRUSTY_IRQ_TYPE_NORMAL		(0)
+#define TRUSTY_IRQ_TYPE_PER_CPU		(1)
+#define TRUSTY_IRQ_TYPE_DOORBELL	(2)
+#define SMC_FC_GET_NEXT_IRQ	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 3)
 
 #define SMC_FC_CPU_SUSPEND	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 7)
 #define SMC_FC_CPU_RESUME	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 8)
@@ -121,8 +107,19 @@
 #define TRUSTY_API_VERSION_RESTART_FIQ	(1)
 #define TRUSTY_API_VERSION_SMP		(2)
 #define TRUSTY_API_VERSION_SMP_NOP	(3)
-#define TRUSTY_API_VERSION_CURRENT	(3)
+#define TRUSTY_API_VERSION_PHYS_MEM_OBJ	(4)
+#define TRUSTY_API_VERSION_MEM_OBJ	(5)
+#define TRUSTY_API_VERSION_CURRENT	(5)
 #define SMC_FC_API_VERSION	SMC_FASTCALL_NR(SMC_ENTITY_SECURE_MONITOR, 11)
+
+/* TRUSTED_OS entity calls */
+#define SMC_SC_VIRTIO_GET_DESCR	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 20)
+#define SMC_SC_VIRTIO_START	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 21)
+#define SMC_SC_VIRTIO_STOP	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 22)
+
+#define SMC_SC_VDEV_RESET	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 23)
+#define SMC_SC_VDEV_KICK_VQ	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 24)
+#define SMC_NC_VDEV_KICK_VQ	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 25)
 
 /*
  * SM Wall is a shared memory buffer established between secure and non-secure
@@ -143,16 +140,8 @@
 #define SMC_SC_SETUP_WALL	SMC_STDCALL_NR(SMC_ENTITY_SECURE_MONITOR,  12)
 #define SMC_SC_DESTROY_WALL	SMC_STDCALL_NR(SMC_ENTITY_SECURE_MONITOR,  13)
 
-/* TRUSTED_OS entity calls */
-#define SMC_SC_VIRTIO_GET_DESCR	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 20)
-#define SMC_SC_VIRTIO_START	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 21)
-#define SMC_SC_VIRTIO_STOP	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 22)
-
-#define SMC_SC_VDEV_RESET	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 23)
-#define SMC_SC_VDEV_KICK_VQ	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 24)
-#define SMC_NC_VDEV_KICK_VQ	SMC_STDCALL_NR(SMC_ENTITY_TRUSTED_OS, 25)
-
 /* Max entity defined as SMC_NUM_ENTITIES(64) */
 #define	SMC_ENTITY_SMC_X86	63	/* Used for customized SMC calls */
 #define	SMC_SC_LK_TIMER	SMC_STDCALL_NR(SMC_ENTITY_SMC_X86, 0)
+
 #endif /* __LINUX_TRUSTY_SMCALL_H */

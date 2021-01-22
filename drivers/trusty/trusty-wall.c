@@ -88,6 +88,8 @@ static int trusty_wall_setup(struct trusty_wall_dev_state *s)
 	int ret;
 	void *va;
 	size_t sz;
+	struct ns_mem_page_info pg_inf;
+
 
 	/* check if wall feature is supported by Trusted OS */
 	ret = trusty_fast_call32(s->trusty_dev, SMC_FC_GET_WALL_SIZE, 0, 0, 0);
@@ -112,9 +114,17 @@ static int trusty_wall_setup(struct trusty_wall_dev_state *s)
 		return -ENOMEM;
 	}
 
+	ret = trusty_encode_page_info(&pg_inf, virt_to_page(va), PAGE_KERNEL);
+	if (ret) {
+		dev_err(s->dev, "smwall: failed to encode page info\n");
+		free_pages_exact(va, sz);
+		return ret;
+	}
+
 	/* call into Trusted OS to setup wall */
-	ret = trusty_call32_mem_buf(s->trusty_dev, SMC_SC_SETUP_WALL,
-			virt_to_page(va), sz, PAGE_KERNEL);
+	ret = trusty_std_call32(s->trusty_dev, SMC_SC_SETUP_WALL,
+			(u32)pg_inf.compat_attr, (u32)(pg_inf.compat_attr >> 32), sz);
+
 	if (ret < 0) {
 		dev_err(s->dev, "smwall: TEE returned (%d)\n", ret);
 		free_pages_exact(va, sz);
