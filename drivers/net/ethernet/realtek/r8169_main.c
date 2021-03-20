@@ -6329,6 +6329,9 @@ static void rtl8169_down(struct rtl8169_private *tp)
 	phy_stop(tp->phydev);
 	napi_disable(&tp->napi);
 
+	pci_clear_master(tp->pci_dev);
+	rtl_pci_commit(tp);
+
 	rtl8169_hw_reset(tp, true);
 
 	rtl_pll_power_down(tp);
@@ -6338,6 +6341,7 @@ static void rtl8169_down(struct rtl8169_private *tp)
 
 static void rtl8169_up(struct rtl8169_private *tp)
 {
+	pci_set_master(tp->pci_dev);
 	rtl_lock_work(tp);
 	rtl_pll_power_up(tp);
 	rtl8169_init_phy(tp->dev, tp);
@@ -7050,8 +7054,6 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	rtl_hw_initialize(tp);
 
 	rtl_hw_reset(tp);
-
-	pci_set_master(pdev);
 
 	rc = rtl_alloc_irq(tp);
 	if (rc < 0) {
