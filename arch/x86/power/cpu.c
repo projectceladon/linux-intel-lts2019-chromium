@@ -191,7 +191,7 @@ static void fix_processor_context(void)
  * The asm code that gets us here will have restored a usable GDT, although
  * it will be pointing to the wrong alias.
  */
-static void noinline notrace __restore_processor_state(struct saved_context *ctxt)
+static void notrace __restore_processor_state(struct saved_context *ctxt)
 {
 	if (ctxt->misc_enable_saved)
 		wrmsrl(MSR_IA32_MISC_ENABLE, ctxt->misc_enable);
@@ -268,19 +268,6 @@ static void noinline notrace __restore_processor_state(struct saved_context *ctx
 /* Needed by apm.c */
 void notrace restore_processor_state(void)
 {
-#ifdef __clang__
-	// The following code snippet is copied from __restore_processor_state.
-	// Its purpose is to prepare GS segment before the function is called.
-	// Since the function is compiled with SCS on, it will use GS at its
-	// entry.
-	// TODO: Hack to be removed later when compiler bug is fixed.
-#ifdef CONFIG_X86_64
-	wrmsrl(MSR_GS_BASE, saved_context.kernelmode_gs_base);
-#else
-	loadsegment(fs, __KERNEL_PERCPU);
-	loadsegment(gs, __KERNEL_STACK_CANARY);
-#endif
-#endif
 	__restore_processor_state(&saved_context);
 }
 #ifdef CONFIG_X86_32
