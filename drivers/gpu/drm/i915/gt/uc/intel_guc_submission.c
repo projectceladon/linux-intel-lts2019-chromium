@@ -124,7 +124,7 @@ static int guc_stage_desc_pool_create(struct intel_guc *guc)
 			      GUC_MAX_STAGE_DESCRIPTORS);
 
 	return intel_guc_allocate_and_map_vma(guc, size, &guc->stage_desc_pool,
-					      &guc->stage_desc_pool_vaddr);
+					     &guc->stage_desc_pool_vaddr);
 }
 
 static void guc_stage_desc_pool_destroy(struct intel_guc *guc)
