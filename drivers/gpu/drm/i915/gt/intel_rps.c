@@ -4,6 +4,8 @@
  * Copyright © 2019 Intel Corporation
  */
 
+#include <drm/i915_drm.h>
+
 #include "i915_drv.h"
 #include "intel_gt.h"
 #include "intel_gt_clock_utils.h"
@@ -881,6 +883,10 @@ void intel_rps_park(struct intel_rps *rps)
 		adj = -2;
 	rps->last_adj = adj;
 	rps->cur_freq = max_t(int, rps->cur_freq + adj, rps->min_freq);
+	if (rps->cur_freq < rps->efficient_freq) {
+		rps->cur_freq = rps->efficient_freq;
+		rps->last_adj = 0;
+	}
 
 	GT_TRACE(rps_to_gt(rps), "park:%x\n", rps->cur_freq);
 }
@@ -1061,11 +1067,12 @@ static bool gen6_rps_enable(struct intel_rps *rps)
 static int chv_rps_max_freq(struct intel_rps *rps)
 {
 	struct drm_i915_private *i915 = rps_to_i915(rps);
+	struct intel_gt *gt = rps_to_gt(rps);
 	u32 val;
 
 	val = vlv_punit_read(i915, FB_GFX_FMAX_AT_VMAX_FUSE);
 
-	switch (RUNTIME_INFO(i915)->sseu.eu_total) {
+	switch (gt->info.sseu.eu_total) {
 	case 8:
 		/* (2 * 4) config */
 		val >>= FB_GFX_FMAX_AT_VMAX_2SS4EU_FUSE_SHIFT;

@@ -213,6 +213,7 @@ void intel_guc_ct_fini(struct intel_guc_ct *ct)
 	GEM_BUG_ON(ct->enabled);
 
 	i915_vma_unpin_and_release(&ct->vma, I915_VMA_RELEASE_MAP);
+	memset(ct, 0, sizeof(*ct));
 }
 
 /**
@@ -281,7 +282,7 @@ void intel_guc_ct_disable(struct intel_guc_ct *ct)
 
 	ct->enabled = false;
 
-	if (intel_guc_is_running(guc)) {
+	if (intel_guc_is_fw_running(guc)) {
 		ct_deregister_buffer(ct, INTEL_GUC_CT_BUFFER_TYPE_SEND);
 		ct_deregister_buffer(ct, INTEL_GUC_CT_BUFFER_TYPE_RECV);
 	}

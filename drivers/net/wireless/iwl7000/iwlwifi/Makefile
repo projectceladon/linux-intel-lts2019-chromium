@@ -8,9 +8,10 @@ iwlwifi-objs		+= iwl-eeprom-read.o iwl-eeprom-parse.o
 iwlwifi-objs		+= iwl-phy-db.o iwl-nvm-parse.o
 iwlwifi-objs		+= iwl-dbg-tlv.o
 iwlwifi-objs		+= iwl-trans.o
+iwlwifi-objs		+= queue/tx.o
 
 iwlwifi-objs		+= fw/img.o fw/notif-wait.o
-iwlwifi-objs		+= fw/dbg.o
+iwlwifi-objs		+= fw/dbg.o fw/pnvm.o
 iwlwifi-$(CPTCFG_IWLMVM)	+= fw/paging.o fw/smem.o fw/init.o
 iwlwifi-$(CPTCFG_IWLXVT)	+= fw/init.o
 iwlwifi-$(CPTCFG_IWLWIFI_DEBUGFS) += fw/debugfs.o
@@ -26,6 +27,8 @@ iwlwifi-$(CPTCFG_IWLMVM) += cfg/9000.o cfg/22000.o
 
 iwlwifi-$(CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES) += iwl-dbg-cfg.o
 
+ifeq ($(CPTCFG_NO_DMA),y)
+endif
 
 iwlwifi-objs += $(iwlwifi-m)
 iwlwifi-objs += $(iwlwifi-y)

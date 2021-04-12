@@ -1,64 +1,9 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2015        Intel Deutschland GmbH
- * Copyright(c) 2013 - 2014, 2018 - 2020 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2015        Intel Deutschland GmbH
- * Copyright(c) 2013 - 2014, 2018 - 2019 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/*
+ * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
+ * Copyright (C) 2013-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2015 Intel Deutschland GmbH
+ */
 #ifndef __MVM_CONSTANTS_H
 #define __MVM_CONSTANTS_H
 
@@ -106,7 +51,6 @@
 #define IWL_MVM_RS_RSSI_BASED_INIT_RATE         0
 #define IWL_MVM_RS_80_20_FAR_RANGE_TWEAK	1
 #define IWL_MVM_TOF_IS_RESPONDER		0
-#define IWL_MVM_SW_TX_CSUM_OFFLOAD		0
 #define IWL_MVM_HW_CSUM_DISABLE			0
 #define IWL_MVM_PARSE_NVM			0
 #define IWL_MVM_ADWELL_ENABLE			1
@@ -150,8 +94,18 @@
 #define IWL_MVM_ENABLE_EBS			1
 #define IWL_MVM_FTM_INITIATOR_ALGO		IWL_TOF_ALGO_TYPE_MAX_LIKE
 #define IWL_MVM_FTM_INITIATOR_DYNACK		true
+#define IWL_MVM_FTM_R2I_MAX_REP			7
+#define IWL_MVM_FTM_I2R_MAX_REP			7
+#define IWL_MVM_FTM_R2I_MAX_STS			1
+#define IWL_MVM_FTM_I2R_MAX_STS			1
+#define IWL_MVM_FTM_R2I_MAX_TOTAL_LTF		3
+#define IWL_MVM_FTM_I2R_MAX_TOTAL_LTF		3
+#define IWL_MVM_FTM_INITIATOR_SECURE_LTF	false
+#define IWL_MVM_FTM_RESP_NDP_SUPPORT		true
+#define IWL_MVM_FTM_RESP_LMR_FEEDBACK_SUPPORT	true
 #define IWL_MVM_D3_DEBUG			false
 #define IWL_MVM_USE_TWT				true
+#define IWL_MVM_TWT_TESTMODE			false
 #define IWL_MVM_AMPDU_CONSEC_DROPS_DELBA	10
 #define IWL_MVM_FTM_INITIATOR_ENABLE_SMOOTH     false
 #define IWL_MVM_FTM_INITIATOR_SMOOTH_ALPHA      40
@@ -164,6 +118,8 @@
 #define IWL_MVM_PHY_FILTER_CHAIN_C		0
 #define IWL_MVM_PHY_FILTER_CHAIN_D		0
 #define IWL_MVM_DISABLE_AP_FILS			false
+#define IWL_MVM_6GHZ_PASSIVE_SCAN_TIMEOUT       3000 /* in seconds */
+#define IWL_MVM_6GHZ_PASSIVE_SCAN_ASSOC_TIMEOUT 60   /* in seconds */
 #else /* CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES */
 #define IWL_MVM_DEFAULT_PS_TX_DATA_TIMEOUT	(mvm->trans->dbg_cfg.MVM_DEFAULT_PS_TX_DATA_TIMEOUT)
 #define IWL_MVM_DEFAULT_PS_RX_DATA_TIMEOUT	(mvm->trans->dbg_cfg.MVM_DEFAULT_PS_RX_DATA_TIMEOUT)
@@ -197,7 +153,6 @@
 #define IWL_MVM_FW_MCAST_FILTER_PASS_ALL	(mvm->trans->dbg_cfg.MVM_FW_MCAST_FILTER_PASS_ALL)
 #define IWL_MVM_FW_BCAST_FILTER_PASS_ALL	(mvm->trans->dbg_cfg.MVM_FW_BCAST_FILTER_PASS_ALL)
 #define IWL_MVM_TOF_IS_RESPONDER		(mvm->trans->dbg_cfg.MVM_TOF_IS_RESPONDER)
-#define IWL_MVM_SW_TX_CSUM_OFFLOAD		(mvm->trans->dbg_cfg.MVM_SW_TX_CSUM_OFFLOAD)
 #define IWL_MVM_HW_CSUM_DISABLE			(mvm->trans->dbg_cfg.MVM_HW_CSUM_DISABLE)
 #define IWL_MVM_PARSE_NVM			(mvm->trans->dbg_cfg.MVM_PARSE_NVM)
 #define IWL_MVM_ADWELL_ENABLE			(mvm->trans->dbg_cfg.MVM_ADWELL_ENABLE)
@@ -245,13 +200,23 @@
 #define IWL_MVM_FTM_RESP_TOA_OFFSET		(mvm->trans->dbg_cfg.MVM_FTM_RESP_TOA_OFFSET)
 #define IWL_MVM_FTM_RESP_VALID			(mvm->trans->dbg_cfg.MVM_FTM_RESP_VALID)
 #define IWL_MVM_FTM_RESP_FLAGS			(mvm->trans->dbg_cfg.MVM_FTM_RESP_FLAGS)
+#define IWL_MVM_FTM_RESP_NDP_SUPPORT		(mvm->trans->dbg_cfg.MVM_FTM_RESP_NDP_SUPPORT)
+#define IWL_MVM_FTM_RESP_LMR_FEEDBACK_SUPPORT	(mvm->trans->dbg_cfg.MVM_FTM_RESP_LMR_FEEDBACK_SUPPORT)
 #define IWL_MVM_FTM_INITIATOR_ALGO		(mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_ALGO)
 #define IWL_MVM_FTM_INITIATOR_DYNACK		(mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_DYNACK)
 #define IWL_MVM_FTM_INITIATOR_MCSI_ENABLED	(mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_MCSI_ENABLED)
 #define IWL_MVM_FTM_INITIATOR_COMMON_CALIB	(mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_COMMON_CALIB)
 #define IWL_MVM_FTM_INITIATOR_FAST_ALGO_DISABLE (mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_FAST_ALGO_DISABLE)
+#define IWL_MVM_FTM_R2I_MAX_REP                 (mvm->trans->dbg_cfg.MVM_FTM_R2I_MAX_REP)
+#define IWL_MVM_FTM_I2R_MAX_REP                 (mvm->trans->dbg_cfg.MVM_FTM_I2R_MAX_REP)
+#define IWL_MVM_FTM_R2I_MAX_STS                 (mvm->trans->dbg_cfg.MVM_FTM_R2I_MAX_STS)
+#define IWL_MVM_FTM_I2R_MAX_STS                 (mvm->trans->dbg_cfg.MVM_FTM_I2R_MAX_STS)
+#define IWL_MVM_FTM_R2I_MAX_TOTAL_LTF           (mvm->trans->dbg_cfg.MVM_FTM_R2I_MAX_TOTAL_LTF)
+#define IWL_MVM_FTM_I2R_MAX_TOTAL_LTF           (mvm->trans->dbg_cfg.MVM_FTM_I2R_MAX_TOTAL_LTF)
+#define IWL_MVM_FTM_INITIATOR_SECURE_LTF        (mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_SECURE_LTF)
 #define IWL_MVM_D3_DEBUG			(((struct iwl_mvm *)ctx)->trans->dbg_cfg.MVM_D3_DEBUG)
 #define IWL_MVM_USE_TWT				(mvm->trans->dbg_cfg.MVM_USE_TWT)
+#define IWL_MVM_TWT_TESTMODE			(mvm->trans->dbg_cfg.MVM_TWT_TESTMODE)
 #define IWL_MVM_AMPDU_CONSEC_DROPS_DELBA	(mvm->trans->dbg_cfg.MVM_AMPDU_CONSEC_DROPS_DELBA)
 #define IWL_MVM_FTM_INITIATOR_ENABLE_SMOOTH     (mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_ENABLE_SMOOTH)
 #define IWL_MVM_FTM_INITIATOR_SMOOTH_ALPHA      (mvm->trans->dbg_cfg.MVM_FTM_INITIATOR_SMOOTH_ALPHA)
@@ -263,6 +228,8 @@
 #define IWL_MVM_PHY_FILTER_CHAIN_C		(mvm->trans->dbg_cfg.MVM_PHY_FILTER_CHAIN_C)
 #define IWL_MVM_PHY_FILTER_CHAIN_D		(mvm->trans->dbg_cfg.MVM_PHY_FILTER_CHAIN_D)
 #define IWL_MVM_DISABLE_AP_FILS			(mvm->trans->dbg_cfg.MVM_DISABLE_AP_FILS)
+#define IWL_MVM_6GHZ_PASSIVE_SCAN_TIMEOUT       (mvm->trans->dbg_cfg.MVM_6GHZ_PASSIVE_SCAN_TIMEOUT)
+#define IWL_MVM_6GHZ_PASSIVE_SCAN_ASSOC_TIMEOUT (mvm->trans->dbg_cfg.MVM_6GHZ_PASSIVE_SCAN_ASSOC_TIMEOUT)
 
 #endif /* CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES */
 

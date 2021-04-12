@@ -516,10 +516,10 @@ static u32 intel_panel_compute_brightness(struct intel_connector *connector,
 
 	drm_WARN_ON(&dev_priv->drm, panel->backlight.max == 0);
 
-	if (i915_modparams.invert_brightness < 0)
+	if (dev_priv->params.invert_brightness < 0)
 		return val;
 
-	if (i915_modparams.invert_brightness > 0 ||
+	if (dev_priv->params.invert_brightness > 0 ||
 	    dev_priv->quirks & QUIRK_INVERT_BRIGHTNESS) {
 		return panel->backlight.max - val + panel->backlight.min;
 	}
@@ -1639,22 +1639,23 @@ static int lpt_setup_backlight(struct intel_connector *connector, enum pipe unus
 		val = pch_get_backlight(connector);
 	else
 		val = lpt_get_backlight(connector);
-	val = intel_panel_compute_brightness(connector, val);
-	panel->backlight.level = clamp(val, panel->backlight.min,
-				       panel->backlight.max);
 
 	if (cpu_mode) {
 		drm_dbg_kms(&dev_priv->drm,
 			    "CPU backlight register was enabled, switching to PCH override\n");
 
 		/* Write converted CPU PWM value to PCH override register */
-		lpt_set_backlight(connector->base.state, panel->backlight.level);
+		lpt_set_backlight(connector->base.state, val);
 		intel_de_write(dev_priv, BLC_PWM_PCH_CTL1,
 			       pch_ctl1 | BLM_PCH_OVERRIDE_ENABLE);
 
 		intel_de_write(dev_priv, BLC_PWM_CPU_CTL2,
 			       cpu_ctl2 & ~BLM_PWM_ENABLE);
 	}
+
+	val = intel_panel_compute_brightness(connector, val);
+	panel->backlight.level = clamp(val, panel->backlight.min,
+				       panel->backlight.max);
 
 	return 0;
 }
@@ -2081,6 +2082,17 @@ intel_panel_init_backlight_funcs(struct intel_panel *panel)
 		panel->backlight.get = i9xx_get_backlight;
 		panel->backlight.hz_to_pwm = i9xx_hz_to_pwm;
 	}
+}
+
+enum drm_connector_status
+intel_panel_detect(struct drm_connector *connector, bool force)
+{
+	struct drm_i915_private *i915 = to_i915(connector->dev);
+
+	if (!INTEL_DISPLAY_ENABLED(i915))
+		return connector_status_disconnected;
+
+	return connector_status_connected;
 }
 
 int intel_panel_init(struct intel_panel *panel,

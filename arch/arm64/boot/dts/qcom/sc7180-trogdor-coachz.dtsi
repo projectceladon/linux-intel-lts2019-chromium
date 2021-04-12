@@ -12,12 +12,19 @@ ap_h1_spi: &spi0 {};
 
 #include "sc7180-trogdor.dtsi"
 
-&alc5682 {
-	status = "disabled";
-};
+/* Deleted nodes from trogdor.dtsi */
 
-&ap_tp_i2c {
-	status = "disabled";
+/delete-node/ &alc5682;
+/delete-node/ &pp3300_codec;
+
+/ {
+	/* BOARD-SPECIFIC TOP LEVEL NODES */
+
+	adau7002: audio-codec-1 {
+		compatible = "adi,adau7002";
+		IOVDD-supply = <&pp1800_l15a>;
+		#sound-dai-cells = <0>;
+	};
 };
 
 &ap_spi_fp {
@@ -32,8 +39,11 @@ ap_h1_spi: &spi0 {};
 	status = "okay";
 };
 
-&hp_i2c {
-	status = "disabled";
+&cros_ec {
+	cros_ec_proximity: proximity {
+		compatible = "google,cros-ec-mkbp-proximity";
+		label = "proximity-wifi";
+	};
 };
 
 ap_ts_pen_1v8: &i2c4 {
@@ -55,25 +65,20 @@ ap_ts_pen_1v8: &i2c4 {
 	};
 };
 
-/*
- * There's no SAR sensor, so i2c5 is re-purposed.  We leave the
- * proximity@28 node under i2c5 (from trogdor.dtsi) since it's "disabled"
- * and doesn't hurt.
- */
-i2c_wlc: &i2c5 {
-	/* Currently not connected to anything; see b/168652326 */
+&i2c7 {
+	status = "disabled";
+};
+
+&i2c9 {
+	status = "disabled";
 };
 
 &panel {
 	compatible = "boe,nv110wtm-n61";
 };
 
-&pp3300_codec {
-	status = "disabled";
-};
-
 &pp3300_dx_edp {
-	gpio = <&tlmm 52 GPIO_ACTIVE_HIGH>;
+	gpio = <&tlmm 67 GPIO_ACTIVE_HIGH>;
 };
 
 &sdhc_2 {
@@ -84,15 +89,34 @@ i2c_wlc: &i2c5 {
 	data-lanes = <0 1 2 3>;
 };
 
+&sound {
+	compatible = "google,sc7180-coachz";
+	model = "sc7180-adau7002-max98357a";
+	audio-routing =
+		"PDM_DAT", "DMIC";
+
+	dai-link@0 {
+		link-name = "MultiMedia0";
+		reg = <0>;
+		cpu {
+			sound-dai = <&lpass_cpu 0>;
+		};
+
+		codec {
+			sound-dai = <&adau7002>;
+		};
+	};
+};
+
 /* PINCTRL - modifications to sc7180-trogdor.dtsi */
 
 &en_pp3300_dx_edp {
 	pinmux  {
-		pins = "gpio52";
+		pins = "gpio67";
 	};
 
 	pinconf {
-		pins = "gpio52";
+		pins = "gpio67";
 	};
 };
 
@@ -107,35 +131,6 @@ i2c_wlc: &i2c5 {
 };
 
 /* PINCTRL - board-specific pinctrl */
-
-/ {
-	adau7002: audio-codec-1 {
-		compatible = "adi,adau7002";
-		IOVDD-supply = <&pp1800_alc5682>;
-		#sound-dai-cells = <0>;
-	};
-};
-
-&sound {
-	compatible = "google,sc7180-coachz";
-	model = "sc7180-adau7002-max98357a";
-	audio-routing =
-		"PDM_DAT", "DMIC";
-	pinctrl-names = "default";
-	pinctrl-0 = <&dmic_clk_en>;
-
-	dai-link@0 {
-		link-name = "MultiMedia0";
-		reg = <0>;
-		cpu {
-			sound-dai = <&lpass_cpu 0>;
-		};
-
-		codec {
-			sound-dai = <&adau7002>;
-		};
-	};
-};
 
 &tlmm {
 	gpio-line-names = "HUB_RST_L",
@@ -190,7 +185,7 @@ i2c_wlc: &i2c5 {
 			  "AMP_BCLK",
 			  "AMP_LRCLK",
 			  "AMP_DIN",
-			  "EN_PP3300_DX_EDP",
+			  "",
 			  "HP_BCLK",
 			  "HP_LRCLK",
 			  "HP_DOUT",
@@ -209,14 +204,14 @@ i2c_wlc: &i2c5 {
 			   * call it BIOS_FLASH_WP_L.
 			   */
 			  "AP_FLASH_WP_L",
-			  "",
+			  "EN_PP3300_DX_EDP",
 			  "AP_SPI_CS0_L",
 			  "SD_CD_ODL",
 			  "",
 			  "",
 			  "",
 			  "",
-			  "FPMCU_SEL",
+			  "EN_FP_RAILS",
 			  "UIM2_DATA",
 			  "UIM2_CLK",
 			  "UIM2_RST",
@@ -225,7 +220,7 @@ i2c_wlc: &i2c5 {
 			  "UIM1_CLK",
 			  "UIM1_RST",
 			  "",
-			  "DMIC_CLK_EN",
+			  "",
 			  "HUB_EN",
 			  "",
 			  "AP_SPI_FP_MISO",
@@ -261,16 +256,6 @@ i2c_wlc: &i2c5 {
 			  "AP_TS_PEN_I2C_SCL",
 			  "DP_HOT_PLUG_DET",
 			  "EC_IN_RW_ODL";
-	dmic_clk_en: dmic_clk_en {
-		pinmux {
-			pins = "gpio83";
-			function = "gpio";
-		};
-
-		pinconf {
-			pins = "gpio83";
-			drive-strength = <8>;
-			bias-pull-up;
-		};
-	};
 };
+
+#include "sc7180-trogdor-coachz-camera.dtsi"

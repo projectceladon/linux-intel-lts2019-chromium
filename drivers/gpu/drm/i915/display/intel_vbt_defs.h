@@ -293,8 +293,12 @@ struct bdb_general_features {
 #define DVO_PORT_HDMIE		12				/* 193 */
 #define DVO_PORT_DPF		13				/* N/A */
 #define DVO_PORT_HDMIF		14				/* N/A */
-#define DVO_PORT_DPG		15
-#define DVO_PORT_HDMIG		16
+#define DVO_PORT_DPG		15				/* 217 */
+#define DVO_PORT_HDMIG		16				/* 217 */
+#define DVO_PORT_DPH		17				/* 217 */
+#define DVO_PORT_HDMIH		18				/* 217 */
+#define DVO_PORT_DPI		19				/* 217 */
+#define DVO_PORT_HDMII		20				/* 217 */
 #define DVO_PORT_MIPIA		21				/* 171 */
 #define DVO_PORT_MIPIB		22				/* 171 */
 #define DVO_PORT_MIPIC		23				/* 171 */
@@ -330,11 +334,24 @@ enum vbt_gmbus_ddi {
 #define DP_AUX_E 0x50
 #define DP_AUX_F 0x60
 #define DP_AUX_G 0x70
+#define DP_AUX_H 0x80
+#define DP_AUX_I 0x90
 
-#define VBT_DP_MAX_LINK_RATE_HBR3	0
-#define VBT_DP_MAX_LINK_RATE_HBR2	1
-#define VBT_DP_MAX_LINK_RATE_HBR	2
-#define VBT_DP_MAX_LINK_RATE_LBR	3
+/* DP max link rate 216+ */
+#define BDB_216_VBT_DP_MAX_LINK_RATE_HBR3	0
+#define BDB_216_VBT_DP_MAX_LINK_RATE_HBR2	1
+#define BDB_216_VBT_DP_MAX_LINK_RATE_HBR	2
+#define BDB_216_VBT_DP_MAX_LINK_RATE_LBR	3
+
+/* DP max link rate 230+ */
+#define BDB_230_VBT_DP_MAX_LINK_RATE_DEF	0
+#define BDB_230_VBT_DP_MAX_LINK_RATE_LBR	1
+#define BDB_230_VBT_DP_MAX_LINK_RATE_HBR	2
+#define BDB_230_VBT_DP_MAX_LINK_RATE_HBR2	3
+#define BDB_230_VBT_DP_MAX_LINK_RATE_HBR3	4
+#define BDB_230_VBT_DP_MAX_LINK_RATE_UHBR10	5
+#define BDB_230_VBT_DP_MAX_LINK_RATE_UHBR13P5	6
+#define BDB_230_VBT_DP_MAX_LINK_RATE_UHBR20	7
 
 /*
  * The child device config, aka the display device data structure, provides a
@@ -433,8 +450,8 @@ struct child_device_config {
 	u16 dp_gpio_pin_num;					/* 195 */
 	u8 dp_iboost_level:4;					/* 196 */
 	u8 hdmi_iboost_level:4;					/* 196 */
-	u8 dp_max_link_rate:2;					/* 216 CNL+ */
-	u8 dp_max_link_rate_reserved:6;				/* 216 */
+	u8 dp_max_link_rate:3;					/* 216/230 CNL+ */
+	u8 dp_max_link_rate_reserved:5;				/* 216/230 */
 } __packed;
 
 struct bdb_general_definitions {
@@ -462,7 +479,7 @@ struct bdb_general_definitions {
 	 * number = (block_size - sizeof(bdb_general_definitions))/
 	 *	     defs->child_dev_size;
 	 */
-	u8 devices[0];
+	u8 devices[];
 } __packed;
 
 /*
@@ -820,6 +837,7 @@ struct bdb_lfp_power {
 	u16 adb;
 	u16 lace_enabled_status;
 	struct agressiveness_profile_entry aggressivenes[16];
+	u16 hobl; /* 232+ */
 } __packed;
 
 /*
@@ -839,7 +857,7 @@ struct bdb_mipi_config {
 
 struct bdb_mipi_sequence {
 	u8 version;
-	u8 data[0]; /* up to 6 variable length blocks */
+	u8 data[]; /* up to 6 variable length blocks */
 } __packed;
 
 /*

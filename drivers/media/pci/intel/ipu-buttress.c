@@ -39,6 +39,7 @@
 #define BUTTRESS_CSE_FWRESET_TIMEOUT		100000
 
 #define BUTTRESS_IPC_TX_TIMEOUT			1000
+#define BUTTRESS_IPC_RESET_TIMEOUT		2000
 #define BUTTRESS_IPC_RX_TIMEOUT			1000
 #define BUTTRESS_IPC_VALIDITY_TIMEOUT		1000000
 #define BUTTRESS_TSC_SYNC_TIMEOUT		5000
@@ -50,23 +51,6 @@
 
 #define BUTTRESS_IPC_CMD_SEND_RETRY	1
 
-static const struct ipu_buttress_sensor_clk_freq sensor_clk_freqs[] = {
-	{6750000, BUTTRESS_SENSOR_CLK_FREQ_6P75MHZ},
-	{8000000, BUTTRESS_SENSOR_CLK_FREQ_8MHZ},
-	{9600000, BUTTRESS_SENSOR_CLK_FREQ_9P6MHZ},
-	{12000000, BUTTRESS_SENSOR_CLK_FREQ_12MHZ},
-	{13600000, BUTTRESS_SENSOR_CLK_FREQ_13P6MHZ},
-	{14400000, BUTTRESS_SENSOR_CLK_FREQ_14P4MHZ},
-	{15800000, BUTTRESS_SENSOR_CLK_FREQ_15P8MHZ},
-	{16200000, BUTTRESS_SENSOR_CLK_FREQ_16P2MHZ},
-	{17300000, BUTTRESS_SENSOR_CLK_FREQ_17P3MHZ},
-	{18600000, BUTTRESS_SENSOR_CLK_FREQ_18P6MHZ},
-	{19200000, BUTTRESS_SENSOR_CLK_FREQ_19P2MHZ},
-	{24000000, BUTTRESS_SENSOR_CLK_FREQ_24MHZ},
-	{26000000, BUTTRESS_SENSOR_CLK_FREQ_26MHZ},
-	{27000000, BUTTRESS_SENSOR_CLK_FREQ_27MHZ}
-};
-
 static const u32 ipu_adev_irq_mask[] = {
 	BUTTRESS_ISR_IS_IRQ, BUTTRESS_ISR_PS_IRQ
 };
@@ -74,8 +58,7 @@ static const u32 ipu_adev_irq_mask[] = {
 int ipu_buttress_ipc_reset(struct ipu_device *isp, struct ipu_buttress_ipc *ipc)
 {
 	struct ipu_buttress *b = &isp->buttress;
-	unsigned long tout_jfs;
-	unsigned int tout = 500;
+	unsigned int retries = BUTTRESS_IPC_RESET_TIMEOUT;
 	u32 val = 0, csr_in_clr;
 
 	if (!isp->secure_mode) {
@@ -91,7 +74,6 @@ int ipu_buttress_ipc_reset(struct ipu_device *isp, struct ipu_buttress_ipc *ipc)
 
 	/* Set peer CSR bit IPC_PEER_COMP_ACTIONS_RST_PHASE1 */
 	writel(ENTRY, isp->base + ipc->csr_out);
-
 	/*
 	 * Clear-by-1 all CSR bits EXCEPT following
 	 * bits:
@@ -104,53 +86,43 @@ int ipu_buttress_ipc_reset(struct ipu_device *isp, struct ipu_buttress_ipc *ipc)
 		BUTTRESS_IU2CSECSR_IPC_PEER_ACKED_REG_VALID |
 		BUTTRESS_IU2CSECSR_IPC_PEER_ASSERTED_REG_VALID_REQ | QUERY;
 
-	/*
-	 * How long we should wait here?
-	 */
-	tout_jfs = jiffies + msecs_to_jiffies(tout);
-	do {
+	while (retries--) {
+		usleep_range(400, 500);
 		val = readl(isp->base + ipc->csr_in);
-		dev_dbg(&isp->pdev->dev, "%s: csr_in = %x\n", __func__, val);
-		if (val & ENTRY) {
-			if (val & EXIT) {
-				dev_dbg(&isp->pdev->dev,
-					"%s:%s & %s\n", __func__,
-					"IPC_PEER_COMP_ACTIONS_RST_PHASE1",
-					"IPC_PEER_COMP_ACTIONS_RST_PHASE2");
-				/*
-				 * 1) Clear-by-1 CSR bits
-				 * (IPC_PEER_COMP_ACTIONS_RST_PHASE1,
-				 * IPC_PEER_COMP_ACTIONS_RST_PHASE2).
-				 * 2) Set peer CSR bit
-				 * IPC_PEER_QUERIED_IP_COMP_ACTIONS_RST_PHASE.
-				 */
-				writel(ENTRY | EXIT,
-				       isp->base + ipc->csr_in);
-
-				writel(QUERY, isp->base + ipc->csr_out);
-
-				tout_jfs = jiffies + msecs_to_jiffies(tout);
-				continue;
-			} else {
-				dev_dbg(&isp->pdev->dev,
-					"%s:IPC_PEER_COMP_ACTIONS_RST_PHASE1\n",
-					__func__);
-				/*
-				 * 1) Clear-by-1 CSR bits
-				 * (IPC_PEER_COMP_ACTIONS_RST_PHASE1,
-				 * IPC_PEER_QUERIED_IP_COMP_ACTIONS_RST_PHASE).
-				 * 2) Set peer CSR bit
-				 * IPC_PEER_COMP_ACTIONS_RST_PHASE1.
-				 */
-				writel(ENTRY | QUERY,
-				       isp->base + ipc->csr_in);
-
-				writel(ENTRY, isp->base + ipc->csr_out);
-
-				tout_jfs = jiffies + msecs_to_jiffies(tout);
-				continue;
-			}
-		} else if (val & EXIT) {
+		switch (val) {
+		case (ENTRY | EXIT):
+		case (ENTRY | EXIT | QUERY):
+			dev_dbg(&isp->pdev->dev,
+				"%s:%s & %s\n", __func__,
+				"IPC_PEER_COMP_ACTIONS_RST_PHASE1",
+				"IPC_PEER_COMP_ACTIONS_RST_PHASE2");
+			/*
+			 * 1) Clear-by-1 CSR bits
+			 * (IPC_PEER_COMP_ACTIONS_RST_PHASE1,
+			 * IPC_PEER_COMP_ACTIONS_RST_PHASE2).
+			 * 2) Set peer CSR bit
+			 * IPC_PEER_QUERIED_IP_COMP_ACTIONS_RST_PHASE.
+			 */
+			writel(ENTRY | EXIT, isp->base + ipc->csr_in);
+			writel(QUERY, isp->base + ipc->csr_out);
+			break;
+		case ENTRY:
+		case (ENTRY | QUERY):
+			dev_dbg(&isp->pdev->dev,
+				"%s:IPC_PEER_COMP_ACTIONS_RST_PHASE1\n",
+				__func__);
+			/*
+			 * 1) Clear-by-1 CSR bits
+			 * (IPC_PEER_COMP_ACTIONS_RST_PHASE1,
+			 * IPC_PEER_QUERIED_IP_COMP_ACTIONS_RST_PHASE).
+			 * 2) Set peer CSR bit
+			 * IPC_PEER_COMP_ACTIONS_RST_PHASE1.
+			 */
+			writel(ENTRY | QUERY, isp->base + ipc->csr_in);
+			writel(ENTRY, isp->base + ipc->csr_out);
+			break;
+		case EXIT:
+		case (EXIT | QUERY):
 			dev_dbg(&isp->pdev->dev,
 				"%s: IPC_PEER_COMP_ACTIONS_RST_PHASE2\n",
 				__func__);
@@ -168,30 +140,25 @@ int ipu_buttress_ipc_reset(struct ipu_device *isp, struct ipu_buttress_ipc *ipc)
 			 * IPC_PEER_COMP_ACTIONS_RST_PHASE2.
 			 */
 			writel(EXIT, isp->base + ipc->csr_in);
-
 			writel(0, isp->base + ipc->db0_in);
-
 			writel(csr_in_clr, isp->base + ipc->csr_in);
-
 			writel(EXIT, isp->base + ipc->csr_out);
 
 			/*
 			 * Read csr_in again to make sure if RST_PHASE2 is done.
 			 * If csr_in is QUERY, it should be handled again.
 			 */
-			usleep_range(100, 500);
+			usleep_range(200, 300);
 			val = readl(isp->base + ipc->csr_in);
 			if (val & QUERY) {
 				dev_dbg(&isp->pdev->dev,
 					"%s: RST_PHASE2 retry csr_in = %x\n",
 					__func__, val);
-				continue;
+				break;
 			}
-
 			mutex_unlock(&b->ipc_mutex);
-
 			return 0;
-		} else if (val & QUERY) {
+		case QUERY:
 			dev_dbg(&isp->pdev->dev,
 				"%s: %s\n", __func__,
 				"IPC_PEER_QUERIED_IP_COMP_ACTIONS_RST_PHASE");
@@ -202,17 +169,18 @@ int ipu_buttress_ipc_reset(struct ipu_device *isp, struct ipu_buttress_ipc *ipc)
 			 * IPC_PEER_COMP_ACTIONS_RST_PHASE1
 			 */
 			writel(QUERY, isp->base + ipc->csr_in);
-
 			writel(ENTRY, isp->base + ipc->csr_out);
-
-			tout_jfs = jiffies + msecs_to_jiffies(tout);
+			break;
+		default:
+			dev_dbg_ratelimited(&isp->pdev->dev,
+					    "%s: unexpected CSR 0x%x\n",
+					    __func__, val);
+			break;
 		}
-		usleep_range(100, 500);
-	} while (!time_after(jiffies, tout_jfs));
+	}
 
 	mutex_unlock(&b->ipc_mutex);
-
-	dev_err(&isp->pdev->dev, "Timed out while waiting for CSE!\n");
+	dev_err(&isp->pdev->dev, "Timed out while waiting for CSE\n");
 
 	return -ETIMEDOUT;
 }
@@ -244,7 +212,7 @@ ipu_buttress_ipc_validity_open(struct ipu_device *isp,
 	ret = readl_poll_timeout(addr, val, val & mask, 200, tout);
 	if (ret) {
 		val = readl(addr);
-		dev_err(&isp->pdev->dev, "CSE validity timeout 0x%x!\n", val);
+		dev_err(&isp->pdev->dev, "CSE validity timeout 0x%x\n", val);
 		ipu_buttress_ipc_validity_close(isp, ipc);
 	}
 
@@ -346,7 +314,7 @@ static int ipu_buttress_ipc_send_bulk(struct ipu_device *isp,
 		}
 	}
 
-	dev_dbg(&isp->pdev->dev, "bulk IPC commands completed\n");
+	dev_dbg(&isp->pdev->dev, "bulk IPC commands done\n");
 
 out:
 	ipu_buttress_ipc_validity_close(isp, ipc);
@@ -644,6 +612,28 @@ out_mutex_unlock:
 	mutex_unlock(&isp->buttress.power_mutex);
 }
 
+static void ipu_buttress_set_isys_ratio(struct ipu_device *isp,
+					unsigned int isys_divisor)
+{
+	struct ipu_buttress_ctrl *ctrl = isp->isys->ctrl;
+
+	mutex_lock(&isp->buttress.power_mutex);
+
+	if (ctrl->divisor == isys_divisor)
+		goto out_mutex_unlock;
+
+	ctrl->divisor = isys_divisor;
+
+	if (ctrl->started) {
+		writel(BUTTRESS_FREQ_CTL_START |
+		       ctrl->qos_floor << BUTTRESS_FREQ_CTL_QOS_FLOOR_SHIFT |
+		       isys_divisor, isp->base + BUTTRESS_REG_IS_FREQ_CTL);
+	}
+
+out_mutex_unlock:
+	mutex_unlock(&isp->buttress.power_mutex);
+}
+
 static void ipu_buttress_set_psys_freq(struct ipu_device *isp,
 				       unsigned int freq)
 {
@@ -717,10 +707,10 @@ int ipu_buttress_reset_authentication(struct ipu_device *isp)
 				 BUTTRESS_CSE_FWRESET_TIMEOUT);
 	if (ret) {
 		dev_err(&isp->pdev->dev,
-			"Timed out while resetting authentication state!\n");
+			"Time out while resetting authentication state\n");
 	} else {
 		dev_info(&isp->pdev->dev,
-			 "FW reset for authentication done!\n");
+			 "FW reset for authentication done\n");
 		writel(0, isp->base + BUTTRESS_REG_FW_RESET_CTL);
 		/* leave some time for HW restore */
 		usleep_range(800, 1000);
@@ -843,7 +833,7 @@ int ipu_buttress_authenticate(struct ipu_device *isp)
 				   (data & mask) == fail), 500,
 				  BUTTRESS_CSE_BOOTLOAD_TIMEOUT);
 	if (rval) {
-		dev_err(&isp->pdev->dev, "CSE boot_load timeout.\n");
+		dev_err(&isp->pdev->dev, "CSE boot_load timeout\n");
 		goto iunit_power_off;
 	}
 
@@ -858,7 +848,7 @@ int ipu_buttress_authenticate(struct ipu_device *isp)
 				  data, data == BOOTLOADER_MAGIC_KEY, 500,
 				  BUTTRESS_CSE_BOOTLOAD_TIMEOUT);
 	if (rval) {
-		dev_err(&isp->pdev->dev, "Expect magic number timeout 0x%x.\n",
+		dev_err(&isp->pdev->dev, "Expect magic number timeout 0x%x\n",
 			data);
 		goto iunit_power_off;
 	}
@@ -918,7 +908,7 @@ static int ipu_buttress_send_tsc_request(struct ipu_device *isp)
 	val = readl(isp->base + BUTTRESS_REG_PWR_STATE);
 	val = (val & mask) >> shift;
 	if (val == BUTTRESS_PWR_STATE_HH_STATE_ERR) {
-		dev_err(&isp->pdev->dev, "Start tsc sync failed!\n");
+		dev_err(&isp->pdev->dev, "Start tsc sync failed\n");
 		return -EINVAL;
 	}
 
@@ -927,7 +917,7 @@ static int ipu_buttress_send_tsc_request(struct ipu_device *isp)
 				 ((val & mask) >> shift == done), 500,
 				 BUTTRESS_TSC_SYNC_TIMEOUT);
 	if (ret)
-		dev_err(&isp->pdev->dev, "Start tsc sync timeout!\n");
+		dev_err(&isp->pdev->dev, "Start tsc sync timeout\n");
 
 	return ret;
 }
@@ -955,7 +945,7 @@ int ipu_buttress_start_tsc_sync(struct ipu_device *isp)
 		return ret;
 	}
 
-	dev_err(&isp->pdev->dev, "TSC sync failed(timeout).\n");
+	dev_err(&isp->pdev->dev, "TSC sync failed(timeout)\n");
 
 	return -ETIMEDOUT;
 }
@@ -969,165 +959,6 @@ struct clk_ipu_sensor {
 };
 
 #define to_clk_ipu_sensor(_hw) container_of(_hw, struct clk_ipu_sensor, hw)
-
-static int ipu_buttress_clk_pll_prepare(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-	int ret;
-
-	/* Workaround needed to get sensor clock running in some cases */
-	ret = pm_runtime_get_sync(&ck->isp->isys->dev);
-	return ret >= 0 ? 0 : ret;
-}
-
-static void ipu_buttress_clk_pll_unprepare(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-
-	/* Workaround needed to get sensor clock stopped in some cases */
-	pm_runtime_put(&ck->isp->isys->dev);
-}
-
-static int ipu_buttress_clk_pll_enable(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-	u32 val;
-	unsigned int i;
-
-	/*
-	 * Start bit behaves like master clock request towards ICLK.
-	 * It is needed regardless of the 24 MHz or per clock out pll
-	 * setting.
-	 */
-	val = readl(ck->isp->base + BUTTRESS_REG_SENSOR_FREQ_CTL);
-	val |= BUTTRESS_FREQ_CTL_START;
-	val &= ~BUTTRESS_SENSOR_FREQ_CTL_OSC_OUT_FREQ_MASK(ck->id);
-	for (i = 0; i < ARRAY_SIZE(sensor_clk_freqs); i++)
-		if (sensor_clk_freqs[i].rate == ck->rate)
-			break;
-
-	if (i < ARRAY_SIZE(sensor_clk_freqs))
-		val |= sensor_clk_freqs[i].val <<
-		    BUTTRESS_SENSOR_FREQ_CTL_OSC_OUT_FREQ_SHIFT(ck->id);
-	else
-		val |= BUTTRESS_SENSOR_FREQ_CTL_OSC_OUT_FREQ_DEFAULT(ck->id);
-
-	writel(val, ck->isp->base + BUTTRESS_REG_SENSOR_FREQ_CTL);
-
-	return 0;
-}
-
-static void ipu_buttress_clk_pll_disable(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-	u32 val;
-	int i;
-
-	val = readl(ck->isp->base + BUTTRESS_REG_SENSOR_CLK_CTL);
-	for (i = 0; i < IPU_BUTTRESS_NUM_OF_SENS_CKS; i++) {
-		if (val &
-		    (1 << BUTTRESS_SENSOR_CLK_CTL_OSC_CLK_OUT_EN_SHIFT(i)))
-			return;
-	}
-
-	/* See enable control above */
-	val = readl(ck->isp->base + BUTTRESS_REG_SENSOR_FREQ_CTL);
-	val &= ~BUTTRESS_FREQ_CTL_START;
-	writel(val, ck->isp->base + BUTTRESS_REG_SENSOR_FREQ_CTL);
-}
-
-static int ipu_buttress_clk_enable(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-	u32 val;
-
-	val = readl(ck->isp->base + BUTTRESS_REG_SENSOR_CLK_CTL);
-	val |= 1 << BUTTRESS_SENSOR_CLK_CTL_OSC_CLK_OUT_EN_SHIFT(ck->id);
-
-	/* Enable dynamic sensor clock */
-	val |= 1 << BUTTRESS_SENSOR_CLK_CTL_OSC_CLK_OUT_SEL_SHIFT(ck->id);
-	writel(val, ck->isp->base + BUTTRESS_REG_SENSOR_CLK_CTL);
-
-	return 0;
-}
-
-static void ipu_buttress_clk_disable(struct clk_hw *hw)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-	u32 val;
-
-	val = readl(ck->isp->base + BUTTRESS_REG_SENSOR_CLK_CTL);
-	val &= ~(1 << BUTTRESS_SENSOR_CLK_CTL_OSC_CLK_OUT_EN_SHIFT(ck->id));
-	writel(val, ck->isp->base + BUTTRESS_REG_SENSOR_CLK_CTL);
-}
-
-static long ipu_buttress_clk_round_rate(struct clk_hw *hw,
-					unsigned long rate,
-					unsigned long *parent_rate)
-{
-	unsigned long best = ULONG_MAX;
-	unsigned long round_rate = 0;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(sensor_clk_freqs); i++) {
-		long diff = sensor_clk_freqs[i].rate - rate;
-
-		if (diff == 0)
-			return rate;
-
-		diff = abs(diff);
-		if (diff < best) {
-			best = diff;
-			round_rate = sensor_clk_freqs[i].rate;
-		}
-	}
-
-	return round_rate;
-}
-
-static unsigned long
-ipu_buttress_clk_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-
-	return ck->rate;
-}
-
-static int ipu_buttress_clk_set_rate(struct clk_hw *hw,
-				     unsigned long rate,
-				     unsigned long parent_rate)
-{
-	struct clk_ipu_sensor *ck = to_clk_ipu_sensor(hw);
-
-	/*
-	 * R    N       P       PVD     PLLout
-	 * 1    45      128     2       6.75
-	 * 1    40      96      2       8
-	 * 1    40      80      2       9.6
-	 * 1    15      20      4       14.4
-	 * 1    40      32      2       24
-	 * 1    65      48      1       26
-	 *
-	 */
-	ck->rate = rate;
-
-	return 0;
-}
-
-static const struct clk_ops ipu_buttress_clk_sensor_ops = {
-	.enable = ipu_buttress_clk_enable,
-	.disable = ipu_buttress_clk_disable,
-};
-
-static const struct clk_ops ipu_buttress_clk_sensor_ops_parent = {
-	.enable = ipu_buttress_clk_pll_enable,
-	.disable = ipu_buttress_clk_pll_disable,
-	.prepare = ipu_buttress_clk_pll_prepare,
-	.unprepare = ipu_buttress_clk_pll_unprepare,
-	.round_rate = ipu_buttress_clk_round_rate,
-	.recalc_rate = ipu_buttress_clk_recalc_rate,
-	.set_rate = ipu_buttress_clk_set_rate,
-};
 
 int ipu_buttress_tsc_read(struct ipu_device *isp, u64 *val)
 {
@@ -1280,6 +1111,54 @@ static int ipu_buttress_psys_force_freq_set(void *data, u64 val)
 	return 0;
 }
 
+int ipu_buttress_isys_freq_get(void *data, u64 *val)
+{
+	struct ipu_device *isp = data;
+	u32 reg_val;
+	int rval;
+
+	rval = pm_runtime_get_sync(&isp->isys->dev);
+	if (rval < 0) {
+		pm_runtime_put(&isp->isys->dev);
+		dev_err(&isp->pdev->dev, "Runtime PM failed (%d)\n", rval);
+		return rval;
+	}
+
+	reg_val = readl(isp->base + BUTTRESS_REG_IS_FREQ_CTL);
+
+	pm_runtime_put(&isp->isys->dev);
+
+	*val = IPU_IS_FREQ_RATIO_BASE *
+	    (reg_val & IPU_BUTTRESS_IS_FREQ_CTL_DIVISOR_MASK);
+
+	return 0;
+}
+
+int ipu_buttress_isys_freq_set(void *data, u64 val)
+{
+	struct ipu_device *isp = data;
+	int rval;
+
+	if (val < BUTTRESS_MIN_FORCE_IS_FREQ ||
+	    val > BUTTRESS_MAX_FORCE_IS_FREQ)
+		return -EINVAL;
+
+	rval = pm_runtime_get_sync(&isp->isys->dev);
+	if (rval < 0) {
+		pm_runtime_put(&isp->isys->dev);
+		dev_err(&isp->pdev->dev, "Runtime PM failed (%d)\n", rval);
+		return rval;
+	}
+
+	do_div(val, BUTTRESS_IS_FREQ_STEP);
+	if (val)
+		ipu_buttress_set_isys_ratio(isp, val);
+
+	pm_runtime_put(&isp->isys->dev);
+
+	return 0;
+}
+
 DEFINE_SIMPLE_ATTRIBUTE(ipu_buttress_psys_force_freq_fops,
 			ipu_buttress_psys_force_freq_get,
 			ipu_buttress_psys_force_freq_set, "%llu\n");
@@ -1288,7 +1167,8 @@ DEFINE_SIMPLE_ATTRIBUTE(ipu_buttress_psys_freq_fops,
 			ipu_buttress_psys_freq_get, NULL, "%llu\n");
 
 DEFINE_SIMPLE_ATTRIBUTE(ipu_buttress_isys_freq_fops,
-			ipu_buttress_isys_freq_get, NULL, "%llu\n");
+			ipu_buttress_isys_freq_get,
+			ipu_buttress_isys_freq_set, "%llu\n");
 
 int ipu_buttress_debugfs_init(struct ipu_device *isp)
 {
@@ -1333,7 +1213,7 @@ int ipu_buttress_debugfs_init(struct ipu_device *isp)
 	if (!file)
 		goto err;
 
-	file = debugfs_create_file("isys_freq", 0400, dir, isp,
+	file = debugfs_create_file("isys_freq", 0700, dir, isp,
 				   &ipu_buttress_isys_freq_fops);
 	if (!file)
 		goto err;
@@ -1440,7 +1320,7 @@ int ipu_buttress_init(struct ipu_device *isp)
 	ipu_buttress_set_secure_mode(isp);
 	isp->secure_mode = ipu_buttress_get_secure_mode(isp);
 	if (isp->secure_mode != secure_mode_enable)
-		dev_warn(&isp->pdev->dev, "Unable to set secure mode!\n");
+		dev_warn(&isp->pdev->dev, "Unable to set secure mode\n");
 
 	dev_info(&isp->pdev->dev, "IPU in %s mode\n",
 		 isp->secure_mode ? "secure" : "non-secure");
@@ -1477,10 +1357,10 @@ int ipu_buttress_init(struct ipu_device *isp)
 	do {
 		rval = ipu_buttress_ipc_reset(isp, &b->cse);
 		if (rval) {
-			dev_err(&isp->pdev->dev,
-				"IPC reset protocol failed, retry!\n");
+			dev_warn(&isp->pdev->dev,
+				 "IPC reset protocol failed, retrying\n");
 		} else {
-			dev_dbg(&isp->pdev->dev, "IPC reset completed!\n");
+			dev_info(&isp->pdev->dev, "IPC reset done\n");
 			return 0;
 		}
 	} while (ipc_reset_retry--);

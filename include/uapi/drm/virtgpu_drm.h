@@ -47,6 +47,7 @@ extern "C" {
 #define DRM_VIRTGPU_WAIT     0x08
 #define DRM_VIRTGPU_GET_CAPS  0x09
 #define DRM_VIRTGPU_RESOURCE_CREATE_BLOB 0x0a
+#define DRM_VIRTGPU_CONTEXT_INIT 0x0b
 
 #define VIRTGPU_EXECBUF_FENCE_FD_IN	0x01
 #define VIRTGPU_EXECBUF_FENCE_FD_OUT	0x02
@@ -75,7 +76,9 @@ struct drm_virtgpu_execbuffer {
 #define VIRTGPU_PARAM_CAPSET_QUERY_FIX 2 /* do we have the capset fix */
 #define VIRTGPU_PARAM_RESOURCE_BLOB 3 /* DRM_VIRTGPU_RESOURCE_CREATE_BLOB */
 #define VIRTGPU_PARAM_HOST_VISIBLE 4
-
+#define VIRTGPU_PARAM_CROSS_DEVICE 5 /* cross virtio-device resource sharing */
+#define VIRTGPU_PARAM_CONTEXT_INIT 6 /* DRM_VIRTGPU_CONTEXT_INIT */
+#define VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs 7 /* Bitmask of supported capability set ids */
 struct drm_virtgpu_getparam {
 	__u64 param;
 	__u64 value;
@@ -104,7 +107,24 @@ struct drm_virtgpu_resource_info {
 	__u32 bo_handle;
 	__u32 res_handle;
 	__u32 size;
+	__u32 stride;
+};
+
+/* CHROMIUM */
+struct drm_virtgpu_resource_info_cros {
+	__u32 bo_handle;
+	__u32 res_handle;
+	__u32 size;
+
+/* Return res_handle and size.  Return extended info (strides, num_planes,
+ * etc.) until chromeos-5.4 and return blob_mem since chromeos-5.10.
+ */
+#define VIRTGPU_RESOURCE_INFO_TYPE_DEFAULT 0
+/* Return res_handle, size, and extended info */
+#define VIRTGPU_RESOURCE_INFO_TYPE_EXTENDED 1
 	union {
+		__u32 type; /* in, VIRTGPU_RESOURCE_INFO_TYPE_* */
+		__u32 blob_mem;
 		__u32 stride;
 		__u32 strides[4]; /* strides[0] is accessible with stride. */
 	};
@@ -175,6 +195,20 @@ struct drm_virtgpu_resource_create_blob {
 	__u64 blob_id;
 };
 
+#define VIRTGPU_CONTEXT_PARAM_CAPSET_ID 0x0001
+struct drm_virtgpu_context_set_param {
+	__u64 param;
+	__u64 value;
+};
+
+struct drm_virtgpu_context_init {
+	__u32 num_params;
+	__u32 pad;
+
+	/* pointer to drm_virtgpu_context_set_param arrary */
+	__u64 ctx_set_params;
+};
+
 #define DRM_IOCTL_VIRTGPU_MAP \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_MAP, struct drm_virtgpu_map)
 
@@ -193,6 +227,11 @@ struct drm_virtgpu_resource_create_blob {
 #define DRM_IOCTL_VIRTGPU_RESOURCE_INFO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_RESOURCE_INFO, \
 		 struct drm_virtgpu_resource_info)
+
+/* same ioctl number as DRM_IOCTL_VIRTGPU_RESOURCE_INFO */
+#define DRM_IOCTL_VIRTGPU_RESOURCE_INFO_CROS \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_RESOURCE_INFO, \
+		 struct drm_virtgpu_resource_info_cros)
 
 #define DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_TRANSFER_FROM_HOST,	\
@@ -213,6 +252,10 @@ struct drm_virtgpu_resource_create_blob {
 #define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB				\
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_RESOURCE_CREATE_BLOB,	\
 		struct drm_virtgpu_resource_create_blob)
+
+#define DRM_IOCTL_VIRTGPU_CONTEXT_INIT \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_CONTEXT_INIT,	\
+		struct drm_virtgpu_context_init)
 
 #if defined(__cplusplus)
 }

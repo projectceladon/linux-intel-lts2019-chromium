@@ -3756,6 +3756,8 @@ enum ieee80211_reconfig_type {
  *
  * @start_pmsr: start peer measurement (e.g. FTM) (this call can sleep)
  * @abort_pmsr: abort peer measurement (this call can sleep)
+ *
+ * @set_sar_specs: Update the SAR (TX power) settings.
  */
 struct ieee80211_ops {
 	void (*tx)(struct ieee80211_hw *hw,
@@ -4060,7 +4062,6 @@ struct ieee80211_ops {
 			  struct cfg80211_pmsr_request *request);
 	void (*abort_pmsr)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			   struct cfg80211_pmsr_request *request);
-
 	int (*set_sar_specs)(struct ieee80211_hw *hw,
 			     const struct cfg80211_sar_specs *sar);
 };

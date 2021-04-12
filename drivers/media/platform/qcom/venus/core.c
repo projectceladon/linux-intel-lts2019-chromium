@@ -5,8 +5,10 @@
  */
 #include <linux/init.h>
 #include <linux/interconnect.h>
+#include <linux/io.h>
 #include <linux/ioctl.h>
 #include <linux/delay.h>
+#include <linux/devcoredump.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -21,6 +23,33 @@
 #include "core.h"
 #include "firmware.h"
 #include "pm_helpers.h"
+
+static void venus_coredump(struct venus_core *core)
+{
+	struct device *dev;
+	phys_addr_t mem_phys;
+	size_t mem_size;
+	void *mem_va;
+	void *data;
+
+	dev = core->dev;
+	mem_phys = core->fw.mem_phys;
+	mem_size = core->fw.mem_size;
+
+	mem_va = memremap(mem_phys, mem_size, MEMREMAP_WC);
+	if (!mem_va)
+		return;
+
+	data = vmalloc(mem_size);
+	if (!data) {
+		memunmap(mem_va);
+		return;
+	}
+
+	memcpy(data, mem_va, mem_size);
+	memunmap(mem_va);
+	dev_coredumpv(dev, data, mem_size, GFP_KERNEL);
+}
 
 static void venus_event_notify(struct venus_core *core, u32 event)
 {
@@ -62,10 +91,13 @@ static void venus_sys_error_handler(struct work_struct *work)
 
 	mutex_lock(&core->lock);
 
-	while (pm_runtime_active(core->dev_dec) || pm_runtime_active(core->dev_enc))
+	while ((core->dev_dec && pm_runtime_active(core->dev_dec)) ||
+			(core->dev_enc && pm_runtime_active(core->dev_enc)))
 		msleep(10);
 
 	venus_shutdown(core);
+
+	venus_coredump(core);
 
 	pm_runtime_put_sync(core->dev);
 

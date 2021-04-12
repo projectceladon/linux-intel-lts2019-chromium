@@ -198,12 +198,9 @@ u16 ieee80211_select_queue(struct ieee80211_sub_if_data *sdata,
 		sta = rcu_dereference(sdata->u.vlan.sta);
 		if (sta)
 			break;
-		/* fall through */
+		fallthrough;
 	case NL80211_IFTYPE_AP:
 		ra = skb->data;
-		break;
-	case NL80211_IFTYPE_WDS:
-		ra = sdata->u.wds.remote_addr;
 		break;
 	case NL80211_IFTYPE_STATION:
 		/* might be a TDLS station */

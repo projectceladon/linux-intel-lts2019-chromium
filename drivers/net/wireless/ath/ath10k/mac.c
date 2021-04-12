@@ -82,8 +82,8 @@ static struct ieee80211_rate ath10k_rates_rev2[] = {
 };
 
 static const struct cfg80211_sar_freq_ranges ath10k_sar_freq_ranges[] = {
-	{ .index = 0, .start_freq = 2412000, .end_freq = 2484000 },
-	{ .index = 1, .start_freq = 2484000, .end_freq = 5865000 },
+	{.start_freq = 2402, .end_freq = 2494 },
+	{.start_freq = 5170, .end_freq = 5875 },
 };
 
 static const struct cfg80211_sar_capa ath10k_sar_capa = {
@@ -2855,11 +2855,24 @@ static int ath10k_mac_vif_recalc_txbf(struct ath10k *ar,
 	return 0;
 }
 
+static bool ath10k_mac_is_connected(struct ath10k *ar)
+{
+	struct ath10k_vif *arvif;
+
+	list_for_each_entry(arvif, &ar->arvifs, list) {
+		if (arvif->is_up && arvif->vdev_type == WMI_VDEV_TYPE_STA)
+			return true;
+	}
+
+	return false;
+}
+
 static int ath10k_mac_txpower_setup(struct ath10k *ar, int txpower)
 {
 	int ret;
 	u32 param;
 	int tx_power_2g, tx_power_5g;
+	bool connected;
 
 	lockdep_assert_held(&ar->conf_mutex);
 
@@ -2867,15 +2880,17 @@ static int ath10k_mac_txpower_setup(struct ath10k *ar, int txpower)
 	tx_power_2g = txpower * 2;
 	tx_power_5g = txpower * 2;
 
-	if (ar->tx_power_2g_limit)
+	connected = ath10k_mac_is_connected(ar);
+
+	if (connected && ar->tx_power_2g_limit)
 		if (tx_power_2g > ar->tx_power_2g_limit)
 			tx_power_2g = ar->tx_power_2g_limit;
 
-	if (ar->tx_power_5g_limit)
+	if (connected && ar->tx_power_5g_limit)
 		if (tx_power_5g > ar->tx_power_5g_limit)
 			tx_power_5g = ar->tx_power_5g_limit;
 
-	ath10k_dbg(ar, ATH10K_DBG_MAC, "mac txpower 2g: %d 5g: %d\n",
+	ath10k_dbg(ar, ATH10K_DBG_MAC, "mac txpower 2g: %d, 5g: %d\n",
 		   tx_power_2g, tx_power_5g);
 
 	param = ar->wmi.pdev_param->txpower_limit2g;
@@ -2928,101 +2943,66 @@ static int ath10k_mac_txpower_recalc(struct ath10k *ar)
 	return 0;
 }
 
-static bool ath10k_mac_is_connected(struct ath10k *ar)
-{
-	struct ath10k_vif *arvif;
-
-	list_for_each_entry(arvif, &ar->arvifs, list) {
-		if (arvif->is_up && arvif->vdev_type == WMI_VDEV_TYPE_STA)
-			return true;
-	}
-
-	return false;
-}
-
 static int ath10k_mac_set_sar_power(struct ath10k *ar)
 {
-	int ret = 0;
+	if (!ar->hw_params.dynamic_sar_support)
+		return -EOPNOTSUPP;
 
-	lockdep_assert_held(&ar->conf_mutex);
+	if (!ath10k_mac_is_connected(ar))
+		return 0;
 
-	if (!ar->hw_params.dynamic_sar_support) {
-		ret = -EOPNOTSUPP;
-		goto exit_set_power;
-        }
-
-	if (ar->tx_power_2g_limit == 0 || ar->tx_power_5g_limit == 0) {
-		ret = -EINVAL;
-		goto exit_set_power;
-	}
-
-	if (!ath10k_mac_is_connected(ar)) {
-		ret = 0;
-		goto exit_set_power;
-	}
-
-	ret = ath10k_mac_txpower_recalc(ar);
-	if (ret) {
-		ath10k_warn(ar, "failed to recalc tx power: %d\n", ret);
-		goto exit_set_power;
-	}
-
-	ath10k_dbg(ar, ATH10K_DBG_MAC, "set txpower 2G: %d, 5G: %d successfully\n",
-		   ar->tx_power_2g_limit, ar->tx_power_5g_limit);
-
-exit_set_power:
-	return ret;
+	/* if connected, then arvif->txpower must be valid */
+	return ath10k_mac_txpower_recalc(ar);
 }
 
 static int ath10k_mac_set_sar_specs(struct ieee80211_hw *hw,
 				    const struct cfg80211_sar_specs *sar)
 {
-	struct cfg80211_sar_sub_specs *sub_specs;
+	const struct cfg80211_sar_sub_specs *sub_specs;
 	struct ath10k *ar = hw->priv;
-	int i;
-        int ret = 0;
+	u32 i;
+	int ret;
 
 	mutex_lock(&ar->conf_mutex);
+
 	if (!ar->hw_params.dynamic_sar_support) {
 		ret = -EOPNOTSUPP;
-		goto err_set_sar;
+		goto err;
 	}
 
 	if (!sar || sar->type != NL80211_SAR_TYPE_POWER ||
-	    sar->num_sub_specs == 0 || !sar->sub_specs) {
+	    sar->num_sub_specs == 0) {
 		ret = -EINVAL;
-		goto err_set_sar;
-	};
+		goto err;
+	}
 
 	sub_specs = sar->sub_specs;
 
-	/*
-	 * note the power is in 0.25dbm unit, while ath10k uses
+	/* 0dbm is not a practical value for ath10k, so use 0
+	 * as no SAR limitation on it.
+	 */
+	ar->tx_power_2g_limit = 0;
+	ar->tx_power_5g_limit = 0;
+
+	/* note the power is in 0.25dbm unit, while ath10k uses
 	 * 0.5dbm unit.
 	 */
 	for (i = 0; i < sar->num_sub_specs; i++) {
-		if (sub_specs->freq_range_index == NL80211_SAR_ALL_FREQ_RANGES) {
-			ar->tx_power_2g_limit = sub_specs->power / 2;
-			ar->tx_power_5g_limit = sub_specs->power / 2;
-			goto set_power;
-		}
-
 		if (sub_specs->freq_range_index == 0)
 			ar->tx_power_2g_limit = sub_specs->power / 2;
 		else if (sub_specs->freq_range_index == 1)
 			ar->tx_power_5g_limit = sub_specs->power / 2;
-		else {
-			ret = -EINVAL;
-			goto err_set_sar;
-		}
 
 		sub_specs++;
 	}
 
-set_power:
-	ret =  ath10k_mac_set_sar_power(ar);
+	ret = ath10k_mac_set_sar_power(ar);
+	if (ret) {
+		ath10k_warn(ar, "failed to set sar power: %d", ret);
+		goto err;
+	}
 
-err_set_sar:
+err:
 	mutex_unlock(&ar->conf_mutex);
 	return ret;
 }
@@ -3153,6 +3133,8 @@ static void ath10k_bss_disassoc(struct ieee80211_hw *hw,
 	}
 
 	arvif->is_up = false;
+
+	ath10k_mac_txpower_recalc(ar);
 
 	cancel_delayed_work_sync(&arvif->connection_loss_work);
 }
@@ -3819,23 +3801,16 @@ bool ath10k_mac_tx_frm_has_freq(struct ath10k *ar)
 static int ath10k_mac_tx_wmi_mgmt(struct ath10k *ar, struct sk_buff *skb)
 {
 	struct sk_buff_head *q = &ar->wmi_mgmt_tx_queue;
-	int ret = 0;
 
-	spin_lock_bh(&ar->data_lock);
-
-	if (skb_queue_len(q) == ATH10K_MAX_NUM_MGMT_PENDING) {
+	if (skb_queue_len_lockless(q) >= ATH10K_MAX_NUM_MGMT_PENDING) {
 		ath10k_warn(ar, "wmi mgmt tx queue is full\n");
-		ret = -ENOSPC;
-		goto unlock;
+		return -ENOSPC;
 	}
 
-	__skb_queue_tail(q, skb);
+	skb_queue_tail(q, skb);
 	ieee80211_queue_work(ar->hw, &ar->wmi_mgmt_tx_work);
 
-unlock:
-	spin_unlock_bh(&ar->data_lock);
-
-	return ret;
+	return 0;
 }
 
 static enum ath10k_mac_tx_path
@@ -9089,6 +9064,9 @@ int ath10k_mac_register(struct ath10k *ar)
 
 	if (test_bit(WMI_SERVICE_TDLS_UAPSD_BUFFER_STA, ar->wmi.svc_map))
 		ieee80211_hw_set(ar->hw, SUPPORTS_TDLS_BUFFER_STA);
+
+	if (ar->hw_params.tx_mac_seq_by_fw)
+		ar->hw->wiphy->flags |= WIPHY_FLAG_STA_DISCONNECT_ON_HW_RESTART;
 
 	ar->hw->wiphy->flags |= WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL;
 	ar->hw->wiphy->flags |= WIPHY_FLAG_HAS_CHANNEL_SWITCH;

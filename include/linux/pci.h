@@ -361,6 +361,7 @@ struct pci_dev {
 	struct pcie_link_state	*link_state;	/* ASPM link state */
 	unsigned int	ltr_path:1;	/* Latency Tolerance Reporting
 					   supported from root to here */
+	u16		saved_aspm_ctl; /* ASPM Control saved at suspend time */
 #endif
 	unsigned int	eetlp_prefix_path:1;	/* End-to-End TLP Prefix */
 
@@ -1247,7 +1248,7 @@ bool pci_dev_run_wake(struct pci_dev *dev);
 void pci_d3cold_enable(struct pci_dev *dev);
 void pci_d3cold_disable(struct pci_dev *dev);
 bool pcie_relaxed_ordering_enabled(struct pci_dev *dev);
-void pci_wakeup_bus(struct pci_bus *bus);
+void pci_resume_bus(struct pci_bus *bus);
 void pci_bus_set_current_state(struct pci_bus *bus, pci_power_t state);
 
 /* For use by arch with custom probe code */

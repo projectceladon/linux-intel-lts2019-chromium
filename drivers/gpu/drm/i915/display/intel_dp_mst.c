@@ -52,7 +52,6 @@ static int intel_dp_mst_compute_link_config(struct intel_encoder *encoder,
 	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	const struct drm_display_mode *adjusted_mode =
 		&crtc_state->hw.adjusted_mode;
-	void *port = connector->port;
 	bool constant_n = drm_dp_has_quirk(&intel_dp->desc, 0,
 					   DP_DPCD_QUIRK_CONSTANT_N);
 	int bpp, slots = -EINVAL;
@@ -68,7 +67,10 @@ static int intel_dp_mst_compute_link_config(struct intel_encoder *encoder,
 						       false);
 
 		slots = drm_dp_atomic_find_vcpi_slots(state, &intel_dp->mst_mgr,
-						      port, crtc_state->pbn);
+						      connector->port,
+						      crtc_state->pbn,
+						      drm_dp_get_vc_payload_bw(crtc_state->port_clock,
+									       crtc_state->lane_count));
 		if (slots == -EDEADLK)
 			return slots;
 		if (slots >= 0)
@@ -105,7 +107,6 @@ static int intel_dp_mst_compute_config(struct intel_encoder *encoder,
 		to_intel_digital_connector_state(conn_state);
 	const struct drm_display_mode *adjusted_mode =
 		&pipe_config->hw.adjusted_mode;
-	void *port = connector->port;
 	struct link_config_limits limits;
 	int ret;
 
@@ -116,8 +117,7 @@ static int intel_dp_mst_compute_config(struct intel_encoder *encoder,
 	pipe_config->has_pch_encoder = false;
 
 	if (intel_conn_state->force_audio == HDMI_AUDIO_AUTO)
-		pipe_config->has_audio =
-			drm_dp_mst_port_has_audio(&intel_dp->mst_mgr, port);
+		pipe_config->has_audio = connector->port->has_audio;
 	else
 		pipe_config->has_audio =
 			intel_conn_state->force_audio == HDMI_AUDIO_ON;
@@ -320,6 +320,29 @@ intel_dp_mst_atomic_check(struct drm_connector *connector,
 	return ret;
 }
 
+static void clear_act_sent(struct intel_encoder *encoder,
+			   const struct intel_crtc_state *crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(encoder->base.dev);
+
+	intel_de_write(i915, dp_tp_status_reg(encoder, crtc_state),
+		       DP_TP_STATUS_ACT_SENT);
+}
+
+static void wait_for_act_sent(struct intel_encoder *encoder,
+			      const struct intel_crtc_state *crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(encoder->base.dev);
+	struct intel_dp_mst_encoder *intel_mst = enc_to_mst(encoder);
+	struct intel_dp *intel_dp = &intel_mst->primary->dp;
+
+	if (intel_de_wait_for_set(i915, dp_tp_status_reg(encoder, crtc_state),
+				  DP_TP_STATUS_ACT_SENT, 1))
+		drm_err(&i915->drm, "Timed out waiting for ACT sent\n");
+
+	drm_dp_check_act_status(&intel_dp->mst_mgr);
+}
+
 static void intel_mst_disable_dp(struct intel_atomic_state *state,
 				 struct intel_encoder *encoder,
 				 const struct intel_crtc_state *old_crtc_state,
@@ -375,6 +398,8 @@ static void intel_mst_post_disable_dp(struct intel_atomic_state *state,
 
 	drm_dp_update_payload_part2(&intel_dp->mst_mgr);
 
+	clear_act_sent(encoder, old_crtc_state);
+
 	val = intel_de_read(dev_priv,
 			    TRANS_DDI_FUNC_CTL(old_crtc_state->cpu_transcoder));
 	val &= ~TRANS_DDI_DP_VC_PAYLOAD_ALLOC;
@@ -382,11 +407,7 @@ static void intel_mst_post_disable_dp(struct intel_atomic_state *state,
 		       TRANS_DDI_FUNC_CTL(old_crtc_state->cpu_transcoder),
 		       val);
 
-	if (intel_de_wait_for_set(dev_priv, intel_dp->regs.dp_tp_status,
-				  DP_TP_STATUS_ACT_SENT, 1))
-		drm_err(&dev_priv->drm,
-			"Timed out waiting for ACT sent when disabling\n");
-	drm_dp_check_act_status(&intel_dp->mst_mgr);
+	wait_for_act_sent(encoder, old_crtc_state);
 
 	drm_dp_mst_deallocate_vcpi(&intel_dp->mst_mgr, connector->port);
 
@@ -457,7 +478,6 @@ static void intel_mst_pre_enable_dp(struct intel_atomic_state *state,
 	struct intel_connector *connector =
 		to_intel_connector(conn_state->connector);
 	int ret;
-	u32 temp;
 	bool first_mst_stream;
 
 	/* MST encoders are bound to a crtc, not to a connector,
@@ -490,8 +510,6 @@ static void intel_mst_pre_enable_dp(struct intel_atomic_state *state,
 		drm_err(&dev_priv->drm, "failed to allocate vcpi\n");
 
 	intel_dp->active_mst_links++;
-	temp = intel_de_read(dev_priv, intel_dp->regs.dp_tp_status);
-	intel_de_write(dev_priv, intel_dp->regs.dp_tp_status, temp);
 
 	ret = drm_dp_update_payload_part1(&intel_dp->mst_mgr);
 
@@ -503,7 +521,7 @@ static void intel_mst_pre_enable_dp(struct intel_atomic_state *state,
 	 * here for the following ones.
 	 */
 	if (INTEL_GEN(dev_priv) < 12 || !first_mst_stream)
-		intel_ddi_enable_pipe_clock(pipe_config);
+		intel_ddi_enable_pipe_clock(encoder, pipe_config);
 
 	intel_ddi_set_dp_msa(pipe_config, conn_state);
 
@@ -522,6 +540,10 @@ static void intel_mst_enable_dp(struct intel_atomic_state *state,
 
 	drm_WARN_ON(&dev_priv->drm, pipe_config->has_pch_encoder);
 
+	clear_act_sent(encoder, pipe_config);
+
+	intel_ddi_enable_transcoder_func(encoder, pipe_config);
+
 	intel_enable_pipe(pipe_config);
 
 	intel_crtc_vblank_on(pipe_config);
@@ -529,11 +551,7 @@ static void intel_mst_enable_dp(struct intel_atomic_state *state,
 	drm_dbg_kms(&dev_priv->drm, "active links %d\n",
 		    intel_dp->active_mst_links);
 
-	if (intel_de_wait_for_set(dev_priv, intel_dp->regs.dp_tp_status,
-				  DP_TP_STATUS_ACT_SENT, 1))
-		drm_err(&dev_priv->drm, "Timed out waiting for ACT sent\n");
-
-	drm_dp_check_act_status(&intel_dp->mst_mgr);
+	wait_for_act_sent(encoder, pipe_config);
 
 	drm_dp_update_payload_part2(&intel_dp->mst_mgr);
 	if (pipe_config->has_audio)
@@ -543,7 +561,7 @@ static void intel_mst_enable_dp(struct intel_atomic_state *state,
 	if (conn_state->content_protection ==
 	    DRM_MODE_CONTENT_PROTECTION_DESIRED)
 		intel_hdcp_enable(to_intel_connector(conn_state->connector),
-				  pipe_config->cpu_transcoder,
+				  pipe_config,
 				  (u8)conn_state->hdcp_content_type);
 }
 
@@ -564,6 +582,15 @@ static void intel_dp_mst_enc_get_config(struct intel_encoder *encoder,
 	struct intel_digital_port *dig_port = intel_mst->primary;
 
 	intel_ddi_get_config(&dig_port->base, pipe_config);
+}
+
+static bool intel_dp_mst_initial_fastset_check(struct intel_encoder *encoder,
+					       struct intel_crtc_state *crtc_state)
+{
+	struct intel_dp_mst_encoder *intel_mst = enc_to_mst(encoder);
+	struct intel_digital_port *dig_port = intel_mst->primary;
+
+	return intel_dp_initial_fastset_check(&dig_port->base, crtc_state);
 }
 
 static int intel_dp_mst_get_ddc_modes(struct drm_connector *connector)
@@ -677,8 +704,12 @@ static int
 intel_dp_mst_detect(struct drm_connector *connector,
 		    struct drm_modeset_acquire_ctx *ctx, bool force)
 {
+	struct drm_i915_private *i915 = to_i915(connector->dev);
 	struct intel_connector *intel_connector = to_intel_connector(connector);
 	struct intel_dp *intel_dp = intel_connector->mst_port;
+
+	if (!INTEL_DISPLAY_ENABLED(i915))
+		return connector_status_disconnected;
 
 	if (drm_connector_is_unregistered(connector))
 		return connector_status_disconnected;
@@ -767,12 +798,11 @@ static struct drm_connector *intel_dp_add_mst_connector(struct drm_dp_mst_topolo
 	intel_attach_force_audio_property(connector);
 	intel_attach_broadcast_rgb_property(connector);
 
-
-	/* TODO: Figure out how to make HDCP work on GEN12+ */
-	if (INTEL_GEN(dev_priv) < 12) {
+	if (INTEL_GEN(dev_priv) <= 12) {
 		ret = intel_dp_init_hdcp(dig_port, intel_connector);
 		if (ret)
-			DRM_DEBUG_KMS("HDCP init failed, skipping.\n");
+			drm_dbg_kms(&dev_priv->drm, "[%s:%d] HDCP MST init failed, skipping.\n",
+				    connector->name, connector->base.id);
 	}
 
 	/*
@@ -847,6 +877,7 @@ intel_dp_create_fake_mst_encoder(struct intel_digital_port *dig_port, enum pipe 
 	intel_encoder->enable = intel_mst_enable_dp;
 	intel_encoder->get_hw_state = intel_dp_mst_enc_get_hw_state;
 	intel_encoder->get_config = intel_dp_mst_enc_get_config;
+	intel_encoder->initial_fastset_check = intel_dp_mst_initial_fastset_check;
 
 	return intel_mst;
 

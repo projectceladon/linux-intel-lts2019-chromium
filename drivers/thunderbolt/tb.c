@@ -138,6 +138,10 @@ static void tb_discover_tunnels(struct tb_switch *sw)
 				parent->boot = true;
 				parent = tb_switch_parent(parent);
 			}
+		} else if (tb_tunnel_is_dp(tunnel)) {
+			/* Keep the domain from powering down */
+			pm_runtime_get_sync(&tunnel->src_port->sw->dev);
+			pm_runtime_get_sync(&tunnel->dst_port->sw->dev);
 		}
 
 		list_add_tail(&tunnel->list, &tcm->tunnel_list);
@@ -178,6 +182,9 @@ static void tb_scan_xdomain(struct tb_port *port)
 	struct tb *tb = sw->tb;
 	struct tb_xdomain *xd;
 	u64 route;
+
+	if (!tb_xdomain_enabled)
+		return;
 
 	route = tb_downstream_route(port);
 	xd = tb_xdomain_find_by_route(tb, route);
@@ -571,14 +578,31 @@ static void tb_scan_port(struct tb_port *port)
 			 * Downstream switch is reachable through two ports.
 			 * Only scan on the primary port (link_nr == 0).
 			 */
-	if (tb_wait_for_port(port, false) <= 0)
+
+	if (tb_wait_for_port(port, false) <= 0) {
+		if (tb_route(port->sw))
+			return;
+
+		/*
+		 * For cases, where no devices are attached, push out the
+		 * retimer scan 15 seconds into the future. This is required
+		 * for cases, where immediate communication to the retimer soon
+		 * after boot is not possible. This gives enough time for all
+		 * drivers to load.
+		 */
+		INIT_DELAYED_WORK(&port->retimer_scan_work,
+				  tb_retimer_scan_delayed);
+		queue_delayed_work(port->sw->tb->wq, &port->retimer_scan_work,
+				   msecs_to_jiffies(TB_RETIMER_SCAN_DELAY));
 		return;
+	}
+
 	if (port->remote) {
 		tb_port_dbg(port, "port already has a remote\n");
 		return;
 	}
 
-	tb_retimer_scan(port);
+	tb_retimer_scan(port, true, NULL, NULL);
 
 	sw = tb_switch_alloc(port->sw->tb, &port->sw->dev,
 			     tb_downstream_route(port));
@@ -645,7 +669,7 @@ static void tb_scan_port(struct tb_port *port)
 		tb_sw_warn(sw, "failed to enable TMU\n");
 
 	/* Scan upstream retimers */
-	tb_retimer_scan(upstream_port);
+	tb_retimer_scan(upstream_port, true, NULL, NULL);
 
 	/*
 	 * Create USB 3.x tunnels only when the switch is plugged to the
@@ -731,7 +755,7 @@ static void tb_free_unplugged_children(struct tb_switch *sw)
 			continue;
 
 		if (port->remote->sw->is_unplugged) {
-			tb_retimer_remove_all(port);
+			tb_retimer_remove_all(port, sw);
 			tb_remove_dp_resources(port->remote->sw);
 			tb_switch_unconfigure_link(port->remote->sw);
 			tb_switch_lane_bonding_disable(port->remote->sw);
@@ -1002,6 +1026,25 @@ static void tb_disconnect_and_release_dp(struct tb *tb)
 	}
 }
 
+static int tb_disconnect_pci(struct tb *tb, struct tb_switch *sw)
+{
+	struct tb_tunnel *tunnel;
+	struct tb_port *up;
+
+	up = tb_switch_find_port(sw, TB_TYPE_PCIE_UP);
+	if (WARN_ON(!up))
+		return -ENODEV;
+
+	tunnel = tb_find_tunnel(tb, TB_TUNNEL_PCI, NULL, up);
+	if (WARN_ON(!tunnel))
+		return -ENODEV;
+
+	tb_tunnel_deactivate(tunnel);
+	list_del(&tunnel->list);
+	tb_tunnel_free(tunnel);
+	return 0;
+}
+
 static int tb_tunnel_pci(struct tb *tb, struct tb_switch *sw)
 {
 	struct tb_port *up, *down, *port;
@@ -1144,7 +1187,7 @@ static void tb_handle_hotplug(struct work_struct *work)
 	pm_runtime_get_sync(&sw->dev);
 
 	if (ev->unplug) {
-		tb_retimer_remove_all(port);
+		tb_retimer_remove_all(port, sw);
 
 		if (tb_port_has_remote(port)) {
 			tb_port_dbg(port, "switch unplugged\n");
@@ -1411,7 +1454,7 @@ static int tb_free_unplugged_xdomains(struct tb_switch *sw)
 		if (tb_is_upstream_port(port))
 			continue;
 		if (port->xdomain && port->xdomain->is_unplugged) {
-			tb_retimer_remove_all(port);
+			tb_retimer_remove_all(port, sw);
 			tb_xdomain_remove(port->xdomain);
 			tb_port_unconfigure_xdomain(port);
 			port->xdomain = NULL;
@@ -1494,6 +1537,7 @@ static const struct tb_cm_ops tb_cm_ops = {
 	.runtime_suspend = tb_runtime_suspend,
 	.runtime_resume = tb_runtime_resume,
 	.handle_event = tb_handle_event,
+	.disapprove_switch = tb_disconnect_pci,
 	.approve_switch = tb_tunnel_pci,
 	.approve_xdomain_paths = tb_approve_xdomain_paths,
 	.disconnect_xdomain_paths = tb_disconnect_xdomain_paths,
@@ -1515,6 +1559,8 @@ struct tb *tb_probe(struct tb_nhi *nhi)
 	INIT_LIST_HEAD(&tcm->tunnel_list);
 	INIT_LIST_HEAD(&tcm->dp_resources);
 	INIT_DELAYED_WORK(&tcm->remove_work, tb_remove_work);
+
+	tb_dbg(tb, "using software connection manager\n");
 
 	return tb;
 }

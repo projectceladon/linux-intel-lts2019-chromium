@@ -237,7 +237,7 @@ IEEE80211_IF_FILE_R(hw_queues);
 
 /* STA attributes */
 IEEE80211_IF_FILE(bssid, u.mgd.bssid, MAC);
-IEEE80211_IF_FILE(aid, u.mgd.aid, DEC);
+IEEE80211_IF_FILE(aid, vif.bss_conf.aid, DEC);
 IEEE80211_IF_FILE(beacon_timeout, u.mgd.beacon_timeout, JIFFIES_TO_MS);
 
 static int ieee80211_set_smps(struct ieee80211_sub_if_data *sdata,
@@ -575,9 +575,6 @@ static ssize_t ieee80211_if_parse_tsf(
 IEEE80211_IF_FILE_RW(tsf);
 
 
-/* WDS attributes */
-IEEE80211_IF_FILE(peer, u.wds.remote_addr, MAC);
-
 #ifdef CPTCFG_MAC80211_MESH
 IEEE80211_IF_FILE(estab_plinks, u.mesh.estab_plinks, ATOMIC);
 
@@ -639,6 +636,9 @@ IEEE80211_IF_FILE(dot11MeshAwakeWindowDuration,
 		  u.mesh.mshcfg.dot11MeshAwakeWindowDuration, DEC);
 IEEE80211_IF_FILE(dot11MeshConnectedToMeshGate,
 		  u.mesh.mshcfg.dot11MeshConnectedToMeshGate, DEC);
+IEEE80211_IF_FILE(dot11MeshNolearn, u.mesh.mshcfg.dot11MeshNolearn, DEC);
+IEEE80211_IF_FILE(dot11MeshConnectedToAuthServer,
+		  u.mesh.mshcfg.dot11MeshConnectedToAuthServer, DEC);
 #endif
 
 #define DEBUGFS_ADD_MODE(name, mode) \
@@ -697,11 +697,6 @@ static void add_vlan_files(struct ieee80211_sub_if_data *sdata)
 static void add_ibss_files(struct ieee80211_sub_if_data *sdata)
 {
 	DEBUGFS_ADD_MODE(tsf, 0600);
-}
-
-static void add_wds_files(struct ieee80211_sub_if_data *sdata)
-{
-	DEBUGFS_ADD(peer);
 }
 
 #ifdef CPTCFG_MAC80211_MESH
@@ -763,6 +758,8 @@ static void add_mesh_config(struct ieee80211_sub_if_data *sdata)
 	MESHPARAMS_ADD(power_mode);
 	MESHPARAMS_ADD(dot11MeshAwakeWindowDuration);
 	MESHPARAMS_ADD(dot11MeshConnectedToMeshGate);
+	MESHPARAMS_ADD(dot11MeshNolearn);
+	MESHPARAMS_ADD(dot11MeshConnectedToAuthServer);
 #undef MESHPARAMS_ADD
 }
 #endif
@@ -800,9 +797,6 @@ static void add_files(struct ieee80211_sub_if_data *sdata)
 		break;
 	case NL80211_IFTYPE_AP_VLAN:
 		add_vlan_files(sdata);
-		break;
-	case NL80211_IFTYPE_WDS:
-		add_wds_files(sdata);
 		break;
 	default:
 		break;

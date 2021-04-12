@@ -168,7 +168,7 @@ static void ipa_server_bye(struct qmi_handle *qmi, unsigned int node)
 	ipa_qmi->indication_sent = false;
 }
 
-static struct qmi_ops ipa_server_ops = {
+static const struct qmi_ops ipa_server_ops = {
 	.bye		= ipa_server_bye,
 };
 
@@ -234,7 +234,7 @@ static void ipa_server_driver_init_complete(struct qmi_handle *qmi,
 }
 
 /* The server handles two request message types sent by the modem. */
-static struct qmi_msg_handler ipa_server_msg_handlers[] = {
+static const struct qmi_msg_handler ipa_server_msg_handlers[] = {
 	{
 		.type		= QMI_REQUEST,
 		.msg_id		= IPA_QMI_INDICATION_REGISTER,
@@ -249,6 +249,7 @@ static struct qmi_msg_handler ipa_server_msg_handlers[] = {
 		.decoded_size	= IPA_QMI_DRIVER_INIT_COMPLETE_REQ_SZ,
 		.fn		= ipa_server_driver_init_complete,
 	},
+	{ },
 };
 
 /* Handle an INIT_DRIVER response message from the modem. */
@@ -261,7 +262,7 @@ static void ipa_client_init_driver(struct qmi_handle *qmi,
 }
 
 /* The client handles one response message type sent by the modem. */
-static struct qmi_msg_handler ipa_client_msg_handlers[] = {
+static const struct qmi_msg_handler ipa_client_msg_handlers[] = {
 	{
 		.type		= QMI_RESPONSE,
 		.msg_id		= IPA_QMI_INIT_DRIVER,
@@ -269,6 +270,7 @@ static struct qmi_msg_handler ipa_client_msg_handlers[] = {
 		.decoded_size	= IPA_QMI_INIT_DRIVER_RSP_SZ,
 		.fn		= ipa_client_init_driver,
 	},
+	{ },
 };
 
 /* Return a pointer to an init modem driver request structure, which contains
@@ -463,7 +465,7 @@ ipa_client_new_server(struct qmi_handle *qmi, struct qmi_service *svc)
 	return 0;
 }
 
-static struct qmi_ops ipa_client_ops = {
+static const struct qmi_ops ipa_client_ops = {
 	.new_server	= ipa_client_new_server,
 };
 

@@ -34,7 +34,7 @@ static struct hdac_ext_stream *cl_stream_prepare(struct snd_sof_dev *sdev, unsig
 	struct pci_dev *pci = to_pci_dev(sdev->dev);
 	int ret;
 
-	dsp_stream = hda_dsp_stream_get(sdev, direction);
+	dsp_stream = hda_dsp_stream_get(sdev, direction, 0);
 
 	if (!dsp_stream) {
 		dev_err(sdev->dev, "error: no stream available\n");
@@ -87,6 +87,7 @@ static int cl_dsp_init(struct snd_sof_dev *sdev, int stream_tag)
 	struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
 	const struct sof_intel_dsp_desc *chip = hda->desc;
 	unsigned int status;
+	u32 flags;
 	int ret;
 	int i;
 
@@ -174,7 +175,13 @@ static int cl_dsp_init(struct snd_sof_dev *sdev, int stream_tag)
 			__func__);
 
 err:
-	hda_dsp_dump(sdev, SOF_DBG_REGS | SOF_DBG_PCI | SOF_DBG_MBOX);
+	flags = SOF_DBG_DUMP_REGS | SOF_DBG_DUMP_PCI | SOF_DBG_DUMP_MBOX;
+
+	/* force error log level after max boot attempts */
+	if (hda->boot_iteration == HDA_FW_BOOT_ATTEMPTS)
+		flags |= SOF_DBG_DUMP_FORCE_ERR_LEVEL;
+
+	hda_dsp_dump(sdev, flags);
 	hda_dsp_core_reset_power_down(sdev, chip->host_managed_cores_mask);
 
 	return ret;
@@ -407,10 +414,13 @@ int hda_dsp_cl_boot_firmware(struct snd_sof_dev *sdev)
 	 * should be ready for code loading and firmware boot
 	 */
 	ret = cl_copy_fw(sdev, stream);
-	if (!ret)
+	if (!ret) {
 		dev_dbg(sdev->dev, "Firmware download successful, booting...\n");
-	else
+	} else {
+		hda_dsp_dump(sdev, SOF_DBG_DUMP_REGS | SOF_DBG_DUMP_PCI | SOF_DBG_DUMP_MBOX |
+			     SOF_DBG_DUMP_FORCE_ERR_LEVEL);
 		dev_err(sdev->dev, "error: load fw failed ret: %d\n", ret);
+	}
 
 cleanup:
 	/*
@@ -433,9 +443,6 @@ cleanup:
 	 */
 	if (!ret)
 		return chip_info->init_core_mask;
-
-	/* dump dsp registers and disable DSP upon error */
-	hda_dsp_dump(sdev, SOF_DBG_REGS | SOF_DBG_PCI | SOF_DBG_MBOX);
 
 	/* disable DSP */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR,

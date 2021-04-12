@@ -90,6 +90,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = true,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -125,6 +126,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = true,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -161,6 +163,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -190,6 +193,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.num_wds_entries = 0x20,
 		.uart_pin_workaround = true,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.bmi_large_size_download = true,
 		.dynamic_sar_support = true,
 	},
@@ -226,6 +230,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -261,6 +266,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -296,6 +302,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -334,6 +341,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = true,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = true,
 	},
 	{
@@ -375,6 +383,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -423,6 +432,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -468,6 +478,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -503,6 +514,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -540,6 +552,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = true,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -610,6 +623,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = true,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = false,
 		.dynamic_sar_support = false,
 	},
 	{
@@ -638,6 +652,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_filter_reset_required = false,
 		.fw_diag_ce_download = false,
 		.tx_stats_over_pktlog = false,
+		.tx_mac_seq_by_fw = true,
 		.dynamic_sar_support = true,
 	},
 };
@@ -1450,17 +1465,12 @@ static int ath10k_core_create_board_name(struct ath10k *ar, char *name,
 	}
 
 	if (ar->id.qmi_ids_valid) {
-		if (with_variant && ar->id.bdf_ext[0] != '\0' && with_chip_id)
+		if (with_chip_id)
 			scnprintf(name, name_len,
 				  "bus=%s,qmi-board-id=%x,qmi-chip-id=%x%s",
 				  ath10k_bus_str(ar->hif.bus),
 				  ar->id.qmi_board_id, ar->id.qmi_chip_id,
 				  variant);
-		else if (with_chip_id)
-			scnprintf(name, name_len,
-				  "bus=%s,qmi-board-id=%x,qmi-chip-id=%x",
-				  ath10k_bus_str(ar->hif.bus),
-				  ar->id.qmi_board_id, ar->id.qmi_chip_id);
 		else
 			scnprintf(name, name_len,
 				  "bus=%s,qmi-board-id=%x",
@@ -1505,7 +1515,8 @@ int ath10k_core_fetch_board_file(struct ath10k *ar, int bd_ie_type)
 	if (bd_ie_type == ATH10K_BD_IE_BOARD) {
 		/* With variant and chip id */
 		ret = ath10k_core_create_board_name(ar, boardname,
-						sizeof(boardname), true, true);
+						    sizeof(boardname), true,
+						    true);
 		if (ret) {
 			ath10k_err(ar, "failed to create board name: %d", ret);
 			return ret;
@@ -1516,7 +1527,8 @@ int ath10k_core_fetch_board_file(struct ath10k *ar, int bd_ie_type)
 						    sizeof(boardname), false,
 						    true);
 		if (ret) {
-			ath10k_err(ar, "failed to create 1st fallback board name: %d", ret);
+			ath10k_err(ar, "failed to create 1st fallback board name: %d",
+				   ret);
 			return ret;
 		}
 
@@ -1525,7 +1537,8 @@ int ath10k_core_fetch_board_file(struct ath10k *ar, int bd_ie_type)
 						    sizeof(boardname), false,
 						    false);
 		if (ret) {
-			ath10k_err(ar, "failed to create 2nd fallback board name: %d", ret);
+			ath10k_err(ar, "failed to create 2nd fallback board name: %d",
+				   ret);
 			return ret;
 		}
 	} else if (bd_ie_type == ATH10K_BD_IE_BOARD_EXT) {

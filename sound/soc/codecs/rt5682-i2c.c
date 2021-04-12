@@ -78,7 +78,7 @@ static irqreturn_t rt5682_irq(int irq, void *data)
 	struct rt5682_priv *rt5682 = data;
 
 	mod_delayed_work(system_power_efficient_wq,
-		&rt5682->jack_detect_work, msecs_to_jiffies(250));
+		&rt5682->jack_detect_work, msecs_to_jiffies(rt5682->irq_work_delay_time));
 
 	return IRQ_HANDLED;
 }
@@ -221,6 +221,11 @@ static int rt5682_i2c_probe(struct i2c_client *i2c,
 		case RT5682_DMIC1_CLK_GPIO3: /* share with BCLK2 */
 			regmap_update_bits(rt5682->regmap, RT5682_GPIO_CTRL_1,
 				RT5682_GP3_PIN_MASK, RT5682_GP3_PIN_DMIC_CLK);
+			if (rt5682->pdata.dmic_clk_driving_high)
+				regmap_update_bits(rt5682->regmap,
+					RT5682_PAD_DRIVING_CTRL,
+					RT5682_PAD_DRV_GP3_MASK,
+					2 << RT5682_PAD_DRV_GP3_SFT);
 			break;
 
 		default:
@@ -232,7 +237,7 @@ static int rt5682_i2c_probe(struct i2c_client *i2c,
 	regmap_update_bits(rt5682->regmap, RT5682_PWR_ANLG_1,
 		RT5682_LDO1_DVO_MASK | RT5682_HP_DRIVER_MASK,
 		RT5682_LDO1_DVO_12 | RT5682_HP_DRIVER_5X);
-	regmap_write(rt5682->regmap, RT5682_MICBIAS_2, 0x0380);
+	regmap_write(rt5682->regmap, RT5682_MICBIAS_2, 0x0080);
 	regmap_update_bits(rt5682->regmap, RT5682_GPIO_CTRL_1,
 		RT5682_GP4_PIN_MASK | RT5682_GP5_PIN_MASK,
 		RT5682_GP4_PIN_ADCDAT1 | RT5682_GP5_PIN_DACDAT1);
@@ -267,6 +272,9 @@ static int rt5682_i2c_probe(struct i2c_client *i2c,
 static void rt5682_i2c_shutdown(struct i2c_client *client)
 {
 	struct rt5682_priv *rt5682 = i2c_get_clientdata(client);
+
+	cancel_delayed_work_sync(&rt5682->jack_detect_work);
+	cancel_delayed_work_sync(&rt5682->jd_check_work);
 
 	rt5682_reset(rt5682);
 }

@@ -145,7 +145,7 @@ static int ipu_psys_detect_resource_contention(struct ipu_psys_ppg *kppg)
 
 static void ipu_psys_scheduler_ppg_sort(struct ipu_psys *psys, bool *stopping)
 {
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_scheduler *sched;
 	struct ipu_psys_fh *fh;
 
@@ -158,7 +158,7 @@ static void ipu_psys_scheduler_ppg_sort(struct ipu_psys *psys, bool *stopping)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (kppg->state == PPG_STATE_START ||
 			    kppg->state == PPG_STATE_RESUME) {
@@ -184,11 +184,11 @@ static void ipu_psys_scheduler_ppg_sort(struct ipu_psys *psys, bool *stopping)
 static void ipu_psys_scheduler_update_start_ppg_priority(void)
 {
 	struct sched_list *sc_list = get_sc_list(SCHED_START_LIST);
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 
 	mutex_lock(&sc_list->lock);
 	if (!list_empty(&sc_list->list))
-		list_for_each_entry(kppg, &sc_list->list, sched_list)
+		list_for_each_entry_safe(kppg, tmp, &sc_list->list, sched_list)
 			kppg->pri_dynamic--;
 	mutex_unlock(&sc_list->lock);
 }
@@ -324,7 +324,7 @@ static bool ipu_psys_scheduler_ppg_enqueue_bufset(struct ipu_psys *psys)
 static bool ipu_psys_scheduler_ppg_halt(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 	bool stopping_exit = false;
 
@@ -336,7 +336,7 @@ static bool ipu_psys_scheduler_ppg_halt(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (kppg->state & PPG_STATE_STOP) {
 				ipu_psys_ppg_stop(kppg);
@@ -371,15 +371,13 @@ static void ipu_psys_update_ppg_state_by_kcmd(struct ipu_psys *psys,
 	    kppg->state == PPG_STATE_RESUMED ||
 	    kppg->state == PPG_STATE_RUNNING) {
 		if (kcmd->state == KCMD_STATE_PPG_START) {
-			list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-			ipu_psys_kcmd_complete(psys, kcmd, 0);
+			ipu_psys_kcmd_complete(kppg, kcmd, 0);
 		} else if (kcmd->state == KCMD_STATE_PPG_STOP) {
 			kppg->state = PPG_STATE_STOP;
 		}
 	} else if (kppg->state == PPG_STATE_SUSPENDED) {
 		if (kcmd->state == KCMD_STATE_PPG_START) {
-			list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-			ipu_psys_kcmd_complete(psys, kcmd, 0);
+			ipu_psys_kcmd_complete(kppg, kcmd, 0);
 		} else if (kcmd->state == KCMD_STATE_PPG_STOP) {
 			/*
 			 * Record the previous state
@@ -393,12 +391,10 @@ static void ipu_psys_update_ppg_state_by_kcmd(struct ipu_psys *psys,
 		if (kcmd->state == KCMD_STATE_PPG_START) {
 			kppg->state = PPG_STATE_START;
 		} else if (kcmd->state == KCMD_STATE_PPG_STOP) {
-			list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-			ipu_psys_kcmd_complete(psys, kcmd, 0);
+			ipu_psys_kcmd_complete(kppg, kcmd, 0);
 		} else if (kcmd->state == KCMD_STATE_PPG_ENQUEUE) {
 			dev_err(&psys->adev->dev, "ppg %p stopped!\n", kppg);
-			list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-			ipu_psys_kcmd_complete(psys, kcmd, -EIO);
+			ipu_psys_kcmd_complete(kppg, kcmd, -EIO);
 		}
 	}
 
@@ -411,7 +407,7 @@ static void ipu_psys_scheduler_kcmd_set(struct ipu_psys *psys)
 {
 	struct ipu_psys_kcmd *kcmd;
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 
 	list_for_each_entry(fh, &psys->fhs, list) {
@@ -422,7 +418,7 @@ static void ipu_psys_scheduler_kcmd_set(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (list_empty(&kppg->kcmds_new_list)) {
 				mutex_unlock(&kppg->mutex);
@@ -441,7 +437,7 @@ static void ipu_psys_scheduler_kcmd_set(struct ipu_psys *psys)
 static bool is_ready_to_enter_power_gating(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 
 	list_for_each_entry(fh, &psys->fhs, list) {
@@ -452,7 +448,7 @@ static bool is_ready_to_enter_power_gating(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (!list_empty(&kppg->kcmds_new_list) ||
 			    !list_empty(&kppg->kcmds_processing_list)) {
@@ -478,7 +474,7 @@ static bool is_ready_to_enter_power_gating(struct ipu_psys *psys)
 static bool has_pending_kcmd(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 
 	list_for_each_entry(fh, &psys->fhs, list) {
@@ -489,7 +485,7 @@ static bool has_pending_kcmd(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (!list_empty(&kppg->kcmds_new_list) ||
 			    !list_empty(&kppg->kcmds_processing_list)) {
@@ -519,7 +515,7 @@ static bool ipu_psys_scheduler_exit_power_gating(struct ipu_psys *psys)
 static bool ipu_psys_scheduler_enter_power_gating(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 
 	if (!enable_power_gating)
@@ -544,7 +540,7 @@ static bool ipu_psys_scheduler_enter_power_gating(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			if (kppg->state == PPG_STATE_RUNNING) {
 				kppg->state = PPG_STATE_SUSPEND;

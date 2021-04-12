@@ -665,7 +665,7 @@ void intel_uncore_forcewake_user_put(struct intel_uncore *uncore)
 		mmio_debug_resume(uncore->debug);
 
 		if (check_for_unclaimed_mmio(uncore))
-			dev_info(uncore->i915->drm.dev,
+			drm_info(&uncore->i915->drm,
 				 "Invalid mmio detected during user access\n");
 		spin_unlock(&uncore->debug->lock);
 
@@ -709,7 +709,7 @@ static void __intel_uncore_forcewake_put(struct intel_uncore *uncore,
 			continue;
 		}
 
-		fw_domain_arm_timer(domain);
+		uncore->funcs.force_wake_put(uncore, domain->mask);
 	}
 }
 
@@ -898,11 +898,6 @@ find_fw_domain(struct intel_uncore *uncore, u32 offset)
 
 #define GEN_FW_RANGE(s, e, d) \
 	{ .start = (s), .end = (e), .domains = (d) }
-
-#define HAS_FWTABLE(dev_priv) \
-	(INTEL_GEN(dev_priv) >= 9 || \
-	 IS_CHERRYVIEW(dev_priv) || \
-	 IS_VALLEYVIEW(dev_priv))
 
 /* *Must* be sorted by offset ranges! See intel_fw_table_check(). */
 static const struct intel_forcewake_range __vlv_fw_ranges[] = {
@@ -1187,7 +1182,7 @@ __unclaimed_reg_debug(struct intel_uncore *uncore,
 		     read ? "read from" : "write to",
 		     i915_mmio_reg_offset(reg)))
 		/* Only report the first N failures */
-		i915_modparams.mmio_debug--;
+		uncore->i915->params.mmio_debug--;
 }
 
 static inline void
@@ -1196,7 +1191,7 @@ unclaimed_reg_debug(struct intel_uncore *uncore,
 		    const bool read,
 		    const bool before)
 {
-	if (likely(!i915_modparams.mmio_debug))
+	if (likely(!uncore->i915->params.mmio_debug))
 		return;
 
 	/* interrupts are disabled and re-enabled around uncore->lock usage */
@@ -1553,6 +1548,8 @@ static int intel_uncore_fw_domains_init(struct intel_uncore *uncore)
 	(ret ?: (ret = __fw_domain_init((uncore__), (id__), (set__), (ack__))))
 
 	if (INTEL_GEN(i915) >= 11) {
+		/* we'll prune the domains of missing engines later */
+		intel_engine_mask_t emask = INTEL_INFO(i915)->platform_engine_mask;
 		int i;
 
 		uncore->funcs.force_wake_get = fw_domains_get_with_fallback;
@@ -1565,7 +1562,7 @@ static int intel_uncore_fw_domains_init(struct intel_uncore *uncore)
 			       FORCEWAKE_ACK_BLITTER_GEN9);
 
 		for (i = 0; i < I915_MAX_VCS; i++) {
-			if (!HAS_ENGINE(i915, _VCS(i)))
+			if (!__HAS_ENGINE(emask, _VCS(i)))
 				continue;
 
 			fw_domain_init(uncore, FW_DOMAIN_ID_MEDIA_VDBOX0 + i,
@@ -1573,7 +1570,7 @@ static int intel_uncore_fw_domains_init(struct intel_uncore *uncore)
 				       FORCEWAKE_ACK_MEDIA_VDBOX_GEN11(i));
 		}
 		for (i = 0; i < I915_MAX_VECS; i++) {
-			if (!HAS_ENGINE(i915, _VECS(i)))
+			if (!__HAS_ENGINE(emask, _VECS(i)))
 				continue;
 
 			fw_domain_init(uncore, FW_DOMAIN_ID_MEDIA_VEBOX0 + i,
@@ -1723,11 +1720,15 @@ static int uncore_mmio_setup(struct intel_uncore *uncore)
 	 * clobbering the GTT which we want ioremap_wc instead. Fortunately,
 	 * the register BAR remains the same size for all the earlier
 	 * generations up to Ironlake.
+	 * For dgfx chips register range is expanded to 4MB.
 	 */
 	if (INTEL_GEN(i915) < 5)
 		mmio_size = 512 * 1024;
+	else if (IS_DGFX(i915))
+		mmio_size = 4 * 1024 * 1024;
 	else
 		mmio_size = 2 * 1024 * 1024;
+
 	uncore->regs = pci_iomap(pdev, mmio_bar, mmio_size);
 	if (uncore->regs == NULL) {
 		drm_err(&i915->drm, "failed to map registers\n");
@@ -1871,20 +1872,20 @@ out_mmio_cleanup:
  * the forcewake domains. Prune them, to make sure they only reference existing
  * engines.
  */
-void intel_uncore_prune_mmio_domains(struct intel_uncore *uncore)
+void intel_uncore_prune_engine_fw_domains(struct intel_uncore *uncore,
+					  struct intel_gt *gt)
 {
-	struct drm_i915_private *i915 = uncore->i915;
 	enum forcewake_domains fw_domains = uncore->fw_domains;
 	enum forcewake_domain_id domain_id;
 	int i;
 
-	if (!intel_uncore_has_forcewake(uncore) || INTEL_GEN(i915) < 11)
+	if (!intel_uncore_has_forcewake(uncore) || INTEL_GEN(uncore->i915) < 11)
 		return;
 
 	for (i = 0; i < I915_MAX_VCS; i++) {
 		domain_id = FW_DOMAIN_ID_MEDIA_VDBOX0 + i;
 
-		if (HAS_ENGINE(i915, _VCS(i)))
+		if (HAS_ENGINE(gt, _VCS(i)))
 			continue;
 
 		if (fw_domains & BIT(domain_id))
@@ -1894,7 +1895,7 @@ void intel_uncore_prune_mmio_domains(struct intel_uncore *uncore)
 	for (i = 0; i < I915_MAX_VECS; i++) {
 		domain_id = FW_DOMAIN_ID_MEDIA_VEBOX0 + i;
 
-		if (HAS_ENGINE(i915, _VECS(i)))
+		if (HAS_ENGINE(gt, _VECS(i)))
 			continue;
 
 		if (fw_domains & BIT(domain_id))
@@ -1917,16 +1918,34 @@ void intel_uncore_fini_mmio(struct intel_uncore *uncore)
 }
 
 static const struct reg_whitelist {
-	i915_reg_t offset_ldw;
+	i915_reg_t offset_ldw_lowerbound;
+	i915_reg_t offset_ldw_upperbound;
 	i915_reg_t offset_udw;
 	u16 gen_mask;
 	u8 size;
-} reg_read_whitelist[] = { {
-	.offset_ldw = RING_TIMESTAMP(RENDER_RING_BASE),
+} reg_read_whitelist[] = {
+	{
+	.offset_ldw_lowerbound = RING_TIMESTAMP(RENDER_RING_BASE),
+	.offset_ldw_upperbound = RING_TIMESTAMP(RENDER_RING_BASE),
 	.offset_udw = RING_TIMESTAMP_UDW(RENDER_RING_BASE),
 	.gen_mask = INTEL_GEN_MASK(4, 12),
 	.size = 8
-} };
+	},
+	{
+	.offset_ldw_lowerbound = PXP_REG_01_LOWERBOUND,
+	.offset_ldw_upperbound = PXP_REG_01_UPPERBOUND,
+	.offset_udw = {0},
+	.gen_mask = INTEL_GEN_MASK(4, 12),
+	.size = 4
+	},
+	{
+	.offset_ldw_lowerbound = PXP_REG_02_LOWERBOUND,
+	.offset_ldw_upperbound = PXP_REG_02_UPPERBOUND,
+	.offset_udw = {0},
+	.gen_mask = INTEL_GEN_MASK(4, 12),
+	.size = 4
+	}
+};
 
 int i915_reg_read_ioctl(struct drm_device *dev,
 			void *data, struct drm_file *file)
@@ -1939,18 +1958,22 @@ int i915_reg_read_ioctl(struct drm_device *dev,
 	unsigned int flags;
 	int remain;
 	int ret = 0;
+	i915_reg_t offset_ldw;
 
 	entry = reg_read_whitelist;
 	remain = ARRAY_SIZE(reg_read_whitelist);
 	while (remain) {
-		u32 entry_offset = i915_mmio_reg_offset(entry->offset_ldw);
+		u32 entry_offset_lb = i915_mmio_reg_offset(entry->offset_ldw_lowerbound);
+		u32 entry_offset_ub = i915_mmio_reg_offset(entry->offset_ldw_upperbound);
 
 		GEM_BUG_ON(!is_power_of_2(entry->size));
 		GEM_BUG_ON(entry->size > 8);
-		GEM_BUG_ON(entry_offset & (entry->size - 1));
+		GEM_BUG_ON(entry_offset_lb & (entry->size - 1));
+		GEM_BUG_ON(entry_offset_ub & (entry->size - 1));
 
 		if (INTEL_INFO(i915)->gen_mask & entry->gen_mask &&
-		    entry_offset == (reg->offset & -entry->size))
+		    entry_offset_lb <= (reg->offset & -entry->size) &&
+		    (reg->offset & -entry->size) <= entry_offset_ub)
 			break;
 		entry++;
 		remain--;
@@ -1960,23 +1983,21 @@ int i915_reg_read_ioctl(struct drm_device *dev,
 		return -EINVAL;
 
 	flags = reg->offset & (entry->size - 1);
+	offset_ldw = _MMIO(reg->offset - flags);
 
 	with_intel_runtime_pm(&i915->runtime_pm, wakeref) {
 		if (entry->size == 8 && flags == I915_REG_READ_8B_WA)
 			reg->val = intel_uncore_read64_2x32(uncore,
-							    entry->offset_ldw,
+							    offset_ldw,
 							    entry->offset_udw);
 		else if (entry->size == 8 && flags == 0)
-			reg->val = intel_uncore_read64(uncore,
-						       entry->offset_ldw);
+			reg->val = intel_uncore_read64(uncore, offset_ldw);
 		else if (entry->size == 4 && flags == 0)
-			reg->val = intel_uncore_read(uncore, entry->offset_ldw);
+			reg->val = intel_uncore_read(uncore, offset_ldw);
 		else if (entry->size == 2 && flags == 0)
-			reg->val = intel_uncore_read16(uncore,
-						       entry->offset_ldw);
+			reg->val = intel_uncore_read16(uncore, offset_ldw);
 		else if (entry->size == 1 && flags == 0)
-			reg->val = intel_uncore_read8(uncore,
-						      entry->offset_ldw);
+			reg->val = intel_uncore_read8(uncore, offset_ldw);
 		else
 			ret = -EINVAL;
 	}
@@ -2120,12 +2141,12 @@ intel_uncore_arm_unclaimed_mmio_detection(struct intel_uncore *uncore)
 		goto out;
 
 	if (unlikely(check_for_unclaimed_mmio(uncore))) {
-		if (!i915_modparams.mmio_debug) {
+		if (!uncore->i915->params.mmio_debug) {
 			drm_dbg(&uncore->i915->drm,
 				"Unclaimed register detected, "
 				"enabling oneshot unclaimed register reporting. "
 				"Please use i915.mmio_debug=N for more information.\n");
-			i915_modparams.mmio_debug++;
+			uncore->i915->params.mmio_debug++;
 		}
 		uncore->debug->unclaimed_mmio_check--;
 		ret = true;

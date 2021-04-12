@@ -15,7 +15,6 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_address.h>
-#include <linux/remoteproc.h>
 #include <linux/qcom_scm.h>
 #include <linux/soc/qcom/mdt_loader.h>
 
@@ -111,8 +110,7 @@ int ipa_setup(struct ipa *ipa)
 	struct device *dev = &ipa->pdev->dev;
 	int ret;
 
-	/* Setup for IPA v3.5.1 has some slight differences */
-	ret = gsi_setup(&ipa->gsi, ipa->version == IPA_VERSION_3_5_1);
+	ret = gsi_setup(&ipa->gsi);
 	if (ret)
 		return ret;
 
@@ -326,7 +324,7 @@ static void ipa_hardware_config(struct ipa *ipa)
 
 		/* Disable PA mask to allow HOLB drop (hardware workaround) */
 		val = ioread32(ipa->reg_virt + IPA_REG_TX_CFG_OFFSET);
-		val &= ~PA_MASK_EN;
+		val &= ~PA_MASK_EN_FMASK;
 		iowrite32(val, ipa->reg_virt + IPA_REG_TX_CFG_OFFSET);
 	}
 
@@ -336,14 +334,16 @@ static void ipa_hardware_config(struct ipa *ipa)
 	ipa_hardware_config_qsb(ipa);
 
 	/* Configure aggregation granularity */
-	val = ioread32(ipa->reg_virt + IPA_REG_COUNTER_CFG_OFFSET);
 	granularity = ipa_aggr_granularity_val(IPA_AGGR_GRANULARITY);
-	val = u32_encode_bits(granularity, AGGR_GRANULARITY);
+	val = u32_encode_bits(granularity, AGGR_GRANULARITY_FMASK);
 	iowrite32(val, ipa->reg_virt + IPA_REG_COUNTER_CFG_OFFSET);
 
-	/* Disable hashed IPv4 and IPv6 routing and filtering for IPA v4.2 */
-	if (ipa->version == IPA_VERSION_4_2)
-		iowrite32(0, ipa->reg_virt + IPA_REG_FILT_ROUT_HASH_EN_OFFSET);
+	/* IPA v4.2 does not support hashed tables, so disable them */
+	if (ipa->version == IPA_VERSION_4_2) {
+		u32 offset = ipa_reg_filt_rout_hash_en_offset(ipa->version);
+
+		iowrite32(0, ipa->reg_virt + offset);
+	}
 
 	/* Enable dynamic clock division */
 	ipa_hardware_dcd_config(ipa);
@@ -493,10 +493,10 @@ ipa_resource_config(struct ipa *ipa, const struct ipa_resource_data *data)
 		return -EINVAL;
 
 	for (i = 0; i < data->resource_src_count; i++)
-		ipa_resource_config_src(ipa, data->resource_src);
+		ipa_resource_config_src(ipa, &data->resource_src[i]);
 
 	for (i = 0; i < data->resource_dst_count; i++)
-		ipa_resource_config_dst(ipa, data->resource_dst);
+		ipa_resource_config_dst(ipa, &data->resource_dst[i]);
 
 	return 0;
 }
@@ -641,19 +641,6 @@ static const struct of_device_id ipa_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ipa_match);
 
-static phandle of_property_read_phandle(const struct device_node *np,
-					const char *name)
-{
-        struct property *prop;
-        int len = 0;
-
-        prop = of_find_property(np, name, &len);
-        if (!prop || len != sizeof(__be32))
-                return 0;
-
-        return be32_to_cpup(prop->value);
-}
-
 /* Check things that can be validated at build time.  This just
  * groups these things BUILD_BUG_ON() calls don't clutter the rest
  * of the code.
@@ -681,16 +668,13 @@ static void ipa_validate_build(void)
 	 */
 	BUILD_BUG_ON(GSI_TLV_MAX > U8_MAX);
 
-	/* Exceeding 128 bytes makes the transaction pool *much* larger */
-	BUILD_BUG_ON(sizeof(struct gsi_trans) > 128);
-
 	/* This is used as a divisor */
 	BUILD_BUG_ON(!IPA_AGGR_GRANULARITY);
 
 	/* Aggregation granularity value can't be 0, and must fit */
 	BUILD_BUG_ON(!ipa_aggr_granularity_val(IPA_AGGR_GRANULARITY));
 	BUILD_BUG_ON(ipa_aggr_granularity_val(IPA_AGGR_GRANULARITY) >
-			field_max(AGGR_GRANULARITY));
+			field_max(AGGR_GRANULARITY_FMASK));
 #endif /* IPA_VALIDATE */
 }
 
@@ -722,15 +706,19 @@ static int ipa_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	const struct ipa_data *data;
 	struct ipa_clock *clock;
-	struct rproc *rproc;
-	bool modem_alloc;
 	bool modem_init;
 	struct ipa *ipa;
-	bool prefetch;
-	phandle ph;
 	int ret;
 
 	ipa_validate_build();
+
+	/* Get configuration data early; needed for clock initialization */
+	data = of_device_get_match_data(dev);
+	if (!data) {
+		/* This is really IPA_VALIDATE (should never happen) */
+		dev_err(dev, "matched hardware not supported\n");
+		return -ENODEV;
+	}
 
 	/* If we need Trust Zone, make sure it's available */
 	modem_init = of_property_read_bool(dev->of_node, "modem-init");
@@ -738,36 +726,14 @@ static int ipa_probe(struct platform_device *pdev)
 		if (!qcom_scm_is_available())
 			return -EPROBE_DEFER;
 
-	/* We rely on remoteproc to tell us about modem state changes */
-	ph = of_property_read_phandle(dev->of_node, "modem-remoteproc");
-	if (!ph) {
-		dev_err(dev, "DT missing \"modem-remoteproc\" property\n");
-		return -EINVAL;
-	}
-
-	rproc = rproc_get_by_phandle(ph);
-	if (!rproc)
-		return -EPROBE_DEFER;
-
 	/* The clock and interconnects might not be ready when we're
 	 * probed, so might return -EPROBE_DEFER.
 	 */
-	clock = ipa_clock_init(dev);
-	if (IS_ERR(clock)) {
-		ret = PTR_ERR(clock);
-		goto err_rproc_put;
-	}
+	clock = ipa_clock_init(dev, data->clock_data);
+	if (IS_ERR(clock))
+		return PTR_ERR(clock);
 
-	/* No more EPROBE_DEFER.  Get our configuration data */
-	data = of_device_get_match_data(dev);
-	if (!data) {
-		/* This is really IPA_VALIDATE (should never happen) */
-		dev_err(dev, "matched hardware not supported\n");
-		ret = -ENOTSUPP;
-		goto err_clock_exit;
-	}
-
-	/* Allocate and initialize the IPA structure */
+	/* No more EPROBE_DEFER.  Allocate and initialize the IPA structure */
 	ipa = kzalloc(sizeof(*ipa), GFP_KERNEL);
 	if (!ipa) {
 		ret = -ENOMEM;
@@ -776,9 +742,9 @@ static int ipa_probe(struct platform_device *pdev)
 
 	ipa->pdev = pdev;
 	dev_set_drvdata(dev, ipa);
-	ipa->modem_rproc = rproc;
 	ipa->clock = clock;
 	ipa->version = data->version;
+	init_completion(&ipa->completion);
 
 	ret = ipa_reg_init(ipa);
 	if (ret)
@@ -788,17 +754,12 @@ static int ipa_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_reg_exit;
 
-	/* GSI v2.0+ (IPA v4.0+) uses prefetch for the command channel */
-	prefetch = ipa->version != IPA_VERSION_3_5_1;
-	/* IPA v4.2 requires the AP to allocate channels for the modem */
-	modem_alloc = ipa->version == IPA_VERSION_4_2;
-
-	ret = gsi_init(&ipa->gsi, pdev, prefetch, data->endpoint_count,
-		       data->endpoint_data, modem_alloc);
+	ret = gsi_init(&ipa->gsi, pdev, ipa->version, data->endpoint_count,
+		       data->endpoint_data);
 	if (ret)
 		goto err_mem_exit;
 
-	/* Result is a non-zero mask endpoints that support filtering */
+	/* Result is a non-zero mask of endpoints that support filtering */
 	ipa->filter_map = ipa_endpoint_init(ipa, data->endpoint_count,
 					    data->endpoint_data);
 	if (!ipa->filter_map) {
@@ -858,8 +819,6 @@ err_kfree_ipa:
 	kfree(ipa);
 err_clock_exit:
 	ipa_clock_exit(clock);
-err_rproc_put:
-	rproc_put(rproc);
 
 	return ret;
 }
@@ -867,12 +826,16 @@ err_rproc_put:
 static int ipa_remove(struct platform_device *pdev)
 {
 	struct ipa *ipa = dev_get_drvdata(&pdev->dev);
-	struct rproc *rproc = ipa->modem_rproc;
 	struct ipa_clock *clock = ipa->clock;
 	int ret;
 
 	if (ipa->setup_complete) {
 		ret = ipa_modem_stop(ipa);
+		/* If starting or stopping is in progress, try once more */
+		if (ret == -EBUSY) {
+			usleep_range(USEC_PER_MSEC, 2 * USEC_PER_MSEC);
+			ret = ipa_modem_stop(ipa);
+		}
 		if (ret)
 			return ret;
 
@@ -888,9 +851,17 @@ static int ipa_remove(struct platform_device *pdev)
 	ipa_reg_exit(ipa);
 	kfree(ipa);
 	ipa_clock_exit(clock);
-	rproc_put(rproc);
 
 	return 0;
+}
+
+static void ipa_shutdown(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = ipa_remove(pdev);
+	if (ret)
+		dev_err(&pdev->dev, "shutdown: remove returned %d\n", ret);
 }
 
 /**
@@ -950,8 +921,9 @@ static const struct dev_pm_ops ipa_pm_ops = {
 };
 
 static struct platform_driver ipa_driver = {
-	.probe	= ipa_probe,
-	.remove	= ipa_remove,
+	.probe		= ipa_probe,
+	.remove		= ipa_remove,
+	.shutdown	= ipa_shutdown,
 	.driver	= {
 		.name		= "ipa",
 		.pm		= &ipa_pm_ops,

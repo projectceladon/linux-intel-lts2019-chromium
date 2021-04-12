@@ -375,17 +375,11 @@ static int rt5682_sdw_init(struct device *dev, struct regmap *regmap,
 static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 {
 	struct rt5682_priv *rt5682 = dev_get_drvdata(dev);
-	int ret = 0;
+	int ret = 0, loop = 10;
 	unsigned int val;
 
 	if (rt5682->hw_init)
 		return 0;
-
-	regmap_read(rt5682->regmap, RT5682_DEVICE_ID, &val);
-	if (val != DEVICE_ID) {
-		dev_err(dev, "Device with ID register %x is not rt5682\n", val);
-		return -ENODEV;
-	}
 
 	/*
 	 * PM runtime is only enabled when a Slave reports as Attached
@@ -405,6 +399,19 @@ static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 	}
 
 	pm_runtime_get_noresume(&slave->dev);
+
+	while (loop > 0) {
+		regmap_read(rt5682->regmap, RT5682_DEVICE_ID, &val);
+		if (val == DEVICE_ID)
+			break;
+		dev_warn(dev, "Device with ID register %x is not rt5682\n", val);
+		usleep_range(30000, 30005);
+		loop--;
+	}
+	if (val != DEVICE_ID) {
+		dev_err(dev, "Device with ID register %x is not rt5682\n", val);
+		return -ENODEV;
+	}
 
 	if (rt5682->first_hw_init) {
 		regcache_cache_only(rt5682->regmap, false);
@@ -432,7 +439,7 @@ static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 	regmap_update_bits(rt5682->regmap, RT5682_PWR_ANLG_1,
 		RT5682_LDO1_DVO_MASK | RT5682_HP_DRIVER_MASK,
 		RT5682_LDO1_DVO_12 | RT5682_HP_DRIVER_5X);
-	regmap_write(rt5682->regmap, RT5682_MICBIAS_2, 0x0380);
+	regmap_write(rt5682->regmap, RT5682_MICBIAS_2, 0x0080);
 	regmap_write(rt5682->regmap, RT5682_TEST_MODE_CTRL_1, 0x0000);
 	regmap_update_bits(rt5682->regmap, RT5682_BIAS_CUR_CTRL_8,
 		RT5682_HPA_CP_BIAS_CTRL_MASK, RT5682_HPA_CP_BIAS_3UA);
@@ -670,7 +677,7 @@ static int rt5682_interrupt_callback(struct sdw_slave *slave,
 
 	if (status->control_port & 0x4) {
 		mod_delayed_work(system_power_efficient_wq,
-			&rt5682->jack_detect_work, msecs_to_jiffies(250));
+			&rt5682->jack_detect_work, msecs_to_jiffies(rt5682->irq_work_delay_time));
 	}
 
 	return 0;
@@ -703,7 +710,7 @@ static int rt5682_sdw_remove(struct sdw_slave *slave)
 	struct rt5682_priv *rt5682 = dev_get_drvdata(&slave->dev);
 
 	if (rt5682 && rt5682->hw_init)
-		cancel_delayed_work(&rt5682->jack_detect_work);
+		cancel_delayed_work_sync(&rt5682->jack_detect_work);
 
 	return 0;
 }
@@ -720,6 +727,8 @@ static int __maybe_unused rt5682_dev_suspend(struct device *dev)
 
 	if (!rt5682->hw_init)
 		return 0;
+
+	cancel_delayed_work_sync(&rt5682->jack_detect_work);
 
 	regcache_cache_only(rt5682->regmap, true);
 	regcache_mark_dirty(rt5682->regmap);

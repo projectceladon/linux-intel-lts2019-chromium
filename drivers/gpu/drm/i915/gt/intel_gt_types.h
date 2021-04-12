@@ -17,11 +17,13 @@
 
 #include "i915_vma.h"
 #include "intel_engine_types.h"
+#include "intel_gt_buffer_pool_types.h"
 #include "intel_llc_types.h"
 #include "intel_reset_types.h"
 #include "intel_rc6_types.h"
 #include "intel_rps_types.h"
 #include "intel_wakeref.h"
+#include "pxp/intel_pxp.h"
 
 struct drm_i915_private;
 struct i915_ggtt;
@@ -97,7 +99,30 @@ struct intel_gt {
 	 */
 	struct i915_address_space *vm;
 
+	/*
+	 * A pool of objects to use as shadow copies of client batch buffers
+	 * when the command parser is enabled. Prevents the client from
+	 * modifying the batch contents after software parsing.
+	 *
+	 * Buffers older than 1s are periodically reaped from the pool,
+	 * or may be reclaimed by the shrinker before then.
+	 */
+	struct intel_gt_buffer_pool buffer_pool;
+
 	struct i915_vma *scratch;
+
+	struct intel_gt_info {
+		intel_engine_mask_t engine_mask;
+		u8 num_engines;
+
+		/* Media engine access to SFC per instance */
+		u8 vdbox_sfc_access;
+
+		/* Slice/subslice/EU info */
+		struct sseu_dev_info sseu;
+	} info;
+
+	struct intel_pxp pxp;
 };
 
 enum intel_gt_scratch_field {

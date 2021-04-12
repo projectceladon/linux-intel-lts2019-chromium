@@ -10,6 +10,7 @@
 #include <net/cfg80211.h>
 #include "ieee80211_i.h"
 #include "driver-ops.h"
+#include "rate.h"
 
 static int ieee80211_chanctx_num_assigned(struct ieee80211_local *local,
 					  struct ieee80211_chanctx *ctx)
@@ -192,11 +193,13 @@ ieee80211_find_reservation_chanctx(struct ieee80211_local *local,
 	return NULL;
 }
 
-enum nl80211_chan_width ieee80211_get_sta_bw(struct ieee80211_sta *sta)
+static enum nl80211_chan_width ieee80211_get_sta_bw(struct sta_info *sta)
 {
-	switch (sta->bandwidth) {
+	enum ieee80211_sta_rx_bandwidth width = ieee80211_sta_cap_rx_bw(sta);
+
+	switch (width) {
 	case IEEE80211_STA_RX_BW_20:
-		if (sta->ht_cap.ht_supported)
+		if (sta->sta.ht_cap.ht_supported)
 			return NL80211_CHAN_WIDTH_20;
 		else
 			return NL80211_CHAN_WIDTH_20_NOHT;
@@ -233,7 +236,7 @@ ieee80211_get_max_required_bw(struct ieee80211_sub_if_data *sdata)
 		    !(sta->sdata->bss && sta->sdata->bss == sdata->bss))
 			continue;
 
-		max_bw = max(max_bw, ieee80211_get_sta_bw(&sta->sta));
+		max_bw = max(max_bw, ieee80211_get_sta_bw(sta));
 	}
 	rcu_read_unlock();
 
@@ -279,7 +282,6 @@ ieee80211_get_chanctx_max_required_bw(struct ieee80211_local *local,
 #endif
 			continue;
 		case NL80211_IFTYPE_ADHOC:
-		case NL80211_IFTYPE_WDS:
 		case NL80211_IFTYPE_MESH_POINT:
 #if CFG80211_VERSION >= KERNEL_VERSION(3,19,0)
 		case NL80211_IFTYPE_OCB:
@@ -287,6 +289,7 @@ ieee80211_get_chanctx_max_required_bw(struct ieee80211_local *local,
 #endif
 			width = vif->bss_conf.chandef.width;
 			break;
+		case NL80211_IFTYPE_WDS:
 		case NL80211_IFTYPE_UNSPECIFIED:
 		case NUM_NL80211_IFTYPES:
 		case NL80211_IFTYPE_MONITOR:
@@ -320,9 +323,14 @@ void ieee80211_recalc_chanctx_min_def(struct ieee80211_local *local,
 
 	lockdep_assert_held(&local->chanctx_mtx);
 
-	/* don't optimize 5MHz, 10MHz, and radar_enabled confs */
+	/* don't optimize non-20MHz based and radar_enabled confs */
 	if (ctx->conf.def.width == NL80211_CHAN_WIDTH_5 ||
 	    ctx->conf.def.width == NL80211_CHAN_WIDTH_10 ||
+	    nl80211_is_s1ghz_width(ctx->conf.def.width, NL80211_CHAN_WIDTH_1) ||
+	    nl80211_is_s1ghz_width(ctx->conf.def.width, NL80211_CHAN_WIDTH_2) ||
+	    nl80211_is_s1ghz_width(ctx->conf.def.width, NL80211_CHAN_WIDTH_4) ||
+	    nl80211_is_s1ghz_width(ctx->conf.def.width, NL80211_CHAN_WIDTH_8) ||
+	    nl80211_is_s1ghz_width(ctx->conf.def.width, NL80211_CHAN_WIDTH_16) ||
 	    ctx->conf.radar_enabled) {
 		ctx->conf.min_def = ctx->conf.def;
 		return;
@@ -345,10 +353,42 @@ void ieee80211_recalc_chanctx_min_def(struct ieee80211_local *local,
 	drv_change_chanctx(local, ctx, IEEE80211_CHANCTX_CHANGE_MIN_WIDTH);
 }
 
+static void ieee80211_chan_bw_change(struct ieee80211_local *local,
+				     struct ieee80211_chanctx *ctx)
+{
+	struct sta_info *sta;
+	struct ieee80211_supported_band *sband =
+		local->hw.wiphy->bands[ctx->conf.def.chan->band];
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(sta, &local->sta_list,
+				list) {
+		enum ieee80211_sta_rx_bandwidth new_sta_bw;
+
+		if (!ieee80211_sdata_running(sta->sdata))
+			continue;
+
+		if (rcu_access_pointer(sta->sdata->vif.chanctx_conf) !=
+		    &ctx->conf)
+			continue;
+
+		new_sta_bw = ieee80211_sta_cur_vht_bw(sta);
+		if (new_sta_bw == sta->sta.bandwidth)
+			continue;
+
+		sta->sta.bandwidth = new_sta_bw;
+		rate_control_rate_update(local, sband, sta,
+					 IEEE80211_RC_BW_CHANGED);
+	}
+	rcu_read_unlock();
+}
+
 static void ieee80211_change_chanctx(struct ieee80211_local *local,
 				     struct ieee80211_chanctx *ctx,
 				     const struct cfg80211_chan_def *chandef)
 {
+	enum nl80211_chan_width width;
+
 	if (cfg80211_chandef_identical(&ctx->conf.def, chandef)) {
 		ieee80211_recalc_chanctx_min_def(local, ctx);
 		return;
@@ -356,7 +396,25 @@ static void ieee80211_change_chanctx(struct ieee80211_local *local,
 
 	WARN_ON(!cfg80211_chandef_compatible(&ctx->conf.def, chandef));
 
+	width = ctx->conf.def.width;
 	ctx->conf.def = *chandef;
+
+	/* expected to handle only 20/40/80/160 channel widths */
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_20_NOHT:
+	case NL80211_CHAN_WIDTH_20:
+	case NL80211_CHAN_WIDTH_40:
+	case NL80211_CHAN_WIDTH_80:
+	case NL80211_CHAN_WIDTH_80P80:
+	case NL80211_CHAN_WIDTH_160:
+		break;
+	default:
+		WARN_ON(1);
+	}
+
+	if (chandef->width < width)
+		ieee80211_chan_bw_change(local, ctx);
+
 	drv_change_chanctx(local, ctx, IEEE80211_CHANCTX_CHANGE_WIDTH);
 	ieee80211_recalc_chanctx_min_def(local, ctx);
 
@@ -364,6 +422,9 @@ static void ieee80211_change_chanctx(struct ieee80211_local *local,
 		local->_oper_chandef = *chandef;
 		ieee80211_hw_config(local, 0);
 	}
+
+	if (chandef->width > width)
+		ieee80211_chan_bw_change(local, ctx);
 }
 
 static struct ieee80211_chanctx *
@@ -538,8 +599,17 @@ static void ieee80211_del_chanctx(struct ieee80211_local *local,
 
 	if (!local->use_chanctx) {
 		struct cfg80211_chan_def *chandef = &local->_oper_chandef;
-		chandef->width = NL80211_CHAN_WIDTH_20_NOHT;
+		/* S1G doesn't have 20MHz, so get the correct width for the
+		 * current channel.
+		 */
+		if (nl80211_is_s1ghz(chandef->chan->band))
+			chandef->width =
+				ieee80211_s1g_channel_width(chandef->chan);
+		else
+			chandef->width = NL80211_CHAN_WIDTH_20_NOHT;
 		chandef->center_freq1 = chandef->chan->center_freq;
+		cfg80211_chandef_freq1_offset_set(chandef,
+						  cfg80211_chan_freq_offset(chandef->chan));
 		chandef->center_freq2 = 0;
 
 		/* NOTE: Disabling radar is only valid here for
@@ -740,7 +810,6 @@ void ieee80211_recalc_smps_chanctx(struct ieee80211_local *local,
 			continue;
 		case NL80211_IFTYPE_AP:
 		case NL80211_IFTYPE_ADHOC:
-		case NL80211_IFTYPE_WDS:
 		case NL80211_IFTYPE_MESH_POINT:
 #if CFG80211_VERSION >= KERNEL_VERSION(3,19,0)
 		case NL80211_IFTYPE_OCB:
@@ -755,7 +824,7 @@ void ieee80211_recalc_smps_chanctx(struct ieee80211_local *local,
 		default:
 			WARN_ONCE(1, "Invalid SMPS mode %d\n",
 				  sdata->smps_mode);
-			/* fall through */
+			fallthrough;
 		case IEEE80211_SMPS_OFF:
 			needed_static = sdata->needed_rx_chains;
 			needed_dynamic = sdata->needed_rx_chains;
@@ -1058,7 +1127,13 @@ ieee80211_vif_use_reserved_reassign(struct ieee80211_sub_if_data *sdata)
 	if (WARN_ON(!chandef))
 		return -EINVAL;
 
+	if (old_ctx->conf.def.width > new_ctx->conf.def.width)
+		ieee80211_chan_bw_change(local, new_ctx);
+
 	ieee80211_change_chanctx(local, new_ctx, chandef);
+
+	if (old_ctx->conf.def.width < new_ctx->conf.def.width)
+		ieee80211_chan_bw_change(local, new_ctx);
 
 	vif_chsw[0].vif = &sdata->vif;
 	vif_chsw[0].old_ctx = &old_ctx->conf;
@@ -1450,6 +1525,7 @@ static int ieee80211_vif_use_reserved_switch(struct ieee80211_local *local)
 		ieee80211_recalc_smps_chanctx(local, ctx);
 		ieee80211_recalc_radar_chanctx(local, ctx);
 		ieee80211_recalc_chanctx_min_def(local, ctx);
+		ieee80211_chan_bw_change(local, ctx);
 
 		list_for_each_entry_safe(sdata, sdata_tmp, &ctx->reserved_vifs,
 					 reserved_chanctx_list) {

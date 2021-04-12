@@ -160,13 +160,13 @@ int ipa_mem_config(struct ipa *ipa)
 	mem_size = 8 * u32_get_bits(val, SHARED_MEM_SIZE_FMASK);
 
 	/* If the sizes don't match, issue a warning */
-	if (ipa->mem_offset + mem_size > ipa->mem_size) {
-		dev_warn(dev, "ignoring larger reported memory size: 0x%08x\n",
-			mem_size);
-	} else if (ipa->mem_offset + mem_size < ipa->mem_size) {
+	if (ipa->mem_offset + mem_size < ipa->mem_size) {
 		dev_warn(dev, "limiting IPA memory size to 0x%08x\n",
 			 mem_size);
 		ipa->mem_size = mem_size;
+	} else if (ipa->mem_offset + mem_size > ipa->mem_size) {
+		dev_dbg(dev, "ignoring larger reported memory size: 0x%08x\n",
+			mem_size);
 	}
 
 	/* Prealloc DMA memory for zeroing regions */
@@ -336,7 +336,7 @@ static void ipa_imem_exit(struct ipa *ipa)
 
 		size = iommu_unmap(domain, ipa->imem_iova, ipa->imem_size);
 		if (size != ipa->imem_size)
-			dev_warn(dev, "unmapped %zu IMEM bytes, expected %lu\n",
+			dev_warn(dev, "unmapped %zu IMEM bytes, expected %zu\n",
 				 size, ipa->imem_size);
 	} else {
 		dev_err(dev, "couldn't get IPA IOMMU domain for IMEM\n");
@@ -440,7 +440,7 @@ static void ipa_smem_exit(struct ipa *ipa)
 
 		size = iommu_unmap(domain, ipa->smem_iova, ipa->smem_size);
 		if (size != ipa->smem_size)
-			dev_warn(dev, "unmapped %zu SMEM bytes, expected %lu\n",
+			dev_warn(dev, "unmapped %zu SMEM bytes, expected %zu\n",
 				 size, ipa->smem_size);
 
 	} else {

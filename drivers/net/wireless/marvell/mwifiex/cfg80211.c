@@ -2303,8 +2303,7 @@ done:
 			is_scanning_required = 1;
 		} else {
 			mwifiex_dbg(priv->adapter, MSG,
-				    "info: trying to associate to '%.*s' bssid %pM\n",
-				    req_ssid.ssid_len, (char *)req_ssid.ssid,
+				    "info: trying to associate to bssid %pM\n",
 				    bss->bssid);
 			memcpy(&priv->cfg_bssid, bss->bssid, ETH_ALEN);
 			break;
@@ -2366,8 +2365,7 @@ mwifiex_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 	}
 
 	mwifiex_dbg(adapter, INFO,
-		    "info: Trying to associate to %.*s and bssid %pM\n",
-		    (int)sme->ssid_len, (char *)sme->ssid, sme->bssid);
+		    "info: Trying to associate to bssid %pM\n", sme->bssid);
 
 	if (!mwifiex_stop_bg_scan(priv))
 		cfg80211_sched_scan_stopped_rtnl(priv->wdev.wiphy, 0);
@@ -2499,9 +2497,8 @@ mwifiex_cfg80211_join_ibss(struct wiphy *wiphy, struct net_device *dev,
 		goto done;
 	}
 
-	mwifiex_dbg(priv->adapter, MSG,
-		    "info: trying to join to %.*s and bssid %pM\n",
-		    params->ssid_len, (char *)params->ssid, params->bssid);
+	mwifiex_dbg(priv->adapter, MSG, "info: trying to join to bssid %pM\n",
+		    params->bssid);
 
 	mwifiex_set_ibss_params(priv, params);
 
@@ -4431,16 +4428,15 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 				mwifiex_dbg(adapter, WARN,
 					    "Ignore world regulatory domain\n");
 			} else {
-				wiphy->regulatory_flags |=
-					REGULATORY_DISABLE_BEACON_HINTS |
-					REGULATORY_COUNTRY_IE_IGNORE;
 				country_code =
 					mwifiex_11d_code_2_region(
 						adapter->region_code);
-				if (country_code &&
-				    regulatory_hint(wiphy, country_code))
-					mwifiex_dbg(priv->adapter, ERROR,
-						    "regulatory_hint() failed\n");
+				if (country_code) {
+					mwifiex_dbg(priv->adapter, MSG,
+						    "ignoring EEPROM country code: %c%c\n",
+						    country_code[0],
+						    country_code[1]);
+				}
 			}
 		}
 	}

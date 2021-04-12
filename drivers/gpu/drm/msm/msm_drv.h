@@ -174,18 +174,29 @@ struct msm_drm_private {
 	struct msm_rd_state *hangrd;   /* debugfs to dump hanging submits */
 	struct msm_perf_state *perf;
 
-	/*
-	 * List of inactive GEM objects.  Every bo is either in the inactive_list
-	 * or gpu->active_list (for the gpu it is active on[1])
+	/**
+	 * List of all GEM objects (mainly for debugfs, protected by obj_lock
+	 * (acquire before per GEM object lock)
+	 */
+	struct list_head objects;
+	struct mutex obj_lock;
+
+	/**
+	 * Lists of inactive GEM objects.  Every bo is either in one of the
+	 * inactive lists (depending on whether or not it is shrinkable) or
+	 * gpu->active_list (for the gpu it is active on[1])
 	 *
-	 * These lists are protected by mm_lock.  If struct_mutex is involved, it
-	 * should be aquired prior to mm_lock.  One should *not* hold mm_lock in
+	 * These lists are protected by mm_lock (which should be acquired
+	 * before per GEM object lock).  One should *not* hold mm_lock in
 	 * get_pages()/vmap()/etc paths, as they can trigger the shrinker.
 	 *
 	 * [1] if someone ever added support for the old 2d cores, there could be
 	 *     more than one gpu object
 	 */
-	struct list_head inactive_list;
+	struct list_head inactive_willneed;  /* inactive + !shrinkable */
+	struct list_head inactive_dontneed;  /* inactive +  shrinkable */
+	struct list_head inactive_purged;    /* inactive +  purged */
+	long shrinkable_count;               /* write access under mm_lock */
 	struct mutex mm_lock;
 
 	struct workqueue_struct *wq;
@@ -348,6 +359,8 @@ void msm_dp_display_mode_set(struct msm_dp *dp, struct drm_encoder *encoder,
 				struct drm_display_mode *adjusted_mode);
 void msm_dp_irq_postinstall(struct msm_dp *dp_display);
 
+void msm_dp_debugfs_init(struct msm_dp *dp_display, struct drm_minor *minor);
+
 #else
 static inline int __init msm_dp_register(void)
 {
@@ -385,6 +398,11 @@ static inline void msm_dp_display_mode_set(struct msm_dp *dp,
 }
 
 static inline void msm_dp_irq_postinstall(struct msm_dp *dp_display)
+{
+}
+
+static inline void msm_dp_debugfs_init(struct msm_dp *dp_display,
+		struct drm_minor *minor)
 {
 }
 

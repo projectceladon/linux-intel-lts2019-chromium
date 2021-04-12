@@ -1,62 +1,8 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2015 - 2017 Intel Deutschland GmbH
- * Copyright (C) 2007 - 2014, 2018 - 2020 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2017   Intel Deutschland GmbH
- * Copyright (C) 2005 - 2014, 2018 - 2020 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Copyright (C) 2005-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2015-2017 Intel Deutschland GmbH
+ */
 #include <linux/module.h>
 #include <linux/types.h>
 
@@ -105,7 +51,7 @@ module_exit(iwl_xvt_exit);
  * A warning will be triggered on violation.
  */
 static const struct iwl_hcmd_names iwl_xvt_cmd_names[] = {
-	HCMD_NAME(MVM_ALIVE),
+	HCMD_NAME(UCODE_ALIVE_NTFY),
 	HCMD_NAME(INIT_COMPLETE_NOTIF),
 	HCMD_NAME(TX_CMD),
 	HCMD_NAME(SCD_QUEUE_CFG),
@@ -183,6 +129,7 @@ static const struct iwl_hcmd_names iwl_xvt_system_names[] = {
 };
 
 static const struct iwl_hcmd_names iwl_xvt_xvt_names[] = {
+	HCMD_NAME(DTS_MEASUREMENT_TRIGGER_NOTIF),
 	HCMD_NAME(MPAPD_EXEC_DONE_NOTIF),
 	HCMD_NAME(RUN_TIME_CALIB_DONE_NOTIF),
 	HCMD_NAME(IQ_CALIB_CONFIG_NOTIF),
@@ -290,6 +237,9 @@ static struct iwl_op_mode *iwl_xvt_start(struct iwl_trans *trans,
 
 	trans_cfg.cb_data_offs = offsetof(struct iwl_xvt_skb_info, trans);
 
+	trans_cfg.fw_reset_handshake = fw_has_capa(&xvt->fw->ucode_capa,
+						   IWL_UCODE_TLV_CAPA_FW_RESET_HANDSHAKE);
+
 	/* Configure transport layer */
 	iwl_trans_configure(xvt->trans, &trans_cfg);
 	trans->command_groups = trans_cfg.command_groups;
@@ -342,6 +292,7 @@ static struct iwl_op_mode *iwl_xvt_start(struct iwl_trans *trans,
 	return op_mode;
 
 out_free:
+	iwl_fw_runtime_free(&xvt->fwrt);
 	kfree(op_mode);
 
 	return NULL;
@@ -369,6 +320,9 @@ static void iwl_xvt_stop(struct iwl_op_mode *op_mode)
 		buffer = &xvt->reorder_bufs[i];
 		iwl_xvt_destroy_reorder_buffer(xvt, buffer);
 	}
+
+	iwl_fw_flush_dumps(&xvt->fwrt);
+	iwl_fw_runtime_free(&xvt->fwrt);
 
 	iwl_phy_db_free(xvt->phy_db);
 	xvt->phy_db = NULL;
@@ -441,6 +395,51 @@ verify:
 		return NULL;
 
 	return &xvt->tx_meta_data[lmac_id];
+}
+
+static void iwl_xvt_txpath_flush(struct iwl_xvt *xvt,
+				 struct iwl_rx_packet *resp_pkt)
+{
+	int i;
+	int num_flushed_queues;
+	struct iwl_tx_path_flush_cmd_rsp *rsp;
+
+	if (iwl_fw_lookup_notif_ver(xvt->fw, LONG_GROUP, TXPATH_FLUSH, 0) == 0)
+		return;
+
+	if (WARN_ON_ONCE(iwl_rx_packet_payload_len(resp_pkt) != sizeof(*rsp)))
+		return;
+
+	rsp = (void *)resp_pkt->data;
+
+	num_flushed_queues = le16_to_cpu(rsp->num_flushed_queues);
+	if (WARN_ONCE(num_flushed_queues > IWL_TX_FLUSH_QUEUE_RSP,
+		      "num_flushed_queues %d", num_flushed_queues))
+		return;
+
+	for (i = 0; i < num_flushed_queues; i++) {
+		struct iwl_flush_queue_info *queue_info = &rsp->queues[i];
+		struct tx_meta_data *tx_data;
+		int tid = le16_to_cpu(queue_info->tid);
+		int read_before = le16_to_cpu(queue_info->read_before_flush);
+		int read_after = le16_to_cpu(queue_info->read_after_flush);
+		int queue_num = le16_to_cpu(queue_info->queue_num);
+
+		if (tid == IWL_MGMT_TID)
+			tid = IWL_MAX_TID_COUNT;
+
+		IWL_DEBUG_TX_QUEUES(xvt,
+				    "tid %d queue_id %d read-before %d read-after %d\n",
+				    tid, queue_num, read_before, read_after);
+		if (read_before != read_after &&
+		    xvt->queue_data[queue_num].txq_full != 1) {
+			tx_data = iwl_xvt_rx_get_tx_meta_data(xvt, queue_num);
+			if (!tx_data)
+				continue;
+
+			iwl_xvt_reclaim_and_free(xvt, tx_data, queue_num, read_after);
+		}
+	}
 }
 
 static void iwl_xvt_rx_tx_cmd_single(struct iwl_xvt *xvt,
@@ -565,6 +564,9 @@ static void iwl_xvt_rx_dispatch(struct iwl_op_mode *op_mode,
 		break;
 	case REPLY_RX_MPDU_CMD:
 		iwl_xvt_reorder(xvt, pkt);
+		break;
+	case TXPATH_FLUSH:
+		iwl_xvt_txpath_flush(xvt, pkt);
 		break;
 	case FRAME_RELEASE:
 		iwl_xvt_rx_frame_release(xvt, pkt);
@@ -749,6 +751,15 @@ static void iwl_xvt_wake_sw_queue(struct iwl_op_mode *op_mode, int queue)
 	}
 }
 
+static void iwl_xvt_time_point(struct iwl_op_mode *op_mode,
+			       enum iwl_fw_ini_time_point tp_id,
+			       union iwl_dbg_tlv_tp_data *tp_data)
+{
+	struct iwl_xvt *xvt = IWL_OP_MODE_GET_XVT(op_mode);
+
+	iwl_dbg_tlv_time_point(&xvt->fwrt, tp_id, tp_data);
+}
+
 static const struct iwl_op_mode_ops iwl_xvt_ops = {
 	.start = iwl_xvt_start,
 	.stop = iwl_xvt_stop,
@@ -759,6 +770,7 @@ static const struct iwl_op_mode_ops iwl_xvt_ops = {
 	.free_skb = iwl_xvt_free_skb,
 	.queue_full = iwl_xvt_stop_sw_queue,
 	.queue_not_full = iwl_xvt_wake_sw_queue,
+	.time_point = iwl_xvt_time_point,
 	.test_ops = {
 		.send_hcmd = iwl_xvt_tm_send_hcmd,
 		.cmd_exec = iwl_xvt_user_cmd_execute,
@@ -817,8 +829,9 @@ static int iwl_xvt_sar_geo_init(struct iwl_xvt *xvt)
 	u16 len;
 	u32 n_bands;
 	int ret;
-	u8 cmd_ver = iwl_fw_lookup_cmd_ver(xvt->fw,
-					   PHY_OPS_GROUP, GEO_TX_POWER_LIMIT);
+	u8 cmd_ver = iwl_fw_lookup_cmd_ver(xvt->fw, PHY_OPS_GROUP,
+					   GEO_TX_POWER_LIMIT,
+					   IWL_FW_CMD_VER_UNKNOWN);
 
 	BUILD_BUG_ON(offsetof(struct iwl_geo_tx_power_profiles_cmd_v1, ops) !=
 		     offsetof(struct iwl_geo_tx_power_profiles_cmd_v2, ops) ||
@@ -866,8 +879,7 @@ static int iwl_xvt_sar_geo_init(struct iwl_xvt *xvt)
 }
 #endif /* CONFIG_ACPI */
 
-static int
-iwl_xvt_sar_select_profile(struct iwl_xvt *xvt, int prof_a, int prof_b)
+int iwl_xvt_sar_select_profile(struct iwl_xvt *xvt, int prof_a, int prof_b)
 {
 	struct iwl_dev_tx_power_cmd cmd = {
 		.common.set_mode = cpu_to_le32(IWL_TX_POWER_MODE_SET_CHAINS),
@@ -876,7 +888,8 @@ iwl_xvt_sar_select_profile(struct iwl_xvt *xvt, int prof_a, int prof_b)
 	u16 len = 0;
 	u32 n_subbands;
 	u8 cmd_ver = iwl_fw_lookup_cmd_ver(xvt->fw, LONG_GROUP,
-					   REDUCE_TX_POWER_CMD);
+					   REDUCE_TX_POWER_CMD,
+					   IWL_FW_CMD_VER_UNKNOWN);
 	if (cmd_ver == 6) {
 		len = sizeof(cmd.v6);
 		n_subbands = IWL_NUM_SUB_BANDS_V2;
@@ -884,16 +897,16 @@ iwl_xvt_sar_select_profile(struct iwl_xvt *xvt, int prof_a, int prof_b)
 	} else if (fw_has_api(&xvt->fw->ucode_capa,
 			      IWL_UCODE_TLV_API_REDUCE_TX_POWER)) {
 		len = sizeof(cmd.v5);
-		n_subbands = IWL_NUM_SUB_BANDS;
+		n_subbands = IWL_NUM_SUB_BANDS_V1;
 		per_chain = cmd.v5.per_chain[0][0];
 	} else if (fw_has_capa(&xvt->fw->ucode_capa,
 			       IWL_UCODE_TLV_CAPA_TX_POWER_ACK)) {
 		len = sizeof(cmd.v4);
-		n_subbands = IWL_NUM_SUB_BANDS;
+		n_subbands = IWL_NUM_SUB_BANDS_V1;
 		per_chain = cmd.v4.per_chain[0][0];
 	} else {
 		len = sizeof(cmd.v3);
-		n_subbands = IWL_NUM_SUB_BANDS;
+		n_subbands = IWL_NUM_SUB_BANDS_V1;
 		per_chain = cmd.v3.per_chain[0][0];
 	}
 

@@ -51,6 +51,11 @@ int intel_context_alloc_state(struct intel_context *ce)
 		return -EINTR;
 
 	if (!test_bit(CONTEXT_ALLOC_BIT, &ce->flags)) {
+		if (intel_context_is_banned(ce)) {
+			err = -EIO;
+			goto unlock;
+		}
+
 		err = ce->ops->alloc(ce);
 		if (unlikely(err))
 			goto unlock;
@@ -116,7 +121,8 @@ int __intel_context_do_pin(struct intel_context *ce)
 		if (unlikely(err))
 			goto err_active;
 
-		CE_TRACE(ce, "pin ring:{head:%04x, tail:%04x}\n",
+		CE_TRACE(ce, "pin ring:{start:%08x, head:%04x, tail:%04x}\n",
+			 i915_ggtt_offset(ce->ring->vma),
 			 ce->ring->head, ce->ring->tail);
 
 		smp_mb__before_atomic(); /* flush pin before it is visible */

@@ -316,6 +316,7 @@ int snd_sof_device_probe(struct device *dev, struct snd_sof_pdata *plat_data)
 	INIT_LIST_HEAD(&sdev->route_list);
 	spin_lock_init(&sdev->ipc_lock);
 	spin_lock_init(&sdev->hw_lock);
+	mutex_init(&sdev->power_state_access);
 
 	if (IS_ENABLED(CONFIG_SND_SOC_SOF_PROBE_WORK_QUEUE))
 		INIT_WORK(&sdev->probe_work, sof_probe_work);
@@ -383,6 +384,20 @@ int snd_sof_device_remove(struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(snd_sof_device_remove);
+
+int snd_sof_device_shutdown(struct device *dev)
+{
+	struct snd_sof_dev *sdev = dev_get_drvdata(dev);
+
+	if (IS_ENABLED(CONFIG_SND_SOC_SOF_PROBE_WORK_QUEUE))
+		cancel_work_sync(&sdev->probe_work);
+
+	if (sdev->fw_state == SOF_FW_BOOT_COMPLETE)
+		return snd_sof_shutdown(sdev);
+
+	return 0;
+}
+EXPORT_SYMBOL(snd_sof_device_shutdown);
 
 MODULE_AUTHOR("Liam Girdwood");
 MODULE_DESCRIPTION("Sound Open Firmware (SOF) Core");

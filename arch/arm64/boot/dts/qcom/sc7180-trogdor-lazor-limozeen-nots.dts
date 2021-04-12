@@ -12,13 +12,13 @@
 
 / {
 	model = "Google Lazor Limozeen without Touchscreen";
-	compatible = "google,lazor-sku5", "qcom,sc7180";
+	compatible = "google,lazor-sku6", "google,lazor-sku5", "qcom,sc7180";
 };
 
 /delete-node/&ap_ts;
 
 &panel {
-	compatible = "innolux,n116bca", "innolux,n116bge";
+	compatible = "innolux,n116bca-ea1", "innolux,n116bge";
 };
 
 &sdhc_2 {

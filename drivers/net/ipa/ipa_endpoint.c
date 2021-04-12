@@ -69,8 +69,11 @@ struct ipa_status {
 };
 
 /* Field masks for struct ipa_status structure fields */
+#define IPA_STATUS_MASK_TAG_VALID_FMASK		GENMASK(4, 4)
+#define IPA_STATUS_SRC_IDX_FMASK		GENMASK(4, 0)
 #define IPA_STATUS_DST_IDX_FMASK		GENMASK(4, 0)
 #define IPA_STATUS_FLAGS1_RT_RULE_ID_FMASK	GENMASK(31, 22)
+#define IPA_STATUS_FLAGS2_TAG_FMASK		GENMASK_ULL(63, 16)
 
 #ifdef IPA_VALIDATE
 
@@ -394,7 +397,7 @@ int ipa_endpoint_modem_exception_reset_all(struct ipa *ipa)
 	 * That won't happen, and we could be more precise, but this is fine
 	 * for now.  We need to end the transaction with a "tag process."
 	 */
-	count = hweight32(initialized) + ipa_cmd_tag_process_count();
+	count = hweight32(initialized) + ipa_cmd_pipeline_clear_count();
 	trans = ipa_cmd_trans_alloc(ipa, count);
 	if (!trans) {
 		dev_err(&ipa->pdev->dev,
@@ -423,10 +426,12 @@ int ipa_endpoint_modem_exception_reset_all(struct ipa *ipa)
 		ipa_cmd_register_write_add(trans, offset, 0, ~0, false);
 	}
 
-	ipa_cmd_tag_process_add(trans);
+	ipa_cmd_pipeline_clear_add(trans);
 
 	/* XXX This should have a 1 second timeout */
 	gsi_trans_commit_wait(trans);
+
+	ipa_cmd_pipeline_clear_wait(ipa);
 
 	return 0;
 }
@@ -562,7 +567,7 @@ static void ipa_endpoint_init_hdr_metadata_mask(struct ipa_endpoint *endpoint)
 
 	/* Note that HDR_ENDIANNESS indicates big endian header fields */
 	if (endpoint->data->qmap)
-		val = cpu_to_be32(IPA_ENDPOINT_QMAP_METADATA_MASK);
+		val = (__force u32)cpu_to_be32(IPA_ENDPOINT_QMAP_METADATA_MASK);
 
 	iowrite32(val, endpoint->ipa->reg_virt + offset);
 }
@@ -665,8 +670,8 @@ static u32 ipa_reg_init_hol_block_timer_val(struct ipa *ipa, u32 microseconds)
 	/* ...but we still need to fit into a 32-bit register */
 	WARN_ON(ticks > U32_MAX);
 
-	/* IPA v3.5.1 just records the tick count */
-	if (ipa->version == IPA_VERSION_3_5_1)
+	/* IPA v3.5.1 through v4.1 just record the tick count */
+	if (ipa->version < IPA_VERSION_4_2)
 		return (u32)ticks;
 
 	/* For IPA v4.2, the tick count is represented by base and
@@ -1045,18 +1050,52 @@ static bool ipa_endpoint_status_skip(struct ipa_endpoint *endpoint,
 		return true;
 	if (!status->pkt_len)
 		return true;
-	endpoint_id = u32_get_bits(status->endp_dst_idx,
-				   IPA_STATUS_DST_IDX_FMASK);
+	endpoint_id = u8_get_bits(status->endp_dst_idx,
+				  IPA_STATUS_DST_IDX_FMASK);
 	if (endpoint_id != endpoint->endpoint_id)
 		return true;
 
 	return false;	/* Don't skip this packet, process it */
 }
 
+static bool ipa_endpoint_status_tag(struct ipa_endpoint *endpoint,
+				    const struct ipa_status *status)
+{
+	struct ipa_endpoint *command_endpoint;
+	struct ipa *ipa = endpoint->ipa;
+	u32 endpoint_id;
+
+	if (!le16_get_bits(status->mask, IPA_STATUS_MASK_TAG_VALID_FMASK))
+		return false;	/* No valid tag */
+
+	/* The status contains a valid tag.  We know the packet was sent to
+	 * this endpoint (already verified by ipa_endpoint_status_skip()).
+	 * If the packet came from the AP->command TX endpoint we know
+	 * this packet was sent as part of the pipeline clear process.
+	 */
+	endpoint_id = u8_get_bits(status->endp_src_idx,
+				  IPA_STATUS_SRC_IDX_FMASK);
+	command_endpoint = ipa->name_map[IPA_ENDPOINT_AP_COMMAND_TX];
+	if (endpoint_id == command_endpoint->endpoint_id) {
+		complete(&ipa->completion);
+	} else {
+		dev_err(&ipa->pdev->dev,
+			"unexpected tagged packet from endpoint %u\n",
+			endpoint_id);
+	}
+
+	return true;
+}
+
 /* Return whether the status indicates the packet should be dropped */
-static bool ipa_status_drop_packet(const struct ipa_status *status)
+static bool ipa_endpoint_status_drop(struct ipa_endpoint *endpoint,
+				     const struct ipa_status *status)
 {
 	u32 val;
+
+	/* If the status indicates a tagged transfer, we'll drop the packet */
+	if (ipa_endpoint_status_tag(endpoint, status))
+		return true;
 
 	/* Deaggregation exceptions we drop; all other types we consume */
 	if (status->exception)
@@ -1094,12 +1133,11 @@ static void ipa_endpoint_status_parse(struct ipa_endpoint *endpoint,
 			continue;
 		}
 
-		/* Compute the amount of buffer space consumed by the
-		 * packet, including the status element.  If the hardware
-		 * is configured to pad packet data to an aligned boundary,
-		 * account for that.  And if checksum offload is is enabled
-		 * a trailer containing computed checksum information will
-		 * be appended.
+		/* Compute the amount of buffer space consumed by the packet,
+		 * including the status element.  If the hardware is configured
+		 * to pad packet data to an aligned boundary, account for that.
+		 * And if checksum offload is enabled a trailer containing
+		 * computed checksum information will be appended.
 		 */
 		align = endpoint->data->rx.pad_align ? : 1;
 		len = le16_to_cpu(status->pkt_len);
@@ -1107,16 +1145,21 @@ static void ipa_endpoint_status_parse(struct ipa_endpoint *endpoint,
 		if (endpoint->data->checksum)
 			len += sizeof(struct rmnet_map_dl_csum_trailer);
 
-		/* Charge the new packet with a proportional fraction of
-		 * the unused space in the original receive buffer.
-		 * XXX Charge a proportion of the *whole* receive buffer?
-		 */
-		if (!ipa_status_drop_packet(status)) {
-			u32 extra = unused * len / total_len;
-			void *data2 = data + sizeof(*status);
-			u32 len2 = le16_to_cpu(status->pkt_len);
+		if (!ipa_endpoint_status_drop(endpoint, status)) {
+			void *data2;
+			u32 extra;
+			u32 len2;
 
 			/* Client receives only packet data (no status) */
+			data2 = data + sizeof(*status);
+			len2 = le16_to_cpu(status->pkt_len);
+
+			/* Have the true size reflect the extra unused space in
+			 * the original receive buffer.  Distribute the "cost"
+			 * proportionately across all aggregated packets in the
+			 * buffer.
+			 */
+			extra = DIV_ROUND_CLOSEST(unused * len, total_len);
 			ipa_endpoint_skb_copy(endpoint, data2, len2, extra);
 		}
 
@@ -1217,7 +1260,6 @@ static int ipa_endpoint_reset_rx_aggr(struct ipa_endpoint *endpoint)
 	struct gsi *gsi = &ipa->gsi;
 	bool suspended = false;
 	dma_addr_t addr;
-	bool legacy;
 	u32 retries;
 	u32 len = 1;
 	void *virt;
@@ -1260,7 +1302,7 @@ static int ipa_endpoint_reset_rx_aggr(struct ipa_endpoint *endpoint)
 	do {
 		if (!ipa_endpoint_aggr_active(endpoint))
 			break;
-		msleep(1);
+		usleep_range(USEC_PER_MSEC, 2 * USEC_PER_MSEC);
 	} while (retries--);
 
 	/* Check one last time */
@@ -1279,10 +1321,9 @@ static int ipa_endpoint_reset_rx_aggr(struct ipa_endpoint *endpoint)
 	 * complete the channel reset sequence.  Finish by suspending the
 	 * channel again (if necessary).
 	 */
-	legacy = ipa->version == IPA_VERSION_3_5_1;
-	gsi_channel_reset(gsi, endpoint->channel_id, legacy);
+	gsi_channel_reset(gsi, endpoint->channel_id, true);
 
-	msleep(1);
+	usleep_range(USEC_PER_MSEC, 2 * USEC_PER_MSEC);
 
 	goto out_suspend_again;
 
@@ -1303,21 +1344,19 @@ static void ipa_endpoint_reset(struct ipa_endpoint *endpoint)
 	u32 channel_id = endpoint->channel_id;
 	struct ipa *ipa = endpoint->ipa;
 	bool special;
-	bool legacy;
 	int ret = 0;
 
 	/* On IPA v3.5.1, if an RX endpoint is reset while aggregation
 	 * is active, we need to handle things specially to recover.
 	 * All other cases just need to reset the underlying GSI channel.
-	 *
-	 * IPA v3.5.1 enables the doorbell engine.  Newer versions do not.
 	 */
-	legacy = ipa->version == IPA_VERSION_3_5_1;
-	special = !endpoint->toward_ipa && endpoint->data->aggregation;
+	special = ipa->version == IPA_VERSION_3_5_1 &&
+			!endpoint->toward_ipa &&
+			endpoint->data->aggregation;
 	if (special && ipa_endpoint_aggr_active(endpoint))
 		ret = ipa_endpoint_reset_rx_aggr(endpoint);
 	else
-		gsi_channel_reset(&ipa->gsi, channel_id, legacy);
+		gsi_channel_reset(&ipa->gsi, channel_id, true);
 
 	if (ret)
 		dev_err(&ipa->pdev->dev,
@@ -1449,7 +1488,7 @@ void ipa_endpoint_suspend(struct ipa *ipa)
 	if (ipa->modem_netdev)
 		ipa_modem_suspend(ipa->modem_netdev);
 
-	ipa_cmd_tag_process(ipa);
+	ipa_cmd_pipeline_clear(ipa);
 
 	ipa_endpoint_suspend_one(ipa->name_map[IPA_ENDPOINT_AP_LAN_RX]);
 	ipa_endpoint_suspend_one(ipa->name_map[IPA_ENDPOINT_AP_COMMAND_TX]);
@@ -1549,8 +1588,8 @@ int ipa_endpoint_config(struct ipa *ipa)
 	val = ioread32(ipa->reg_virt + IPA_REG_FLAVOR_0_OFFSET);
 
 	/* Our RX is an IPA producer */
-	rx_base = u32_get_bits(val, BAM_PROD_LOWEST_FMASK);
-	max = rx_base + u32_get_bits(val, BAM_MAX_PROD_PIPES_FMASK);
+	rx_base = u32_get_bits(val, IPA_PROD_LOWEST_FMASK);
+	max = rx_base + u32_get_bits(val, IPA_MAX_PROD_PIPES_FMASK);
 	if (max > IPA_ENDPOINT_MAX) {
 		dev_err(dev, "too many endpoints (%u > %u)\n",
 			max, IPA_ENDPOINT_MAX);
@@ -1559,7 +1598,7 @@ int ipa_endpoint_config(struct ipa *ipa)
 	rx_mask = GENMASK(max - 1, rx_base);
 
 	/* Our TX is an IPA consumer */
-	max = u32_get_bits(val, BAM_MAX_CONS_PIPES_FMASK);
+	max = u32_get_bits(val, IPA_MAX_CONS_PIPES_FMASK);
 	tx_mask = GENMASK(max - 1, 0);
 
 	ipa->available = rx_mask | tx_mask;

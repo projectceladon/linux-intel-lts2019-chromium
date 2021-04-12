@@ -78,9 +78,12 @@
 #define MSDC_PAD_TUNE0   0xf0
 #define PAD_DS_TUNE      0x188
 #define PAD_CMD_TUNE     0x18c
+#define EMMC51_CFG0	 0x204
 #define EMMC50_CFG0      0x208
+#define EMMC50_CFG1      0x20c
 #define EMMC50_CFG3      0x220
 #define SDC_FIFO_CFG     0x228
+#define CQHCI_SETTING	 0x7fc
 
 /*--------------------------------------------------------------------------*/
 /* Top Pad Register Offset                                                  */
@@ -261,14 +264,25 @@
 
 #define PAD_CMD_TUNE_RX_DLY3	  (0x1f << 1)  /* RW */
 
+/* EMMC51_CFG0 mask */
+#define CMDQ_RDAT_CNT		  (0x3ff << 12)	/* RW */
+
 #define EMMC50_CFG_PADCMD_LATCHCK (0x1 << 0)   /* RW */
 #define EMMC50_CFG_CRCSTS_EDGE    (0x1 << 3)   /* RW */
 #define EMMC50_CFG_CFCSTS_SEL     (0x1 << 4)   /* RW */
+#define EMMC50_CFG_CMD_RESP_SEL   (0x1 << 9)   /* RW */
+
+/* EMMC50_CFG1 mask */
+#define EMMC50_CFG1_DS_CFG        (0x1 << 28)  /* RW */
 
 #define EMMC50_CFG3_OUTS_WR       (0x1f << 0)  /* RW */
 
 #define SDC_FIFO_CFG_WRVALIDSEL   (0x1 << 24)  /* RW */
 #define SDC_FIFO_CFG_RDVALIDSEL   (0x1 << 25)  /* RW */
+
+/* CQHCI_SETTING */
+#define CQHCI_RD_CMD_WND_SEL	  (0x1 << 14) /* RW */
+#define CQHCI_WR_CMD_WND_SEL	  (0x1 << 15) /* RW */
 
 /* EMMC_TOP_CONTROL mask */
 #define PAD_RXDLY_SEL           (0x1 << 0)      /* RW */
@@ -1110,13 +1124,13 @@ static void msdc_track_cmd_data(struct msdc_host *host,
 static void msdc_request_done(struct msdc_host *host, struct mmc_request *mrq)
 {
 	unsigned long flags;
-	bool ret;
 
-	ret = cancel_delayed_work(&host->req_timeout);
-	if (!ret) {
-		/* delay work already running */
-		return;
-	}
+	/*
+	 * No need check the return value of cancel_delayed_work, as only ONE
+	 * path will go here!
+	 */
+	cancel_delayed_work(&host->req_timeout);
+
 	spin_lock_irqsave(&host->lock, flags);
 	host->mrq = NULL;
 	spin_unlock_irqrestore(&host->lock, flags);
@@ -1138,7 +1152,7 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 	bool done = false;
 	bool sbc_error;
 	unsigned long flags;
-	u32 *rsp = cmd->resp;
+	u32 *rsp;
 
 	if (mrq->sbc && cmd == mrq->cmd &&
 	    (events & (MSDC_INT_ACMDRDY | MSDC_INT_ACMDCRCERR
@@ -1159,6 +1173,7 @@ static bool msdc_cmd_done(struct msdc_host *host, int events,
 
 	if (done)
 		return true;
+	rsp = cmd->resp;
 
 	sdr_clr_bits(host->base + MSDC_INTEN, cmd_ints_mask);
 
@@ -1346,7 +1361,7 @@ static void msdc_data_xfer_next(struct msdc_host *host,
 static bool msdc_data_xfer_done(struct msdc_host *host, u32 events,
 				struct mmc_request *mrq, struct mmc_data *data)
 {
-	struct mmc_command *stop = data->stop;
+	struct mmc_command *stop;
 	unsigned long flags;
 	bool done;
 	unsigned int check_data = events &
@@ -1362,6 +1377,7 @@ static bool msdc_data_xfer_done(struct msdc_host *host, u32 events,
 
 	if (done)
 		return true;
+	stop = data->stop;
 
 	if (check_data || (stop && stop->error)) {
 		dev_dbg(host->dev, "DMA status: 0x%8X\n",
@@ -2272,6 +2288,31 @@ static int msdc_get_cd(struct mmc_host *mmc)
 		return !val;
 }
 
+static void msdc_hs400_enhanced_strobe(struct mmc_host *mmc,
+				       struct mmc_ios *ios)
+{
+	struct msdc_host *host = mmc_priv(mmc);
+
+	if (ios->enhanced_strobe) {
+		msdc_prepare_hs400_tuning(mmc, ios);
+		sdr_set_field(host->base + EMMC50_CFG0, EMMC50_CFG_PADCMD_LATCHCK, 1);
+		sdr_set_field(host->base + EMMC50_CFG0, EMMC50_CFG_CMD_RESP_SEL, 1);
+		sdr_set_field(host->base + EMMC50_CFG1, EMMC50_CFG1_DS_CFG, 1);
+
+		sdr_clr_bits(host->base + CQHCI_SETTING, CQHCI_RD_CMD_WND_SEL);
+		sdr_clr_bits(host->base + CQHCI_SETTING, CQHCI_WR_CMD_WND_SEL);
+		sdr_clr_bits(host->base + EMMC51_CFG0, CMDQ_RDAT_CNT);
+	} else {
+		sdr_set_field(host->base + EMMC50_CFG0, EMMC50_CFG_PADCMD_LATCHCK, 0);
+		sdr_set_field(host->base + EMMC50_CFG0, EMMC50_CFG_CMD_RESP_SEL, 0);
+		sdr_set_field(host->base + EMMC50_CFG1, EMMC50_CFG1_DS_CFG, 0);
+
+		sdr_set_bits(host->base + CQHCI_SETTING, CQHCI_RD_CMD_WND_SEL);
+		sdr_set_bits(host->base + CQHCI_SETTING, CQHCI_WR_CMD_WND_SEL);
+		sdr_set_field(host->base + EMMC51_CFG0, CMDQ_RDAT_CNT, 0xb4);
+	}
+}
+
 static void msdc_cqe_enable(struct mmc_host *mmc)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -2329,6 +2370,7 @@ static const struct mmc_host_ops mt_msdc_ops = {
 	.set_ios = msdc_ops_set_ios,
 	.get_ro = mmc_gpio_get_ro,
 	.get_cd = msdc_get_cd,
+	.hs400_enhanced_strobe = msdc_hs400_enhanced_strobe,
 	.enable_sdio_irq = msdc_enable_sdio_irq,
 	.ack_sdio_irq = msdc_ack_sdio_irq,
 	.start_signal_voltage_switch = msdc_ops_switch_volt,
@@ -2715,11 +2757,29 @@ static int msdc_runtime_resume(struct device *dev)
 	msdc_restore_reg(host);
 	return 0;
 }
+
+static int __maybe_unused msdc_suspend(struct device *dev)
+{
+	struct mmc_host *mmc = dev_get_drvdata(dev);
+	int ret;
+
+	if (mmc->caps2 & MMC_CAP2_CQE) {
+		ret = cqhci_suspend(mmc);
+		if (ret)
+			return ret;
+	}
+
+	return pm_runtime_force_suspend(dev);
+}
+
+static int __maybe_unused msdc_resume(struct device *dev)
+{
+	return pm_runtime_force_resume(dev);
+}
 #endif
 
 static const struct dev_pm_ops msdc_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(msdc_suspend, msdc_resume)
 	SET_RUNTIME_PM_OPS(msdc_runtime_suspend, msdc_runtime_resume, NULL)
 };
 

@@ -34,10 +34,12 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_rect.h>
-#include <drm/i915_drm.h>
+
+#include "pxp/intel_pxp.h"
 
 #include "i915_drv.h"
 #include "i915_trace.h"
@@ -91,6 +93,9 @@ void intel_pipe_update_start(const struct intel_crtc_state *new_crtc_state)
 		intel_crtc_has_type(new_crtc_state, INTEL_OUTPUT_DSI);
 	DEFINE_WAIT(wait);
 	u32 psr_status;
+
+	if (new_crtc_state->uapi.async_flip)
+		return;
 
 	vblank_start = adjusted_mode->crtc_vblank_start;
 	if (adjusted_mode->flags & DRM_MODE_FLAG_INTERLACE)
@@ -198,6 +203,9 @@ void intel_pipe_update_end(struct intel_crtc_state *new_crtc_state)
 	u32 end_vbl_count = intel_crtc_get_vblank_counter(crtc);
 	ktime_t end_vbl_time = ktime_get();
 	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+
+	if (new_crtc_state->uapi.async_flip)
+		return;
 
 	trace_intel_pipe_update_end(crtc, end_vbl_count, scanline_end);
 
@@ -321,6 +329,21 @@ int intel_plane_check_src_coordinates(struct intel_plane_state *plane_state)
 	}
 
 	return 0;
+}
+
+static u8 icl_nv12_y_plane_mask(struct drm_i915_private *i915)
+{
+	if (IS_ROCKETLAKE(i915))
+		return BIT(PLANE_SPRITE2) | BIT(PLANE_SPRITE3);
+	else
+		return BIT(PLANE_SPRITE4) | BIT(PLANE_SPRITE5);
+}
+
+bool icl_is_nv12_y_plane(struct drm_i915_private *dev_priv,
+			 enum plane_id plane_id)
+{
+	return INTEL_GEN(dev_priv) >= 11 &&
+		icl_nv12_y_plane_mask(dev_priv) & BIT(plane_id);
 }
 
 bool icl_is_hdr_plane(struct drm_i915_private *dev_priv, enum plane_id plane_id)
@@ -454,13 +477,19 @@ skl_program_scaler(struct intel_plane *plane,
 
 /* Preoffset values for YUV to RGB Conversion */
 #define PREOFF_YUV_TO_RGB_HI		0x1800
-#define PREOFF_YUV_TO_RGB_ME		0x1F00
+#define PREOFF_YUV_TO_RGB_ME		0x0000
 #define PREOFF_YUV_TO_RGB_LO		0x1800
 
 #define  ROFF(x)          (((x) & 0xffff) << 16)
 #define  GOFF(x)          (((x) & 0xffff) << 0)
 #define  BOFF(x)          (((x) & 0xffff) << 16)
 
+/*
+ * Programs the input color space conversion stage for ICL HDR planes.
+ * Note that it is assumed that this stage always happens after YUV
+ * range correction. Thus, the input to this stage is assumed to be
+ * in full-range YCbCr.
+ */
 static void
 icl_program_input_csc(struct intel_plane *plane,
 		      const struct intel_crtc_state *crtc_state,
@@ -508,52 +537,7 @@ icl_program_input_csc(struct intel_plane *plane,
 			0x0, 0x7800, 0x7F10,
 		},
 	};
-
-	/* Matrix for Limited Range to Full Range Conversion */
-	static const u16 input_csc_matrix_lr[][9] = {
-		/*
-		 * BT.601 Limted range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164384, 0.000, 1.596027,
-		 *  1.164384, -0.39175, -0.812813,
-		 *  1.164384, 2.017232, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT601] = {
-			0x7CC8, 0x7950, 0x0,
-			0x8D00, 0x7950, 0x9C88,
-			0x0, 0x7950, 0x6810,
-		},
-		/*
-		 * BT.709 Limited range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164384, 0.000, 1.792741,
-		 *  1.164384, -0.213249, -0.532909,
-		 *  1.164384, 2.112402, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT709] = {
-			0x7E58, 0x7950, 0x0,
-			0x8888, 0x7950, 0xADA8,
-			0x0, 0x7950,  0x6870,
-		},
-		/*
-		 * BT.2020 Limited range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164, 0.000, 1.678,
-		 *  1.164, -0.1873, -0.6504,
-		 *  1.164, 2.1417, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT2020] = {
-			0x7D70, 0x7950, 0x0,
-			0x8A68, 0x7950, 0xAC00,
-			0x0, 0x7950, 0x6890,
-		},
-	};
-	const u16 *csc;
-
-	if (plane_state->hw.color_range == DRM_COLOR_YCBCR_FULL_RANGE)
-		csc = input_csc_matrix[plane_state->hw.color_encoding];
-	else
-		csc = input_csc_matrix_lr[plane_state->hw.color_encoding];
+	const u16 *csc = input_csc_matrix[plane_state->hw.color_encoding];
 
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_COEFF(pipe, plane_id, 0),
 			  ROFF(csc[0]) | GOFF(csc[1]));
@@ -570,14 +554,8 @@ icl_program_input_csc(struct intel_plane *plane,
 
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 0),
 			  PREOFF_YUV_TO_RGB_HI);
-	if (plane_state->hw.color_range == DRM_COLOR_YCBCR_FULL_RANGE)
-		intel_de_write_fw(dev_priv,
-				  PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
-				  0);
-	else
-		intel_de_write_fw(dev_priv,
-				  PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
-				  PREOFF_YUV_TO_RGB_ME);
+	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
+			  PREOFF_YUV_TO_RGB_ME);
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 2),
 			  PREOFF_YUV_TO_RGB_LO);
 	intel_de_write_fw(dev_priv,
@@ -586,6 +564,34 @@ icl_program_input_csc(struct intel_plane *plane,
 			  PLANE_INPUT_CSC_POSTOFF(pipe, plane_id, 1), 0x0);
 	intel_de_write_fw(dev_priv,
 			  PLANE_INPUT_CSC_POSTOFF(pipe, plane_id, 2), 0x0);
+}
+
+static bool intel_fb_obj_protected(const struct drm_i915_gem_object *obj)
+{
+	return obj->user_flags & I915_BO_PROTECTED ? true : false;
+}
+
+static void
+skl_plane_async_flip(struct intel_plane *plane,
+		     const struct intel_crtc_state *crtc_state,
+		     const struct intel_plane_state *plane_state)
+{
+	struct drm_i915_private *dev_priv = to_i915(plane->base.dev);
+	unsigned long irqflags;
+	enum plane_id plane_id = plane->id;
+	enum pipe pipe = plane->pipe;
+	u32 surf_addr = plane_state->color_plane[0].offset;
+	u32 plane_ctl = plane_state->ctl;
+
+	plane_ctl |= skl_plane_ctl_crtc(crtc_state);
+
+	spin_lock_irqsave(&dev_priv->uncore.lock, irqflags);
+
+	intel_de_write_fw(dev_priv, PLANE_CTL(pipe, plane_id), plane_ctl);
+	intel_de_write_fw(dev_priv, PLANE_SURF(pipe, plane_id),
+			  intel_plane_ggtt_offset(plane_state) + surf_addr);
+
+	spin_unlock_irqrestore(&dev_priv->uncore.lock, irqflags);
 }
 
 static void
@@ -601,9 +607,8 @@ skl_program_plane(struct intel_plane *plane,
 	u32 surf_addr = plane_state->color_plane[color_plane].offset;
 	u32 stride = skl_plane_stride(plane_state, color_plane);
 	const struct drm_framebuffer *fb = plane_state->hw.fb;
+	const struct drm_i915_gem_object *obj = intel_fb_obj(fb);
 	int aux_plane = intel_main_to_aux_plane(fb, color_plane);
-	u32 aux_dist = plane_state->color_plane[aux_plane].offset - surf_addr;
-	u32 aux_stride = skl_plane_stride(plane_state, aux_plane);
 	int crtc_x = plane_state->uapi.dst.x1;
 	int crtc_y = plane_state->uapi.dst.y1;
 	u32 x = plane_state->color_plane[color_plane].x;
@@ -611,9 +616,9 @@ skl_program_plane(struct intel_plane *plane,
 	u32 src_w = drm_rect_width(&plane_state->uapi.src) >> 16;
 	u32 src_h = drm_rect_height(&plane_state->uapi.src) >> 16;
 	u8 alpha = plane_state->hw.alpha >> 8;
-	u32 plane_color_ctl = 0;
+	u32 plane_color_ctl = 0, aux_dist = 0;
 	unsigned long irqflags;
-	u32 keymsk, keymax;
+	u32 keymsk, keymax, plane_surf;
 	u32 plane_ctl = plane_state->ctl;
 
 	plane_ctl |= skl_plane_ctl_crtc(crtc_state);
@@ -638,6 +643,13 @@ skl_program_plane(struct intel_plane *plane,
 		crtc_y = 0;
 	}
 
+	if (aux_plane) {
+		aux_dist = plane_state->color_plane[aux_plane].offset - surf_addr;
+
+		if (INTEL_GEN(dev_priv) < 12)
+			aux_dist |= skl_plane_stride(plane_state, aux_plane);
+	}
+
 	spin_lock_irqsave(&dev_priv->uncore.lock, irqflags);
 
 	intel_de_write_fw(dev_priv, PLANE_STRIDE(pipe, plane_id), stride);
@@ -646,8 +658,6 @@ skl_program_plane(struct intel_plane *plane,
 	intel_de_write_fw(dev_priv, PLANE_SIZE(pipe, plane_id),
 			  (src_h << 16) | src_w);
 
-	if (INTEL_GEN(dev_priv) < 12)
-		aux_dist |= aux_stride;
 	intel_de_write_fw(dev_priv, PLANE_AUX_DIST(pipe, plane_id), aux_dist);
 
 	if (icl_is_hdr_plane(dev_priv, plane_id))
@@ -681,8 +691,15 @@ skl_program_plane(struct intel_plane *plane,
 	 * the control register just before the surface register.
 	 */
 	intel_de_write_fw(dev_priv, PLANE_CTL(pipe, plane_id), plane_ctl);
-	intel_de_write_fw(dev_priv, PLANE_SURF(pipe, plane_id),
-			  intel_plane_ggtt_offset(plane_state) + surf_addr);
+	plane_surf = intel_plane_ggtt_offset(plane_state) + surf_addr;
+
+	if (intel_pxp_gem_object_status(dev_priv) &&
+	    intel_fb_obj_protected(obj))
+		plane_surf |= PLANE_SURF_DECRYPTION_ENABLED;
+	else
+		plane_surf &= ~PLANE_SURF_DECRYPTION_ENABLED;
+
+	intel_de_write_fw(dev_priv, PLANE_SURF(pipe, plane_id), plane_surf);
 
 	if (plane_state->scaler_id >= 0)
 		skl_program_scaler(plane, crtc_state, plane_state);
@@ -2800,8 +2817,9 @@ static bool skl_plane_format_mod_supported(struct drm_plane *_plane,
 static bool gen12_plane_supports_mc_ccs(struct drm_i915_private *dev_priv,
 					enum plane_id plane_id)
 {
-	/* Wa_14010477008:tgl[a0..c0] */
-	if (IS_TGL_REVID(dev_priv, TGL_REVID_A0, TGL_REVID_C0))
+	/* Wa_14010477008:tgl[a0..c0],rkl[all] */
+	if (IS_ROCKETLAKE(dev_priv) ||
+	    IS_TGL_DISP_REVID(dev_priv, TGL_REVID_A0, TGL_REVID_C0))
 		return false;
 
 	return plane_id < PLANE_SPRITE4;
@@ -2975,7 +2993,7 @@ static const u32 *icl_get_plane_formats(struct drm_i915_private *dev_priv,
 	if (icl_is_hdr_plane(dev_priv, plane_id)) {
 		*num_formats = ARRAY_SIZE(icl_hdr_plane_formats);
 		return icl_hdr_plane_formats;
-	} else if (icl_is_nv12_y_plane(plane_id)) {
+	} else if (icl_is_nv12_y_plane(dev_priv, plane_id)) {
 		*num_formats = ARRAY_SIZE(icl_sdr_y_plane_formats);
 		return icl_sdr_y_plane_formats;
 	} else {
@@ -3044,6 +3062,7 @@ skl_universal_plane_create(struct drm_i915_private *dev_priv,
 	plane->get_hw_state = skl_plane_get_hw_state;
 	plane->check_plane = skl_plane_check;
 	plane->min_cdclk = skl_plane_min_cdclk;
+	plane->async_flip = skl_plane_async_flip;
 
 	if (INTEL_GEN(dev_priv) >= 11)
 		formats = icl_get_plane_formats(dev_priv, pipe,
@@ -3107,6 +3126,9 @@ skl_universal_plane_create(struct drm_i915_private *dev_priv,
 					     BIT(DRM_MODE_BLEND_COVERAGE));
 
 	drm_plane_create_zpos_immutable_property(&plane->base, plane_id);
+
+	if (INTEL_GEN(dev_priv) >= 12)
+		drm_plane_enable_fb_damage_clips(&plane->base);
 
 	drm_plane_helper_add(&plane->base, &intel_plane_helper_funcs);
 

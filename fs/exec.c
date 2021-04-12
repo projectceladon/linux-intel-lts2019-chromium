@@ -268,6 +268,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	vma->vm_start = vma->vm_end - PAGE_SIZE;
 	vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+	INIT_VMA(vma);
 
 	err = insert_vm_struct(mm, vma);
 	if (err)
@@ -1013,8 +1014,8 @@ EXPORT_SYMBOL(read_code);
 
 /*
  * Maps the mm_struct mm into the current task struct.
- * On success, this function returns with the mutex
- * exec_update_mutex locked.
+ * On success, this function returns with exec_update_lock
+ * held for writing.
  */
 static int exec_mmap(struct mm_struct *mm)
 {
@@ -1027,7 +1028,7 @@ static int exec_mmap(struct mm_struct *mm)
 	old_mm = current->mm;
 	exec_mm_release(tsk, old_mm);
 
-	ret = mutex_lock_killable(&tsk->signal->exec_update_mutex);
+	ret = down_write_killable(&tsk->signal->exec_update_lock);
 	if (ret)
 		return ret;
 
@@ -1042,7 +1043,7 @@ static int exec_mmap(struct mm_struct *mm)
 		down_read(&old_mm->mmap_sem);
 		if (unlikely(old_mm->core_state)) {
 			up_read(&old_mm->mmap_sem);
-			mutex_unlock(&tsk->signal->exec_update_mutex);
+			up_write(&tsk->signal->exec_update_lock);
 			return -EINTR;
 		}
 	}
@@ -1454,7 +1455,7 @@ static void free_bprm(struct linux_binprm *bprm)
 	free_arg_pages(bprm);
 	if (bprm->cred) {
 		if (bprm->called_exec_mmap)
-			mutex_unlock(&current->signal->exec_update_mutex);
+			up_write(&current->signal->exec_update_lock);
 		mutex_unlock(&current->signal->cred_guard_mutex);
 		abort_creds(bprm->cred);
 	}
@@ -1504,7 +1505,7 @@ void install_exec_creds(struct linux_binprm *bprm)
 	 * credentials; any time after this it may be unlocked.
 	 */
 	security_bprm_committed_creds(bprm);
-	mutex_unlock(&current->signal->exec_update_mutex);
+	up_write(&current->signal->exec_update_lock);
 	mutex_unlock(&current->signal->cred_guard_mutex);
 }
 EXPORT_SYMBOL(install_exec_creds);

@@ -121,11 +121,8 @@ int ipu_psys_ppg_get_bufset(struct ipu_psys_kcmd *kcmd,
 {
 	struct ipu_psys *psys = kppg->fh->psys;
 	struct ipu_psys_buffer_set *kbuf_set;
-	size_t buf_set_size;
 	unsigned int i;
 	int ret;
-
-	buf_set_size = ipu_fw_psys_ppg_get_buffer_set_size(kcmd);
 
 	kbuf_set = ipu_psys_create_buffer_set(kcmd, kppg);
 	if (!kbuf_set) {
@@ -171,7 +168,6 @@ void ipu_psys_ppg_complete(struct ipu_psys *psys, struct ipu_psys_ppg *kppg)
 	mutex_lock(&kppg->mutex);
 	old_ppg_state = kppg->state;
 	if (kppg->state == PPG_STATE_STOPPING) {
-		unsigned long flags;
 		struct ipu_psys_kcmd tmp_kcmd = {
 			.kpg = kppg->kpg,
 		};
@@ -182,9 +178,6 @@ void ipu_psys_ppg_complete(struct ipu_psys *psys, struct ipu_psys_ppg *kppg)
 		queue_id = ipu_fw_psys_ppg_get_base_queue_id(&tmp_kcmd);
 		ipu_psys_free_cmd_queue_resource(&psys->resource_pool_running,
 						 queue_id);
-		spin_lock_irqsave(&psys->pgs_lock, flags);
-		kppg->kpg->pg_size = 0;
-		spin_unlock_irqrestore(&psys->pgs_lock, flags);
 		pm_runtime_put(&psys->adev->dev);
 	} else {
 		if (kppg->state == PPG_STATE_SUSPENDING) {
@@ -260,26 +253,24 @@ int ipu_psys_ppg_start(struct ipu_psys_ppg *kppg)
 	ret = pm_runtime_get_sync(&psys->adev->dev);
 	if (ret < 0) {
 		dev_err(&psys->adev->dev, "failed to power on psys\n");
-		pm_runtime_put_noidle(&psys->adev->dev);
 		goto error;
 	}
 
 	ret = ipu_psys_kcmd_start(psys, kcmd);
 	if (ret) {
-		list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-		ipu_psys_kcmd_complete(psys, kcmd, -EIO);
+		ipu_psys_kcmd_complete(kppg, kcmd, -EIO);
 		goto error;
 	}
 
 	dev_dbg(&psys->adev->dev, "s_change:%s: %p %d -> %d\n",
 		__func__, kppg, kppg->state, PPG_STATE_STARTED);
 	kppg->state = PPG_STATE_STARTED;
-	list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-	ipu_psys_kcmd_complete(psys, kcmd, 0);
+	ipu_psys_kcmd_complete(kppg, kcmd, 0);
 
 	return 0;
 
 error:
+	pm_runtime_put_noidle(&psys->adev->dev);
 	ipu_psys_reset_process_cell(&psys->adev->dev,
 				    kcmd->kpg->pg,
 				    kcmd->pg_manifest,
@@ -393,21 +384,17 @@ int ipu_psys_ppg_stop(struct ipu_psys_ppg *kppg)
 				dev_err(&psys->adev->dev,
 					"ppg(%d) failed to resume\n", ppg_id);
 		} else if (kcmd != &kcmd_temp) {
-			unsigned long flags;
-
 			ipu_psys_free_cmd_queue_resource(
 				&psys->resource_pool_running,
 				ipu_fw_psys_ppg_get_base_queue_id(kcmd));
-			list_move_tail(&kcmd->list, &kppg->kcmds_finished_list);
-			ipu_psys_kcmd_complete(psys, kcmd, 0);
-			spin_lock_irqsave(&psys->pgs_lock, flags);
-			kppg->kpg->pg_size = 0;
-			spin_unlock_irqrestore(&psys->pgs_lock, flags);
+			ipu_psys_kcmd_complete(kppg, kcmd, 0);
 			dev_dbg(&psys->adev->dev,
 				"s_change:%s %p %d -> %d\n", __func__,
 				kppg, kppg->state, PPG_STATE_STOPPED);
 			pm_runtime_put(&psys->adev->dev);
 			kppg->state = PPG_STATE_STOPPED;
+			return 0;
+		} else {
 			return 0;
 		}
 	}
@@ -502,7 +489,7 @@ bool ipu_psys_ppg_enqueue_bufsets(struct ipu_psys_ppg *kppg)
 void ipu_psys_enter_power_gating(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 	int ret = 0;
 
@@ -514,7 +501,7 @@ void ipu_psys_enter_power_gating(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			/* kppg has already power down */
 			if (kppg->state == PPG_STATE_STOPPED) {
@@ -538,7 +525,7 @@ void ipu_psys_enter_power_gating(struct ipu_psys *psys)
 void ipu_psys_exit_power_gating(struct ipu_psys *psys)
 {
 	struct ipu_psys_scheduler *sched;
-	struct ipu_psys_ppg *kppg;
+	struct ipu_psys_ppg *kppg, *tmp;
 	struct ipu_psys_fh *fh;
 	int ret = 0;
 
@@ -550,7 +537,7 @@ void ipu_psys_exit_power_gating(struct ipu_psys *psys)
 			continue;
 		}
 
-		list_for_each_entry(kppg, &sched->ppgs, list) {
+		list_for_each_entry_safe(kppg, tmp, &sched->ppgs, list) {
 			mutex_lock(&kppg->mutex);
 			/* kppg is not started and power up */
 			if (kppg->state == PPG_STATE_START ||

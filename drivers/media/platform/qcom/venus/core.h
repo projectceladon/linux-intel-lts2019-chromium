@@ -90,6 +90,7 @@ struct venus_format {
 #define MAX_CAP_ENTRIES		32
 #define MAX_ALLOC_MODE_ENTRIES	16
 #define MAX_CODEC_NUM		32
+#define MAX_SESSIONS		16
 
 struct raw_formats {
 	u32 buftype;
@@ -117,7 +118,6 @@ struct venus_caps {
  * @clks:	an array of struct clk pointers
  * @vcodec0_clks: an array of vcodec0 struct clk pointers
  * @vcodec1_clks: an array of vcodec1 struct clk pointers
- * @pd_dl_venus: pmdomain device-link for venus domain
  * @pmdomains:	an array of pmdomains struct device pointers
  * @vdev_dec:	a reference to video device structure for decoder instances
  * @vdev_enc:	a reference to video device structure for encoder instances
@@ -155,7 +155,6 @@ struct venus_core {
 	struct icc_path *cpucfg_path;
 	struct opp_table *opp_table;
 	bool has_opp_table;
-	struct device_link *pd_dl_venus;
 	struct device *pmdomains[VIDC_PMDOMAINS_NUM_MAX];
 	struct device_link *opp_dl_venus;
 	struct device *opp_pmdomain;
@@ -171,6 +170,8 @@ struct venus_core {
 		struct device *dev;
 		struct iommu_domain *iommu_domain;
 		size_t mapped_mem_size;
+		phys_addr_t mem_phys;
+		size_t mem_size;
 	} fw;
 	struct mutex lock;
 	struct list_head instances;
@@ -237,8 +238,19 @@ struct venc_controls {
 
 	u32 header_mode;
 
-	u32 profile;
-	u32 level;
+	struct {
+		u32 h264;
+		u32 mpeg4;
+		u32 hevc;
+		u32 vp8;
+		u32 vp9;
+	} profile;
+	struct {
+		u32 h264;
+		u32 mpeg4;
+		u32 hevc;
+		u32 vp9;
+	} level;
 };
 
 struct venus_buffer {
@@ -405,6 +417,7 @@ struct venus_inst {
 	unsigned int core_acquired: 1;
 	unsigned int bit_depth;
 	bool next_buf_last;
+	bool drain_active;
 };
 
 #define IS_V1(core)	((core)->res->hfi_version == HFI_VERSION_1XX)

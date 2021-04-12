@@ -1101,9 +1101,9 @@
  *	peer MAC address and %NL80211_ATTR_FRAME is used to specify the frame
  *	content. The frame is ethernet data.
  *
- *
  * @NL80211_CMD_SET_SAR_SPECS: SAR power limitation configuration is
- *	passed using %NL80211_ATTR_SAR_SPEC.
+ *	passed using %NL80211_ATTR_SAR_SPEC. %NL80211_ATTR_WIPHY is used to
+ *	specify the wiphy index to be applied to.
  *
  * @NL80211_CMD_MAX: highest used command number
  * @__NL80211_CMD_AFTER_LAST: internal use
@@ -1329,13 +1329,7 @@ enum nl80211_commands {
 
 	NL80211_CMD_PROBE_MESH_LINK,
 
-	/*
-	 * TODO(b/172350519) This offset is to ensure there won't be any
-         * collision between NL80211_CMDS accross different kernel versions.
-         * The offset value is:
-	 * 145 (140(the current CMD MAX on TOT) + 5(Provides room for new CMDS))
-	 */
-	NL80211_CMD_SET_SAR_SPECS = 145,
+	NL80211_CMD_SET_SAR_SPECS = 140,
 
 	/* add new commands above here */
 
@@ -2386,8 +2380,9 @@ enum nl80211_commands {
  *	Defined by IEEE P802.11ay/D4.0 section 9.4.2.251, Table 13.
  *
  * @NL80211_ATTR_SAR_SPEC: SAR power limitation specification when
- *	used with %NL80211_CMD_SET_SAR_SPECS. It contains array of
- *	%nl80211_sar_specs_attrs.
+ *	used with %NL80211_CMD_SET_SAR_SPECS. The message contains fields
+ *	of %nl80211_sar_attrs which specifies the sar type and related
+ *	sar specs. Sar specs contains array of %nl80211_sar_specs_attrs.
  *
  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
  * @NL80211_ATTR_MAX: highest attribute number currently defined
@@ -2851,13 +2846,7 @@ enum nl80211_attrs {
 	NL80211_ATTR_WIPHY_EDMG_CHANNELS,
 	NL80211_ATTR_WIPHY_EDMG_BW_CONFIG,
 
-	/*
-	 * TODO(b/172350519) This offset is to account for possible collisions
-         * that can happen between NL80211_ATTRs accross different kernel
-         * versions. The offset value is 310 (298 is current ATTR MAX on
-         * TOT + 12 for new ATTRs
-	 */
-	NL80211_ATTR_SAR_SPEC = 310,
+	NL80211_ATTR_SAR_SPEC = 300,
 
 	/* add attributes here, update the policy in nl80211.c */
 
@@ -6577,11 +6566,10 @@ enum nl80211_obss_pd_attributes {
 	NL80211_HE_OBSS_PD_ATTR_MAX = __NL80211_HE_OBSS_PD_ATTR_LAST - 1,
 };
 
-
 /**
  * enum nl80211_sar_type - type of SAR specs
  *
- * @NL80211_SAR_TYPE_POWER: the value is specified in 0.25 dbm
+ * @NL80211_SAR_TYPE_POWER: power limitation specified in 0.25dBm unit
  *
  */
 enum nl80211_sar_type {
@@ -6594,13 +6582,20 @@ enum nl80211_sar_type {
 };
 
 /**
- * nl80211_sar_attrs - Attributes for SAR spec
+ * enum nl80211_sar_attrs - Attributes for SAR spec
  *
- * @NL80211_SAR_ATTR_TYPE: Type of SAR: power or index
+ * @NL80211_SAR_ATTR_TYPE: the SAR type as defined in &enum nl80211_sar_type.
  *
  * @NL80211_SAR_ATTR_SPECS: Nested array of SAR power
  *	limit specifications. Each specification contains a set
- *      of %nl80211_sar_specs_attrs
+ *	of %nl80211_sar_specs_attrs.
+ *
+ *	For SET operation, it contains array of %NL80211_SAR_ATTR_SPECS_POWER
+ *	and %NL80211_SAR_ATTR_SPECS_RANGE_INDEX.
+ *
+ *	For sar_capa dump, it contains array of
+ *	%NL80211_SAR_ATTR_SPECS_START_FREQ
+ *	and %NL80211_SAR_ATTR_SPECS_END_FREQ.
  *
  * @__NL80211_SAR_ATTR_LAST: Internal
  * @NL80211_SAR_ATTR_MAX: highest sar attribute
@@ -6617,26 +6612,35 @@ enum nl80211_sar_attrs {
 	NL80211_SAR_ATTR_MAX = __NL80211_SAR_ATTR_LAST - 1,
 };
 
-#define NL80211_SAR_ALL_FREQ_RANGES	0xff
-#define NUM_MAX_NL80211_SAR_FREQ_RANGES 0xfe
-
 /**
- * nl80211_sar_specs_attrs - Attributes for SAR power limit specs
+ * enum nl80211_sar_specs_attrs - Attributes for SAR power limit specs
  *
- * @NL80211_SAR_ATTR_SPECS_POWER: Required (u32)value to specify the actual
+ * @NL80211_SAR_ATTR_SPECS_POWER: Required (s32)value to specify the actual
  *	power limit value in units of 0.25 dBm if type is
- *	NL80211_SAR_TYPE_POWER. (i.e., a value of 44 represents 11 dBm)
+ *	NL80211_SAR_TYPE_POWER. (i.e., a value of 44 represents 11 dBm).
+ *	0 means userspace doesn't have SAR limitation on this associated range.
  *
- * @NL80211_SAR_ATTR_SPECS_FREQ_RANGES_INDEX: optional (u32) value to specify the
- *	index of exported freq ranges table. If this attribute is not present, then
- *	the power is applied to all freq ranges, i.e, all bands
+ * @NL80211_SAR_ATTR_SPECS_RANGE_INDEX: Required (u32) value to specify the
+ *	index of exported freq range table and the associated power limitation
+ *	is applied to this range.
+ *
+ *	Userspace isn't required to set all the ranges advertised by WLAN driver,
+ *	and userspace can skip some certain ranges. These skipped ranges don't
+ *	have SAR limitations, and they are same as setting the
+ *	%NL80211_SAR_ATTR_SPECS_POWER to any unreasonable high value because any
+ *	value higher than regulatory allowed value just means SAR power
+ *	limitation is removed, but it's required to set at least one range.
+ *	It's not allowed to set duplicated range in one SET operation.
+ *
+ *	Every SET operation overwrites previous SET operation.
  *
  * @NL80211_SAR_ATTR_SPECS_START_FREQ: Required (u32) value to specify the start
- *	frequency of this range to register SAR capability to wiphy and the unit
- *	is kHz
+ *	frequency of this range edge when registering SAR capability to wiphy.
+ *	It's not a channel center frequency. The unit is kHz.
  *
- * @NL80211_SAR_ATTR_SPECS_END_FREQ: Required (u32) value to specify the end frequency
- *	of this range to register SAR capability to wiphy and the unit is kHz
+ * @NL80211_SAR_ATTR_SPECS_END_FREQ: Required (u32) value to specify the end
+ *	frequency of this range edge when registering SAR capability to wiphy.
+ *	It's not a channel center frequency. The unit is kHz.
  *
  * @__NL80211_SAR_ATTR_SPECS_LAST: Internal
  * @NL80211_SAR_ATTR_SPECS_MAX: highest sar specs attribute
@@ -6645,12 +6649,11 @@ enum nl80211_sar_specs_attrs {
 	__NL80211_SAR_ATTR_SPECS_INVALID,
 
 	NL80211_SAR_ATTR_SPECS_POWER,
-	NL80211_SAR_ATTR_SPECS_FREQ_RANGE_INDEX,
+	NL80211_SAR_ATTR_SPECS_RANGE_INDEX,
 	NL80211_SAR_ATTR_SPECS_START_FREQ,
 	NL80211_SAR_ATTR_SPECS_END_FREQ,
 
 	__NL80211_SAR_ATTR_SPECS_LAST,
 	NL80211_SAR_ATTR_SPECS_MAX = __NL80211_SAR_ATTR_SPECS_LAST - 1,
 };
-
 #endif /* __LINUX_NL80211_H */

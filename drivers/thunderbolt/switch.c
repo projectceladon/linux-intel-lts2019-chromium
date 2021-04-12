@@ -26,11 +26,6 @@ struct nvm_auth_status {
 	u32 status;
 };
 
-enum nvm_write_ops {
-	WRITE_AND_AUTHENTICATE = 1,
-	WRITE_ONLY = 2,
-};
-
 /*
  * Hold NVM authentication failure status per switch This information
  * needs to stay around even when the switch gets power cycled so we
@@ -503,12 +498,13 @@ static void tb_dump_port(struct tb *tb, struct tb_regs_port_header *port)
 
 /**
  * tb_port_state() - get connectedness state of a port
+ * @port: the port to check
  *
  * The port must have a TB_CAP_PHY (i.e. it should be a real port).
  *
  * Return: Returns an enum tb_port_state on success or an error code on failure.
  */
-static int tb_port_state(struct tb_port *port)
+int tb_port_state(struct tb_port *port)
 {
 	struct tb_cap_phy phy;
 	int res;
@@ -932,7 +928,14 @@ int tb_port_get_link_speed(struct tb_port *port)
 	return speed == LANE_ADP_CS_1_CURRENT_SPEED_GEN3 ? 20 : 10;
 }
 
-static int tb_port_get_link_width(struct tb_port *port)
+/**
+ * tb_port_get_link_width() - Get current link width
+ * @port: Port to check (USB4 or CIO)
+ *
+ * Returns link width. Return values can be 1 (Single-Lane), 2 (Dual-Lane)
+ * or negative errno in case of failure.
+ */
+int tb_port_get_link_width(struct tb_port *port)
 {
 	u32 val;
 	int ret;
@@ -1001,7 +1004,16 @@ static int tb_port_set_link_width(struct tb_port *port, unsigned int width)
 			     port->cap_phy + LANE_ADP_CS_1, 1);
 }
 
-static int tb_port_lane_bonding_enable(struct tb_port *port)
+/**
+ * tb_port_lane_bonding_enable() - Enable bonding on port
+ * @port: port to enable
+ *
+ * Enable bonding by setting the link width of the port and the
+ * other port in case of dual link port.
+ *
+ * Return: %0 in case of success and negative errno in case of error
+ */
+int tb_port_lane_bonding_enable(struct tb_port *port)
 {
 	int ret;
 
@@ -1031,13 +1043,32 @@ static int tb_port_lane_bonding_enable(struct tb_port *port)
 	return 0;
 }
 
-static void tb_port_lane_bonding_disable(struct tb_port *port)
+/**
+ * tb_port_lane_bonding_disable() - Disable bonding on port
+ * @port: port to disable
+ *
+ * Disable bonding by setting the link width of the port and the
+ * other port in case of dual link port.
+ *
+ */
+void tb_port_lane_bonding_disable(struct tb_port *port)
 {
 	port->dual_link_port->bonded = false;
 	port->bonded = false;
 
 	tb_port_set_link_width(port->dual_link_port, 1);
 	tb_port_set_link_width(port, 1);
+}
+
+static int tb_port_start_lane_initialization(struct tb_port *port)
+{
+	int ret;
+
+	if (tb_switch_is_usb4(port->sw))
+		return 0;
+
+	ret = tb_lc_start_lane_initialization(port);
+	return ret == -EINVAL ? 0 : ret;
 }
 
 /**
@@ -1351,6 +1382,30 @@ static ssize_t authorized_show(struct device *dev,
 	return sprintf(buf, "%u\n", sw->authorized);
 }
 
+static int disapprove_switch(struct device *dev, void *data)
+{
+	struct tb_switch *sw;
+
+	sw = tb_to_switch(dev);
+	if (sw && sw->authorized) {
+		int ret;
+
+		/* First children */
+		ret = device_for_each_child_reverse(&sw->dev, NULL, disapprove_switch);
+		if (ret)
+			return ret;
+
+		ret = tb_domain_disapprove_switch(sw->tb, sw);
+		if (ret)
+			return ret;
+
+		sw->authorized = 0;
+		kobject_uevent(&sw->dev.kobj, KOBJ_CHANGE);
+	}
+
+	return 0;
+}
+
 static int tb_switch_set_authorized(struct tb_switch *sw, unsigned int val)
 {
 	int ret = -EINVAL;
@@ -1358,10 +1413,18 @@ static int tb_switch_set_authorized(struct tb_switch *sw, unsigned int val)
 	if (!mutex_trylock(&sw->tb->lock))
 		return restart_syscall();
 
-	if (sw->authorized)
+	if (!!sw->authorized == !!val)
 		goto unlock;
 
 	switch (val) {
+	/* Disapprove switch */
+	case 0:
+		if (tb_route(sw)) {
+			ret = disapprove_switch(&sw->dev, NULL);
+			goto unlock;
+		}
+		break;
+
 	/* Approve switch */
 	case 1:
 		if (sw->key)
@@ -2135,6 +2198,7 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 
 		/* fallthrough */
 	case 3:
+	case 4:
 		ret = tb_switch_set_uuid(sw);
 		if (ret)
 			return ret;
@@ -2150,15 +2214,28 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 		break;
 	}
 
+	if (sw->no_nvm_upgrade)
+		return 0;
+
+	if (tb_switch_is_usb4(sw)) {
+		ret = usb4_switch_nvm_authenticate_status(sw, &status);
+		if (ret)
+			return ret;
+
+		if (status) {
+			tb_sw_info(sw, "switch flash authentication failed\n");
+			nvm_set_auth_status(sw, status);
+		}
+
+		return 0;
+	}
+
 	/* Root switch DMA port requires running firmware */
 	if (!tb_route(sw) && !tb_switch_is_icm(sw))
 		return 0;
 
 	sw->dma_port = dma_port_alloc(sw);
 	if (!sw->dma_port)
-		return 0;
-
-	if (sw->no_nvm_upgrade)
 		return 0;
 
 	/*
@@ -2552,7 +2629,7 @@ void tb_switch_remove(struct tb_switch *sw)
 		}
 
 		/* Remove any downstream retimers */
-		tb_retimer_remove_all(port);
+		tb_retimer_remove_all(port, sw);
 	}
 
 	if (!sw->is_unplugged)
@@ -2655,8 +2732,22 @@ int tb_switch_resume(struct tb_switch *sw)
 
 	/* check for surviving downstream switches */
 	tb_switch_for_each_port(sw, port) {
-		if (!tb_port_has_remote(port) && !port->xdomain)
+		if (!tb_port_has_remote(port) && !port->xdomain) {
+			/*
+			 * For disconnected downstream lane adapters
+			 * start lane initialization now so we detect
+			 * future connects.
+			 */
+			if (!tb_is_upstream_port(port) && tb_port_is_null(port))
+				tb_port_start_lane_initialization(port);
 			continue;
+		} else if (port->xdomain) {
+			/*
+			 * Start lane initialization for XDomain so the
+			 * link gets re-established.
+			 */
+			tb_port_start_lane_initialization(port);
+		}
 
 		if (tb_wait_for_port(port, true) <= 0) {
 			tb_port_warn(port,

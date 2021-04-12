@@ -17,6 +17,7 @@
 #include <asm/tlb.h>
 
 #include "../workqueue_internal.h"
+#include "../../fs/io-wq.h"
 #include "../smpboot.h"
 
 #include "pelt.h"
@@ -328,8 +329,12 @@ static void __sched_core_disable(void)
 	static_branch_disable(&__sched_core_enabled);
 }
 
+DEFINE_STATIC_KEY_TRUE(sched_coresched_supported);
+
 static void sched_core_get(void)
 {
+	if (!static_branch_likely(&sched_coresched_supported))
+		return;
 	mutex_lock(&sched_core_mutex);
 	if (!sched_core_count++)
 		__sched_core_enable();
@@ -338,6 +343,8 @@ static void sched_core_get(void)
 
 static void sched_core_put(void)
 {
+	if (!static_branch_likely(&sched_coresched_supported))
+		return;
 	mutex_lock(&sched_core_mutex);
 	if (!--sched_core_count)
 		__sched_core_disable();
@@ -651,8 +658,9 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
 static void __hrtick_restart(struct rq *rq)
 {
 	struct hrtimer *timer = &rq->hrtick_timer;
+	ktime_t time = rq->hrtick_time;
 
-	hrtimer_start_expires(timer, HRTIMER_MODE_ABS_PINNED_HARD);
+	hrtimer_start(timer, time, HRTIMER_MODE_ABS_PINNED_HARD);
 }
 
 /*
@@ -677,7 +685,6 @@ static void __hrtick_start(void *arg)
 void hrtick_start(struct rq *rq, u64 delay)
 {
 	struct hrtimer *timer = &rq->hrtick_timer;
-	ktime_t time;
 	s64 delta;
 
 	/*
@@ -685,9 +692,7 @@ void hrtick_start(struct rq *rq, u64 delay)
 	 * doesn't make sense and can cause timer DoS.
 	 */
 	delta = max_t(s64, delay, 10000LL);
-	time = ktime_add_ns(timer->base->get_time(), delta);
-
-	hrtimer_set_expires(timer, time);
+	rq->hrtick_time = ktime_add_ns(timer->base->get_time(), delta);
 
 	if (rq == this_rq()) {
 		__hrtick_restart(rq);
@@ -1042,7 +1047,7 @@ static inline bool got_nohz_idle_kick(void)
 	 * We can't run Idle Load Balance on this CPU for this time so we
 	 * cancel it and clear NOHZ_BALANCE_KICK
 	 */
-	atomic_andnot(NOHZ_KICK_MASK, nohz_flags(cpu));
+	atomic_andnot(NOHZ_KICK_MASK | NOHZ_NEWILB_KICK, nohz_flags(cpu));
 	return false;
 }
 
@@ -5289,9 +5294,12 @@ static inline void sched_submit_work(struct task_struct *tsk)
 	 * in the possible wakeup of a kworker and because wq_worker_sleeping()
 	 * requires it.
 	 */
-	if (tsk->flags & PF_WQ_WORKER) {
+	if (tsk->flags & (PF_WQ_WORKER | PF_IO_WORKER)) {
 		preempt_disable();
-		wq_worker_sleeping(tsk);
+		if (tsk->flags & PF_WQ_WORKER)
+			wq_worker_sleeping(tsk);
+		else
+			io_wq_worker_sleeping(tsk);
 		preempt_enable_no_resched();
 	}
 
@@ -5308,8 +5316,12 @@ static inline void sched_submit_work(struct task_struct *tsk)
 
 static void sched_update_worker(struct task_struct *tsk)
 {
-	if (tsk->flags & PF_WQ_WORKER)
-		wq_worker_running(tsk);
+	if (tsk->flags & (PF_WQ_WORKER | PF_IO_WORKER)) {
+		if (tsk->flags & PF_WQ_WORKER)
+			wq_worker_running(tsk);
+		else
+			io_wq_worker_running(tsk);
+	}
 }
 
 asmlinkage __visible void __sched schedule(void)
@@ -6818,12 +6830,8 @@ static void do_sched_yield(void)
 	schedstat_inc(rq->yld_count);
 	current->sched_class->yield_task(rq);
 
-	/*
-	 * Since we are going to call schedule() anyway, there's
-	 * no need to preempt or enable interrupts:
-	 */
 	preempt_disable();
-	rq_unlock(rq, &rf);
+	rq_unlock_irq(rq, &rf);
 	sched_preempt_enable_no_resched();
 
 	schedule();

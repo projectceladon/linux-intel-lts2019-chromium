@@ -22,9 +22,9 @@
 #include "i915_pmu.h"
 #include "i915_priolist_types.h"
 #include "i915_selftest.h"
-#include "intel_engine_pool_types.h"
 #include "intel_sseu.h"
 #include "intel_timeline_types.h"
+#include "intel_uncore.h"
 #include "intel_wakeref.h"
 #include "intel_workarounds_types.h"
 
@@ -126,7 +126,6 @@ DECLARE_EWMA(_engine_latency, 6, 4)
 struct st_preempt_hang {
 	struct completion completion;
 	unsigned int count;
-	bool inject_hang;
 };
 
 /**
@@ -155,6 +154,39 @@ struct intel_engine_execlists {
 	 * @default_priolist: priority list for I915_PRIORITY_NORMAL
 	 */
 	struct i915_priolist default_priolist;
+
+	/**
+	 * @ccid: identifier for contexts submitted to this engine
+	 */
+	u32 ccid;
+
+	/**
+	 * @yield: CCID at the time of the last semaphore-wait interrupt.
+	 *
+	 * Instead of leaving a semaphore busy-spinning on an engine, we would
+	 * like to switch to another ready context, i.e. yielding the semaphore
+	 * timeslice.
+	 */
+	u32 yield;
+
+	/**
+	 * @error_interrupt: CS Master EIR
+	 *
+	 * The CS generates an interrupt when it detects an error. We capture
+	 * the first error interrupt, record the EIR and schedule the tasklet.
+	 * In the tasklet, we process the pending CS events to ensure we have
+	 * the guilty request, and then reset the engine.
+	 *
+	 * Low 16b are used by HW, with the upper 16b used as the enabling mask.
+	 * Reserve the upper 16b for tracking internal errors.
+	 */
+	u32 error_interrupt;
+#define ERROR_CSB BIT(31)
+
+	/**
+	 * @reset_ccid: Active CCID [EXECLISTS_STATUS_HI] at the time of reset
+	 */
+	u32 reset_ccid;
 
 	/**
 	 * @no_priolist: priority lists disabled
@@ -244,7 +276,7 @@ struct intel_engine_execlists {
 	 *
 	 * Note these register may be either mmio or HWSP shadow.
 	 */
-	u32 *csb_status;
+	u64 *csb_status;
 
 	/**
 	 * @csb_size: context status buffer FIFO size
@@ -285,8 +317,17 @@ struct intel_engine_cs {
 	u32 context_size;
 	u32 mmio_base;
 
-	unsigned int context_tag;
-#define NUM_CONTEXT_TAG roundup_pow_of_two(2 * EXECLIST_MAX_PORTS)
+	/*
+	 * Some w/a require forcewake to be held (which prevents RC6) while
+	 * a particular engine is active. If so, we set fw_domain to which
+	 * domains need to be held for the duration of request activity,
+	 * and 0 if none. We try to limit the duration of the hold as much
+	 * as possible.
+	 */
+	enum forcewake_domains fw_domain;
+	atomic_t fw_active;
+
+	unsigned long context_tag;
 
 	struct rb_node uabi_node;
 
@@ -314,7 +355,6 @@ struct intel_engine_cs {
 	unsigned long wakeref_serial;
 	struct intel_wakeref wakeref;
 	struct file *default_state;
-	void *pinned_default_state;
 
 	struct {
 		struct intel_ring *ring;
@@ -379,13 +419,6 @@ struct intel_engine_cs {
 		struct i915_pmu_sample sample[I915_ENGINE_SAMPLE_COUNT];
 	} pmu;
 
-	/*
-	 * A pool of objects to use as shadow copies of client batch buffers
-	 * when the command parser is enabled. Prevents the client from
-	 * modifying the batch contents after software parsing.
-	 */
-	struct intel_engine_pool pool;
-
 	struct intel_hw_status_page status_page;
 	struct i915_ctx_workarounds wa_ctx;
 	struct i915_wa_list ctx_wa_list;
@@ -397,6 +430,7 @@ struct intel_engine_cs {
 	void		(*irq_enable)(struct intel_engine_cs *engine);
 	void		(*irq_disable)(struct intel_engine_cs *engine);
 
+	void		(*sanitize)(struct intel_engine_cs *engine);
 	int		(*resume)(struct intel_engine_cs *engine);
 
 	struct {

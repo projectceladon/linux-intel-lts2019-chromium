@@ -179,7 +179,7 @@ static int rwbf_quirk;
  * (used when kernel is launched w/ TXT)
  */
 static int force_on = 0;
-int intel_iommu_tboot_noforce;
+static int intel_iommu_tboot_noforce;
 static int no_platform_optin;
 
 #define ROOT_ENTRY_NR (VTD_PAGE_SIZE/sizeof(struct root_entry))
@@ -3282,6 +3282,12 @@ static int __init init_dmars(void)
 
 		if (!ecap_pass_through(iommu->ecap))
 			hw_pass_through = 0;
+
+		if (!intel_iommu_strict && cap_caching_mode(iommu->cap)) {
+			pr_info("Disable batched IOTLB flush due to virtualization");
+			intel_iommu_strict = 1;
+		}
+
 #ifdef CONFIG_INTEL_IOMMU_SVM
 		if (pasid_supported(iommu))
 			intel_svm_init(iommu);
@@ -3803,7 +3809,7 @@ bounce_sync_single(struct device *dev, dma_addr_t addr, size_t size,
 		return;
 
 	tlb_addr = intel_iommu_iova_to_phys(&domain->domain, addr);
-	if (is_swiotlb_buffer(tlb_addr))
+	if (is_swiotlb_buffer(dev, tlb_addr))
 		swiotlb_tbl_sync_single(dev, tlb_addr, size, dir, target);
 }
 
@@ -3851,7 +3857,7 @@ bounce_map_single(struct device *dev, phys_addr_t paddr, size_t size,
 	 */
 	if (!IS_ALIGNED(paddr | size, VTD_PAGE_SIZE)) {
 		tlb_addr = swiotlb_tbl_map_single(dev,
-				__phys_to_dma(dev, io_tlb_start),
+				__phys_to_dma(dev, get_swiotlb_start(dev)),
 				paddr, size, aligned_size, dir, attrs);
 		if (tlb_addr == DMA_MAPPING_ERROR) {
 			goto swiotlb_error;
@@ -3883,7 +3889,7 @@ bounce_map_single(struct device *dev, phys_addr_t paddr, size_t size,
 	return (phys_addr_t)iova_pfn << PAGE_SHIFT;
 
 mapping_error:
-	if (is_swiotlb_buffer(tlb_addr))
+	if (is_swiotlb_buffer(dev, tlb_addr))
 		swiotlb_tbl_unmap_single(dev, tlb_addr, size,
 					 aligned_size, dir, attrs);
 swiotlb_error:
@@ -3911,7 +3917,7 @@ bounce_unmap_single(struct device *dev, dma_addr_t dev_addr, size_t size,
 		return;
 
 	intel_unmap(dev, dev_addr, size);
-	if (is_swiotlb_buffer(tlb_addr))
+	if (is_swiotlb_buffer(dev, tlb_addr))
 		swiotlb_tbl_unmap_single(dev, tlb_addr, size,
 					 aligned_size, dir, attrs);
 
@@ -4924,7 +4930,8 @@ int __init intel_iommu_init(void)
 	 * Intel IOMMU is required for a TXT/tboot launch or platform
 	 * opt in, so enforce that.
 	 */
-	force_on = tboot_force_iommu() || platform_optin_force_iommu();
+	force_on = (!intel_iommu_tboot_noforce && tboot_force_iommu()) ||
+		    platform_optin_force_iommu();
 
 	if (iommu_init_mempool()) {
 		if (force_on)

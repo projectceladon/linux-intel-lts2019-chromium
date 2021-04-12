@@ -14,6 +14,8 @@
 #include <linux/spi/spi.h>
 #include <uapi/linux/sched/types.h>
 
+#include "cros_ec.h"
+
 /* The header byte, which follows the preamble */
 #define EC_MSG_HEADER			0xec
 
@@ -738,8 +740,6 @@ static int cros_ec_spi_probe(struct spi_device *spi)
 	struct cros_ec_spi *ec_spi;
 	int err;
 
-	spi->bits_per_word = 8;
-	spi->mode = SPI_MODE_0;
 	spi->rt = true;
 	err = spi_setup(spi);
 	if (err < 0)
