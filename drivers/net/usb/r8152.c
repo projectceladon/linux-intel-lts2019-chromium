@@ -772,8 +772,6 @@ enum rtl8152_flags {
 	SCHEDULE_TASKLET,
 	GREEN_ETHERNET,
 	RX_EPROTO,
-	DELL_TB_RX_AGG_BUG,
-	LENOVO_MACPASSTHRU,
 };
 
 #define DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2	0x3082
@@ -941,6 +939,8 @@ struct r8152 {
 	unsigned int pipe_in, pipe_out, pipe_intr, pipe_ctrl_in, pipe_ctrl_out;
 
 	u32 support_2500full:1;
+	u32 lenovo_macpassthru:1;
+	u32 dell_tb_rx_agg_bug:1;
 	u16 ocp_base;
 	u16 speed;
 	u16 eee_adv;
@@ -1610,7 +1610,7 @@ static int vendor_mac_passthru_addr_read(struct r8152 *tp, struct sockaddr *sa)
 	acpi_object_type mac_obj_type;
 	int mac_strlen;
 
-	if (test_bit(LENOVO_MACPASSTHRU, &tp->flags)) {
+	if (tp->lenovo_macpassthru) {
 		mac_obj_name = "\\MACA";
 		mac_obj_type = ACPI_TYPE_STRING;
 		mac_strlen = 0x16;
@@ -2327,7 +2327,7 @@ static int r8152_tx_agg_fill(struct r8152 *tp, struct tx_agg *agg)
 
 		remain = agg_buf_sz - (int)(tx_agg_align(tx_data) - agg->head);
 
-		if (test_bit(DELL_TB_RX_AGG_BUG, &tp->flags))
+		if (tp->dell_tb_rx_agg_bug)
 			break;
 	}
 
@@ -7074,7 +7074,7 @@ static void r8153_init(struct r8152 *tp)
 	/* rx aggregation */
 	ocp_data = ocp_read_word(tp, MCU_TYPE_USB, USB_USB_CTRL);
 	ocp_data &= ~(RX_AGG_DISABLE | RX_ZERO_EN);
-	if (test_bit(DELL_TB_RX_AGG_BUG, &tp->flags))
+	if (tp->dell_tb_rx_agg_bug)
 		ocp_data |= RX_AGG_DISABLE;
 
 	ocp_write_word(tp, MCU_TYPE_USB, USB_USB_CTRL, ocp_data);
@@ -9707,7 +9707,7 @@ static int rtl8152_probe(struct usb_interface *intf,
 		switch (le16_to_cpu(udev->descriptor.idProduct)) {
 		case DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2:
 		case DEVICE_ID_THINKPAD_USB_C_DOCK_GEN2:
-			set_bit(LENOVO_MACPASSTHRU, &tp->flags);
+			tp->lenovo_macpassthru = 1;
 		}
 	}
 
@@ -9715,7 +9715,7 @@ static int rtl8152_probe(struct usb_interface *intf,
 	    (!strcmp(udev->serial, "000001000000") ||
 	     !strcmp(udev->serial, "000002000000"))) {
 		dev_info(&udev->dev, "Dell TB16 Dock, disable RX aggregation");
-		set_bit(DELL_TB_RX_AGG_BUG, &tp->flags);
+		tp->dell_tb_rx_agg_bug = 1;
 	}
 
 	netdev->ethtool_ops = &ops;
