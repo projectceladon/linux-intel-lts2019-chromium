@@ -1806,20 +1806,10 @@ static int pci_enable_device_flags(struct pci_dev *dev, unsigned long flags)
 	int err;
 	int i, bars = 0;
 
-	/*
-	 * Power state could be unknown at this point, either due to a fresh
-	 * boot or a device removal call.  So get the current power state
-	 * so that things like MSI message writing will behave as expected
-	 * (e.g. if the device really is in D0 at enable time).
-	 */
-	if (dev->pm_cap) {
-		u16 pmcsr;
-		pci_read_config_word(dev, dev->pm_cap + PCI_PM_CTRL, &pmcsr);
-		dev->current_state = (pmcsr & PCI_PM_CTRL_STATE_MASK);
-	}
-
-	if (atomic_inc_return(&dev->enable_cnt) > 1)
+	if (atomic_inc_return(&dev->enable_cnt) > 1) {
+		pci_update_current_state(dev, dev->current_state);
 		return 0;		/* already enabled */
+	}
 
 	bridge = pci_upstream_bridge(dev);
 	if (bridge)
@@ -2486,8 +2476,19 @@ static pci_power_t pci_target_state(struct pci_dev *dev, bool wakeup)
 		return target_state;
 	}
 
-	if (!dev->pm_cap)
+	if (!dev->pm_cap) {
 		target_state = PCI_D0;
+	} else {
+		struct pci_dev *bridge;
+
+		/*
+		 * If the upstream bridge can be put to D3 then it means
+		 * that our target state is D3cold instead of D3hot.
+		 */
+		bridge = pci_upstream_bridge(dev);
+		if (bridge && pci_bridge_d3_possible(bridge))
+			target_state = PCI_D3cold;
+	}
 
 	/*
 	 * If the device is in D3cold even though it's not power-manageable by

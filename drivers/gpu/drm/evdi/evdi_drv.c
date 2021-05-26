@@ -158,6 +158,9 @@ struct drm_ioctl_desc evdi_painter_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EVDI_DDCCI_RESPONSE,
 				evdi_painter_ddcci_response_ioctl,
 				DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(EVDI_ENABLE_CURSOR_EVENTS,
+			    evdi_painter_enable_cursor_events_ioctl,
+				DRM_UNLOCKED),
 };
 
 static const struct vm_operations_struct evdi_gem_vm_ops = {
@@ -677,9 +680,3 @@ static void __exit evdi_exit(void)
 
 module_init(evdi_init);
 module_exit(evdi_exit);
-
-bool evdi_enable_cursor_blending __read_mostly = true;
-module_param_named(enable_cursor_blending,
-			 evdi_enable_cursor_blending, bool, 0644);
-MODULE_PARM_DESC(enable_cursor_blending, "Enables cursor compositing on user supplied framebuffer via EVDI_GRABPIX ioctl. (default: true)");
-

@@ -43,6 +43,7 @@
 
 	sound: mt8192-sound {
 		mediatek,platform = <&afe>;
+		mediatek,hdmi-codec = <&anx_bridge_dp>;
 		pinctrl-names = "aud_clk_mosi_off",
 				"aud_clk_mosi_on",
 				"aud_dat_mosi_off",
@@ -1732,3 +1733,11 @@
 
 #include <arm/cros-ec-keyboard.dtsi>
 #include <arm/cros-ec-sbs.dtsi>
+
+&cros_ec {
+	cros_ec_pwm: ec-pwm {
+		compatible = "google,cros-ec-pwm";
+		#pwm-cells = <1>;
+		status = "disabled";
+	};
+};

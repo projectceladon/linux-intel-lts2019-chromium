@@ -5,6 +5,18 @@ config HAS_DMA
 	depends on !NO_DMA
 	default y
 
+config DMA_OPS
+	depends on HAS_DMA
+	bool
+
+#
+# IOMMU drivers that can bypass the IOMMU code and optionally use the direct
+# mapping fast path should select this option and set the dma_ops_bypass
+# flag in struct device where applicable
+#
+config DMA_OPS_BYPASS
+	bool
+
 config NEED_SG_DMA_LENGTH
 	bool
 
@@ -27,6 +39,12 @@ config ARCH_HAS_DMA_SET_MASK
 # need to enable this.
 #
 config ARCH_HAS_DMA_WRITE_COMBINE
+	bool
+
+#
+# Select if the architectures provides the arch_dma_mark_clean hook
+#
+config ARCH_HAS_DMA_MARK_CLEAN
 	bool
 
 config DMA_DECLARE_COHERENT
@@ -54,12 +72,10 @@ config ARCH_HAS_DMA_PREP_COHERENT
 config ARCH_HAS_FORCE_DMA_UNENCRYPTED
 	bool
 
-config DMA_NONCOHERENT_CACHE_SYNC
-	bool
-
 config DMA_VIRT_OPS
 	bool
 	depends on HAS_DMA
+	select DMA_OPS
 
 config SWIOTLB
 	bool

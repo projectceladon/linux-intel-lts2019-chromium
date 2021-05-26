@@ -947,7 +947,7 @@ static int tb_retimer_add(struct tb_port *port, u8 index, u32 auth_status)
 	ret = tb_retimer_nvm_add(rt);
 	if (ret) {
 		dev_err(&rt->dev, "failed to add NVM devices: %d\n", ret);
-		device_del(&rt->dev);
+		device_unregister(&rt->dev);
 		return ret;
 	}
 
@@ -1176,11 +1176,12 @@ void tb_retimer_remove_all(struct tb_port *port, struct tb_switch *sw)
 		cancel_delayed_work_sync(&port->retimer_stop_io_work);
 
 	rt = tb_to_retimer(&port->sw->dev);
-	if (!rt)
-		return;
 
-	/* remove the retimers that belong to the switch being removed */
-	if (port->cap_usb4 && sw == rt->port->sw)
+	/*
+	 * Remove the retimers that belong to the switch being removed.
+	 * Allow for the removal of non-onboard retimers.
+	 */
+	if (port->cap_usb4 && ((rt && sw == rt->port->sw) || tb_route(sw)))
 		device_for_each_child_reverse(&port->sw->dev, port,
 					      remove_retimer);
 }
