@@ -318,6 +318,7 @@ enum {
 struct mt76_hw_cap {
 	bool has_2ghz;
 	bool has_5ghz;
+	bool has_6ghz;
 };
 
 #define MT_DRV_TXWI_NO_FREE		BIT(0)
@@ -727,6 +728,21 @@ enum mt76_phy_type {
 	MT_PHY_TYPE_HE_TB,
 	MT_PHY_TYPE_HE_MU,
 };
+
+#define CCK_RATE(_idx, _rate) {					\
+	.bitrate = _rate,					\
+	.flags = IEEE80211_RATE_SHORT_PREAMBLE,			\
+	.hw_value = (MT_PHY_TYPE_CCK << 8) | (_idx),		\
+	.hw_value_short = (MT_PHY_TYPE_CCK << 8) | (4 + _idx),	\
+}
+
+#define OFDM_RATE(_idx, _rate) {				\
+	.bitrate = _rate,					\
+	.hw_value = (MT_PHY_TYPE_OFDM << 8) | (_idx),		\
+	.hw_value_short = (MT_PHY_TYPE_OFDM << 8) | (_idx),	\
+}
+
+extern struct ieee80211_rate mt76_rates[12];
 
 #define __mt76_rr(dev, ...)	(dev)->bus->rr((dev), __VA_ARGS__)
 #define __mt76_wr(dev, ...)	(dev)->bus->wr((dev), __VA_ARGS__)
@@ -1242,5 +1258,16 @@ mt76_token_put(struct mt76_dev *dev, int token)
 	spin_unlock_bh(&dev->token_lock);
 
 	return txwi;
+}
+
+static inline int
+mt76_get_next_pkt_id(struct mt76_wcid *wcid)
+{
+	wcid->packet_id = (wcid->packet_id + 1) & MT_PACKET_ID_MASK;
+	if (wcid->packet_id == MT_PACKET_ID_NO_ACK ||
+	    wcid->packet_id == MT_PACKET_ID_NO_SKB)
+		wcid->packet_id = MT_PACKET_ID_FIRST;
+
+	return wcid->packet_id;
 }
 #endif

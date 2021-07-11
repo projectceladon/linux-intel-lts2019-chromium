@@ -19,6 +19,7 @@
 	backlight_lcd0: backlight_lcd0 {
 		compatible = "pwm-backlight";
 		pwms = <&pwm0 0 500000>;
+		power-supply = <&ppvar_sys>;
 		enable-gpios = <&pio 152 0>;
 		brightness-levels = < 0 1023 >;
 		num-interpolated-steps = <1023>;
@@ -159,6 +160,17 @@
 		gpio = <&pio 129 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* system wide LDO 1.8V power rail */
+	pp1800_ldo_g: pp1800-ldo-g {
+		compatible = "regulator-fixed";
+		regulator-name = "pp1800_ldo_g";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&pp3300_g>;
+	};
+
 	pp1800_dpbrdg: pp1800-dpbrdg {
 		compatible = "regulator-fixed";
 		regulator-name = "pp1800_dpbrdg";
@@ -195,6 +207,28 @@
 		gpio = <&pio 26 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* system wide switching 3.3V power rail */
+	pp3300_g: pp3300-g {
+		compatible = "regulator-fixed";
+		regulator-name = "pp3300_g";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&ppvar_sys>;
+	};
+
+	/* system wide LDO 3.3V power rail */
+	pp3300_ldo_z: pp3300-ldo-z {
+		compatible = "regulator-fixed";
+		regulator-name = "pp3300_ldo_z";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&ppvar_sys>;
+	};
+
 	pp3300_mipibrdg: pp3300-mipibrdg {
 		compatible = "regulator-fixed";
 		regulator-name = "pp3300_mipibrdg";
@@ -222,6 +256,37 @@
 		gpio = <&pio 136 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* separately switched 3.3V power rail */
+	pp3300_u: pp3300-u {
+		compatible = "regulator-fixed";
+		regulator-name = "pp3300_u";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		/* enable pin wired to GPIO controlled by EC */
+		vin-supply = <&pp3300_g>;
+	};
+
+	/* system wide switching 5.0V power rail */
+	pp5000_a: pp5000-a {
+		compatible = "regulator-fixed";
+		regulator-name = "pp5000_a";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&ppvar_sys>;
+	};
+
+	/* system wide semi-regulated power rail from battery or USB */
+	ppvar_sys: ppvar-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "ppvar_sys";
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
 	reserved_memory: reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -237,23 +302,6 @@
 			compatible = "restricted-dma-pool";
 			reg = <0 0xC0000000 0 0x4000000>;
 		};
-	};
-
-	usb_vbus_3v3: fixedregulator@1 {
-		compatible = "regulator-fixed";
-		regulator-name = "usb vbus";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-always-on;
-	};
-
-	usb_vbus_5v0: fixedregulator@0 {
-		compatible = "regulator-fixed";
-		regulator-name = "vbus";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		regulator-type = "voltage";
-		regulator-always-on;
 	};
 };
 
@@ -324,6 +372,8 @@
 
 		post-power-on-delay-ms = <10>;
 		hid-descr-addr = <0x0001>;
+
+		vdd-supply = <&pp3300_u>;
 	};
 };
 
@@ -340,6 +390,10 @@
 		interrupts = <18 IRQ_TYPE_LEVEL_LOW>;
 		realtek,jd-src = <1>;
 		realtek,btndet-delay = <16>;
+
+		AVDD-supply = <&mt6359_vio18_ldo_reg>;
+		MICVDD-supply = <&pp3300_g>;
+		VBAT-supply = <&pp3300_ldo_z>;
 	};
 };
 
@@ -359,6 +413,8 @@
 
 		interrupt-parent = <&pio>;
 		interrupts = <15 IRQ_TYPE_LEVEL_LOW>;
+
+		vcc-supply = <&pp3300_u>;
 
 		wakeup-source;
 	};
@@ -1052,7 +1108,7 @@
 			bias-pull-up;
 		};
 		ap_wake_bt: ap_wake_bt {
-			pinmux = <PINMUX_GPIO168__FUNC_GPIO168>; /* AP_WAKE_BT_L */
+			pinmux = <PINMUX_GPIO168__FUNC_GPIO168>; /* AP_WAKE_BT_H */
 			output-low;
 		};
 	};
@@ -1721,12 +1777,13 @@
 		pinctrl-0 = <&bt_pins>;
 
 		enable-gpios = <&pio 144 GPIO_ACTIVE_HIGH>;
+		device-wake-gpios = <&pio 168 GPIO_ACTIVE_HIGH>;
 	};
 };
 
 &xhci {
-	vusb33-supply = <&usb_vbus_3v3>;
-	vbus-supply = <&usb_vbus_5v0>;
+	vusb33-supply = <&pp3300_g>;
+	vbus-supply = <&pp5000_a>;
 	wakeup-source;
 	status = "okay";
 };

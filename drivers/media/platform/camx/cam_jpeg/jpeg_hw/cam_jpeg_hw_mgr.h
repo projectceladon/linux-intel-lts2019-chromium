@@ -73,7 +73,7 @@ struct cam_jpeg_process_irq_work_data_t {
 struct cam_jpeg_hw_cdm_info_t {
 	int ref_cnt;
 	uint32_t cdm_handle;
-	struct cam_cdm_utils_ops *cdm_ops;
+	const struct cam_cdm_utils_ops *cdm_ops;
 };
 
 /**
@@ -90,7 +90,7 @@ struct cam_jpeg_hw_cfg_req {
 	struct cam_hw_config_args hw_cfg_args;
 	uint32_t dev_type;
 	uintptr_t req_id;
-	struct timeval submit_timestamp;
+	ktime_t submit_timestamp;
 };
 
 /**

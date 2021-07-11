@@ -491,7 +491,6 @@ static const struct dmi_system_id btusb_needs_reset_resume_table[] = {
 #define BTUSB_HW_RESET_ACTIVE	12
 #define BTUSB_TX_WAIT_VND_EVT	13
 #define BTUSB_WAKEUP_DISABLE	14
-#define BTUSB_USE_ALT1_FOR_WBS	15
 
 /* Per core spec 5, vol 4, part B, table 2.1,
  * list the hci packet payload sizes for various ALT settings.
@@ -1769,16 +1768,19 @@ static void btusb_work(struct work_struct *work)
 				new_alts = data->sco_num;
 			}
 		} else if (data->air_mode == HCI_NOTIFY_ENABLE_SCO_TRANSP) {
-			/* Check if Alt 6 is supported for Transparent audio */
-			if (btusb_find_altsetting(data, 6)) {
-				data->usb_alt6_packet_flow = true;
-				new_alts = 6;
-			} else if (test_bit(BTUSB_USE_ALT1_FOR_WBS,
-						&data->flags)) {
-				new_alts = 1;
-			} else {
-				bt_dev_err(hdev, "Device does not support ALT setting 6");
-			}
+			/* Bluetooth USB spec recommends alt 6 (63 bytes), but
+			 * many adapters do not support it.  Alt 1 appears to
+			 * work for all adapters that do not have alt 6, and
+			 * which work with WBS at all.
+			 */
+			new_alts = btusb_find_altsetting(data, 6) ? 6 : 1;
+			/* Because mSBC frames do not need to be aligned to the
+			 * SCO packet boundary. If support the Alt 3, use the
+			 * Alt 3 for HCI payload >= 60 Bytes let air packet
+			 * data satisfy 60 bytes.
+			 */
+			if (new_alts == 1 && btusb_find_altsetting(data, 3))
+				new_alts = 3;
 		}
 
 		if (btusb_switch_alt_setting(hdev, new_alts) < 0)
@@ -2480,8 +2482,15 @@ static int btusb_intel_download_firmware_newgen(struct hci_dev *hdev,
 	btusb_setup_intel_newgen_get_fw_name(ver, fwname, sizeof(fwname), "sfi");
 	err = request_firmware(&fw, fwname, &hdev->dev);
 	if (err < 0) {
+		if (!test_bit(BTUSB_BOOTLOADER, &data->flags)) {
+			/* Firmware has already been loaded */
+			set_bit(BTUSB_FIRMWARE_LOADED, &data->flags);
+			return 0;
+		}
+
 		bt_dev_err(hdev, "Failed to load Intel firmware file %s (%d)",
 			   fwname, err);
+
 		return err;
 	}
 
@@ -2631,12 +2640,24 @@ download:
 	err = btusb_setup_intel_new_get_fw_name(ver, params, fwname,
 						sizeof(fwname), "sfi");
 	if (err < 0) {
+		if (!test_bit(BTUSB_BOOTLOADER, &data->flags)) {
+			/* Firmware has already been loaded */
+			set_bit(BTUSB_FIRMWARE_LOADED, &data->flags);
+			return 0;
+		}
+
 		bt_dev_err(hdev, "Unsupported Intel firmware naming");
 		return -EINVAL;
 	}
 
 	err = request_firmware(&fw, fwname, &hdev->dev);
 	if (err < 0) {
+		if (!test_bit(BTUSB_BOOTLOADER, &data->flags)) {
+			/* Firmware has already been loaded */
+			set_bit(BTUSB_FIRMWARE_LOADED, &data->flags);
+			return 0;
+		}
+
 		bt_dev_err(hdev, "Failed to load Intel firmware file %s (%d)",
 			   fwname, err);
 		return err;
@@ -2762,7 +2783,6 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
 	u32 boot_param;
 	char ddcname[64];
 	int err;
-	struct intel_debug_features features;
 
 	BT_DBG("%s", hdev->name);
 
@@ -2816,13 +2836,10 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
 		btintel_load_ddc_config(hdev, ddcname);
 	}
 
-	/* Read the Intel supported features and if new exception formats
-	 * supported, need to load the additional DDC config to enable.
-	 */
-	btintel_read_debug_features(hdev, &features);
-
-	/* Set DDC mask for available debug features */
-	btintel_set_debug_features(hdev, &features);
+#ifdef CONFIG_BT_FEATURE_QUALITY_REPORT
+	hci_dev_clear_flag(hdev, HCI_QUALITY_REPORT);
+	bt_dev_dbg(hdev, "HCI_QUALITY_REPORT cleared");
+#endif
 
 	/* Read the Intel version information after loading the FW  */
 	err = btintel_read_version(hdev, &ver);
@@ -2862,7 +2879,6 @@ static int btusb_setup_intel_newgen(struct hci_dev *hdev)
 	u32 boot_param;
 	char ddcname[64];
 	int err;
-	struct intel_debug_features features;
 	struct intel_version_tlv version;
 
 	bt_dev_dbg(hdev, "");
@@ -2912,13 +2928,10 @@ static int btusb_setup_intel_newgen(struct hci_dev *hdev)
 	 */
 	btintel_load_ddc_config(hdev, ddcname);
 
-	/* Read the Intel supported features and if new exception formats
-	 * supported, need to load the additional DDC config to enable.
-	 */
-	btintel_read_debug_features(hdev, &features);
-
-	/* Set DDC mask for available debug features */
-	btintel_set_debug_features(hdev, &features);
+#ifdef CONFIG_BT_FEATURE_QUALITY_REPORT
+	hci_dev_clear_flag(hdev, HCI_QUALITY_REPORT);
+	bt_dev_dbg(hdev, "HCI_QUALITY_REPORT cleared");
+#endif
 
 	/* Read the Intel version information after loading the FW  */
 	err = btintel_read_version_tlv(hdev, &version);
@@ -4529,6 +4542,9 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->set_diag = btintel_set_diag;
 		hdev->set_bdaddr = btintel_set_bdaddr;
 		hdev->cmd_timeout = btusb_intel_cmd_timeout;
+#ifdef CONFIG_BT_FEATURE_QUALITY_REPORT
+		hdev->set_quality_report = btintel_set_quality_report;
+#endif
 
 		if (btusb_find_altsetting(data, 6))
 			hdev->wbs_pkt_len = hci_packet_size_usb_alt[6];
@@ -4547,6 +4563,9 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->set_diag = btintel_set_diag;
 		hdev->set_bdaddr = btintel_set_bdaddr;
 		hdev->cmd_timeout = btusb_intel_cmd_timeout;
+#ifdef CONFIG_BT_FEATURE_QUALITY_REPORT
+		hdev->set_quality_report = btintel_set_quality_report;
+#endif
 		set_bit(HCI_QUIRK_STRICT_DUPLICATE_FILTER, &hdev->quirks);
 		set_bit(HCI_QUIRK_SIMULTANEOUS_DISCOVERY, &hdev->quirks);
 		set_bit(HCI_QUIRK_NON_PERSISTENT_DIAG, &hdev->quirks);
@@ -4604,11 +4623,10 @@ static int btusb_probe(struct usb_interface *intf,
 		 * (DEVICE_REMOTE_WAKEUP)
 		 */
 		set_bit(BTUSB_WAKEUP_DISABLE, &data->flags);
-		if (btusb_find_altsetting(data, 1)) {
-			set_bit(BTUSB_USE_ALT1_FOR_WBS, &data->flags);
-			hdev->wbs_pkt_len = hci_packet_size_usb_alt[1];
-		} else
-			bt_dev_err(hdev, "Device does not support ALT setting 1");
+		if (btusb_find_altsetting(data, 3))
+			hdev->wbs_pkt_len = hci_packet_size_usb_alt[3];
+		else
+			bt_dev_err(hdev, "Device does not support ALT setting 3");
 	}
 
 	if (!reset)

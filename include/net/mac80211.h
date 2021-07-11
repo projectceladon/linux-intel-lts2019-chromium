@@ -316,6 +316,7 @@ struct ieee80211_vif_chanctx_switch {
  *	functionality changed for this BSS (AP mode).
  * @BSS_CHANGED_TWT: TWT status changed
  * @BSS_CHANGED_HE_OBSS_PD: OBSS Packet Detection status changed.
+ * @BSS_CHANGED_HE_BSS_COLOR: BSS Color has changed
  *
  */
 enum ieee80211_bss_change {
@@ -348,6 +349,7 @@ enum ieee80211_bss_change {
 	BSS_CHANGED_FTM_RESPONDER	= 1<<26,
 	BSS_CHANGED_TWT			= 1<<27,
 	BSS_CHANGED_HE_OBSS_PD		= 1<<28,
+	BSS_CHANGED_HE_BSS_COLOR	= 1<<29,
 
 	/* when adding here, make sure to change ieee80211_reconfig */
 };
@@ -494,7 +496,6 @@ struct ieee80211_ftm_responder_params {
  * This structure keeps information about a BSS (and an association
  * to that BSS) that can change during the lifetime of the BSS.
  *
- * @bss_color: 6-bit value to mark inter-BSS frame, if BSS supports HE
  * @htc_trig_based_pkt_ext: default PE in 4us units, if BSS supports HE
  * @multi_sta_back_32bit: supports BA bitmap of 32-bits in Multi-STA BACK
  * @uora_exists: is the UORA element advertised by AP
@@ -604,10 +605,10 @@ struct ieee80211_ftm_responder_params {
  *	in order to discover all the nontransmitted BSSIDs in the set.
  * @he_operation: HE operation information of the AP we are connected to
  * @he_obss_pd: OBSS Packet Detection parameters.
+ * @he_bss_color: BSS coloring settings, if BSS supports HE
  */
 struct ieee80211_bss_conf {
 	const u8 *bssid;
-	u8 bss_color;
 	u8 htc_trig_based_pkt_ext;
 	bool multi_sta_back_32bit;
 	bool uora_exists;
@@ -667,6 +668,7 @@ struct ieee80211_bss_conf {
 	u8 profile_periodicity;
 	struct ieee80211_he_operation he_operation;
 	struct ieee80211_he_obss_pd he_obss_pd;
+	struct cfg80211_he_bss_color he_bss_color;
 };
 
 /**
@@ -3802,6 +3804,9 @@ enum ieee80211_reconfig_type {
  *
  * @start_pmsr: start peer measurement (e.g. FTM) (this call can sleep)
  * @abort_pmsr: abort peer measurement (this call can sleep)
+ * @set_tid_config: Apply TID specific configurations. This callback may sleep.
+ * @reset_tid_config: Reset TID specific configuration for the peer.
+ *	This callback may sleep.
  *
  * @set_sar_specs: Update the SAR (TX power) settings.
  * @update_vif_config: Update virtual interface offload flags
@@ -4110,6 +4115,13 @@ struct ieee80211_ops {
 			  struct cfg80211_pmsr_request *request);
 	void (*abort_pmsr)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			   struct cfg80211_pmsr_request *request);
+	int (*set_tid_config)(struct ieee80211_hw *hw,
+			      struct ieee80211_vif *vif,
+			      struct ieee80211_sta *sta,
+			      struct cfg80211_tid_config *tid_conf);
+	int (*reset_tid_config)(struct ieee80211_hw *hw,
+				struct ieee80211_vif *vif,
+				struct ieee80211_sta *sta, u8 tids);
 	int (*set_sar_specs)(struct ieee80211_hw *hw,
 			     const struct cfg80211_sar_specs *sar);
 	void (*update_vif_offload)(struct ieee80211_hw *hw,
@@ -5769,6 +5781,17 @@ void ieee80211_beacon_loss(struct ieee80211_vif *vif);
  * without connection recovery attempts.
  */
 void ieee80211_connection_loss(struct ieee80211_vif *vif);
+
+/**
+ * ieee80211_disconnect - request disconnection
+ *
+ * @vif: &struct ieee80211_vif pointer from the add_interface callback.
+ * @reconnect: immediate reconnect is desired
+ *
+ * Request disconnection from the current network and, if enabled, send a
+ * hint to the higher layers that immediate reconnect is desired.
+ */
+void ieee80211_disconnect(struct ieee80211_vif *vif, bool reconnect);
 
 /**
  * ieee80211_resume_disconnect - disconnect from AP after resume

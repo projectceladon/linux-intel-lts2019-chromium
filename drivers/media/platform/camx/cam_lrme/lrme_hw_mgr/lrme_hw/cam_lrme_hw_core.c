@@ -68,7 +68,7 @@ static int  cam_lrme_dump_regs_to_buf(
 	hdr->size = hdr->word_size * (addr - start);
 	dump_args->offset += hdr->size +
 		sizeof(struct cam_lrme_hw_dump_header);
-	CAM_DBG(CAM_LRME, "offset %d", dump_args->offset);
+	CAM_DBG(CAM_LRME, "offset %lld", dump_args->offset);
 	return 0;
 }
 
@@ -78,12 +78,13 @@ static int cam_lrme_hw_dump(struct cam_hw_info *lrme_hw,
 	struct cam_lrme_core *lrme_core =
 		(struct cam_lrme_core *)lrme_hw->core_info;
 	struct cam_lrme_frame_request *req = NULL;
-	struct timeval cur_time;
-	uint64_t diff = 0;
+	s64 diff;
+	ktime_t cur_time;
 	char *dst;
 	uint64_t *addr, *start;
 	uint32_t min_len, remain_len;
 	struct cam_lrme_hw_dump_header *hdr;
+	struct timespec64 tm, cur_tm;
 
 	mutex_lock(&lrme_hw->hw_mutex);
 	if (lrme_hw->hw_state == CAM_HW_STATE_POWER_DOWN) {
@@ -103,25 +104,26 @@ static int cam_lrme_hw_dump(struct cam_hw_info *lrme_hw,
 		mutex_unlock(&lrme_hw->hw_mutex);
 		return 0;
 	}
-	cam_common_util_get_curr_timestamp(&cur_time);
-	diff = cam_common_util_get_time_diff(&cur_time,
-		&req->submit_timestamp);
+	cur_time = cam_common_util_get_curr_timestamp();
+	diff = ktime_us_delta(cur_time, req->submit_timestamp);
+	tm = ktime_to_timespec64(req->submit_timestamp);
+	cur_tm = ktime_to_timespec64(cur_time);
 	if (diff < CAM_LRME_RESPONSE_TIME_THRESHOLD) {
 		CAM_INFO(CAM_LRME, "No error req %lld %ld:%06ld %ld:%06ld",
 			dump_args->request_id,
-			req->submit_timestamp.tv_sec,
-			req->submit_timestamp.tv_usec,
-			cur_time.tv_sec,
-			cur_time.tv_usec);
+			tm.tv_sec,
+			tm.tv_nsec / NSEC_PER_USEC,
+			cur_tm.tv_sec,
+			cur_tm.tv_nsec / NSEC_PER_USEC);
 		mutex_unlock(&lrme_hw->hw_mutex);
 		return 0;
 	}
 	CAM_INFO(CAM_LRME, "Error req %lld %ld:%06ld %ld:%06ld",
 		dump_args->request_id,
-		req->submit_timestamp.tv_sec,
-		req->submit_timestamp.tv_usec,
-		cur_time.tv_sec,
-		cur_time.tv_usec);
+		tm.tv_sec,
+		tm.tv_nsec / NSEC_PER_USEC,
+		cur_tm.tv_sec,
+		cur_tm.tv_nsec / NSEC_PER_USEC);
 	remain_len = dump_args->buf_len - dump_args->offset;
 	min_len =  2 * (sizeof(struct cam_lrme_hw_dump_header) +
 		    CAM_LRME_HW_DUMP_TAG_MAX_LEN);
@@ -139,10 +141,10 @@ static int cam_lrme_hw_dump(struct cam_hw_info *lrme_hw,
 	addr = (uint64_t *)(dst + sizeof(struct cam_lrme_hw_dump_header));
 	start = addr;
 	*addr++ = req->req_id;
-	*addr++ = req->submit_timestamp.tv_sec;
-	*addr++ = req->submit_timestamp.tv_usec;
-	*addr++ = cur_time.tv_sec;
-	*addr++ = cur_time.tv_usec;
+	*addr++ = tm.tv_sec;
+	*addr++ = tm.tv_nsec / NSEC_PER_USEC;
+	*addr++ = cur_tm.tv_sec;
+	*addr++ = cur_tm.tv_nsec / NSEC_PER_USEC;
 	hdr->size = hdr->word_size * (addr - start);
 	dump_args->offset += hdr->size +
 		sizeof(struct cam_lrme_hw_dump_header);
@@ -574,7 +576,6 @@ static int cam_lrme_hw_util_flush_ctx(struct cam_hw_info *lrme_hw,
 	struct cam_lrme_core *lrme_core = lrme_hw->core_info;
 	struct cam_lrme_hw_cb_args cb_args;
 	struct cam_lrme_frame_request *req_proc, *req_submit;
-	struct cam_lrme_hw_submit_args submit_args;
 
 	rc = cam_lrme_hw_util_reset(lrme_hw, CAM_LRME_HW_RESET_TYPE_HW_RESET);
 	if (rc) {
@@ -595,10 +596,6 @@ static int cam_lrme_hw_util_flush_ctx(struct cam_hw_info *lrme_hw,
 			lrme_core->hw_mgr_cb.cam_lrme_hw_mgr_cb(
 				lrme_core->hw_mgr_cb.data, &cb_args);
 	} else if (req_submit) {
-		submit_args.frame_req = req_submit;
-		submit_args.hw_update_entries = req_submit->hw_update_entries;
-		submit_args.num_hw_update_entries =
-			req_submit->num_hw_update_entries;
 		rc = cam_lrme_hw_util_submit_req(lrme_core, req_submit);
 		if (rc)
 			CAM_ERR(CAM_LRME, "Submit failed");
@@ -614,10 +611,6 @@ static int cam_lrme_hw_util_flush_ctx(struct cam_hw_info *lrme_hw,
 			lrme_core->hw_mgr_cb.cam_lrme_hw_mgr_cb(
 				lrme_core->hw_mgr_cb.data, &cb_args);
 	} else if (req_proc) {
-		submit_args.frame_req = req_proc;
-		submit_args.hw_update_entries = req_proc->hw_update_entries;
-		submit_args.num_hw_update_entries =
-			req_proc->num_hw_update_entries;
 		rc = cam_lrme_hw_util_submit_req(lrme_core, req_proc);
 		if (rc)
 			CAM_ERR(CAM_LRME, "Submit failed");
@@ -636,7 +629,6 @@ static int cam_lrme_hw_util_flush_req(struct cam_hw_info *lrme_hw,
 	struct cam_lrme_core *lrme_core = lrme_hw->core_info;
 	struct cam_lrme_hw_cb_args cb_args;
 	struct cam_lrme_frame_request *req_proc, *req_submit;
-	struct cam_lrme_hw_submit_args submit_args;
 
 	rc = cam_lrme_hw_util_reset(lrme_hw, CAM_LRME_HW_RESET_TYPE_HW_RESET);
 	if (rc) {
@@ -657,10 +649,6 @@ static int cam_lrme_hw_util_flush_req(struct cam_hw_info *lrme_hw,
 			lrme_core->hw_mgr_cb.cam_lrme_hw_mgr_cb(
 				lrme_core->hw_mgr_cb.data, &cb_args);
 	} else if (req_submit) {
-		submit_args.frame_req = req_submit;
-		submit_args.hw_update_entries = req_submit->hw_update_entries;
-		submit_args.num_hw_update_entries =
-			req_submit->num_hw_update_entries;
 		rc = cam_lrme_hw_util_submit_req(lrme_core, req_submit);
 		if (rc)
 			CAM_ERR(CAM_LRME, "Submit failed");
@@ -676,10 +664,6 @@ static int cam_lrme_hw_util_flush_req(struct cam_hw_info *lrme_hw,
 			lrme_core->hw_mgr_cb.cam_lrme_hw_mgr_cb(
 				lrme_core->hw_mgr_cb.data, &cb_args);
 	} else if (req_proc) {
-		submit_args.frame_req = req_proc;
-		submit_args.hw_update_entries = req_proc->hw_update_entries;
-		submit_args.num_hw_update_entries =
-			req_proc->num_hw_update_entries;
 		rc = cam_lrme_hw_util_submit_req(lrme_core, req_proc);
 		if (rc)
 			CAM_ERR(CAM_LRME, "Submit failed");
@@ -1087,7 +1071,7 @@ int cam_lrme_hw_submit_req(void *hw_priv, void *hw_submit_args,
 		CAM_ERR(CAM_LRME, "Submit req failed");
 		goto error;
 	}
-	cam_common_util_get_curr_timestamp(&frame_req->submit_timestamp);
+	frame_req->submit_timestamp = cam_common_util_get_curr_timestamp();
 	switch (lrme_core->state) {
 	case CAM_LRME_CORE_STATE_PROCESSING:
 		lrme_core->state = CAM_LRME_CORE_STATE_REQ_PROC_PEND;
@@ -1368,14 +1352,12 @@ int cam_lrme_hw_process_cmd(void *hw_priv, uint32_t cmd_type,
 
 	case CAM_LRME_HW_CMD_REGISTER_CB: {
 		struct cam_lrme_hw_cmd_set_cb *cb_args;
-		struct cam_lrme_device *hw_device;
 		struct cam_lrme_core *lrme_core =
 			(struct cam_lrme_core *)lrme_hw->core_info;
 		cb_args = (struct cam_lrme_hw_cmd_set_cb *)cmd_args;
 		lrme_core->hw_mgr_cb.cam_lrme_hw_mgr_cb =
 			cb_args->cam_lrme_hw_mgr_cb;
 		lrme_core->hw_mgr_cb.data = cb_args->data;
-		hw_device = cb_args->data;
 		rc = 0;
 		break;
 	}

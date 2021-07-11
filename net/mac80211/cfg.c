@@ -5,8 +5,7 @@
  * Copyright 2006-2010	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2015  Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2019 Intel Corporation
- * Copyright (C) 2018 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  */
 
 #include <linux/ieee80211.h>
@@ -981,8 +980,7 @@ static int ieee80211_start_ap(struct wiphy *wiphy, struct net_device *dev,
 		      BSS_CHANGED_SSID |
 		      BSS_CHANGED_P2P_PS |
 		      BSS_CHANGED_TXPOWER |
-		      BSS_CHANGED_TWT |
-		      BSS_CHANGED_HE_OBSS_PD;
+		      BSS_CHANGED_TWT;
 	int err;
 	int prev_beacon_int;
 
@@ -1010,8 +1008,19 @@ static int ieee80211_start_ap(struct wiphy *wiphy, struct net_device *dev,
 	prev_beacon_int = sdata->vif.bss_conf.beacon_int;
 	sdata->vif.bss_conf.beacon_int = params->beacon_interval;
 
-	if (params->he_cap)
+	if (params->he_cap && params->he_oper) {
 		sdata->vif.bss_conf.he_support = true;
+		sdata->vif.bss_conf.htc_trig_based_pkt_ext =
+			le32_get_bits(params->he_oper->he_oper_params,
+			      IEEE80211_HE_OPERATION_DFLT_PE_DURATION_MASK);
+		sdata->vif.bss_conf.frame_time_rts_th =
+			le32_get_bits(params->he_oper->he_oper_params,
+			      IEEE80211_HE_OPERATION_RTS_THRESHOLD_MASK);
+		changed |= BSS_CHANGED_HE_OBSS_PD;
+
+		if (params->he_bss_color.enabled)
+			changed |= BSS_CHANGED_HE_BSS_COLOR;
+	}
 
 	mutex_lock(&local->mtx);
 	err = ieee80211_vif_use_channel(sdata, &params->chandef,
@@ -1055,6 +1064,7 @@ static int ieee80211_start_ap(struct wiphy *wiphy, struct net_device *dev,
 	sdata->vif.bss_conf.twt_responder = params->twt_responder;
 	memcpy(&sdata->vif.bss_conf.he_obss_pd, &params->he_obss_pd,
 	       sizeof(struct ieee80211_he_obss_pd));
+	sdata->vif.bss_conf.he_bss_color = params->he_bss_color;
 
 	sdata->vif.bss_conf.ssid_len = params->ssid_len;
 	if (params->ssid_len)
@@ -3968,6 +3978,60 @@ ieee80211_abort_pmsr(struct wiphy *wiphy, struct wireless_dev *dev,
 	return drv_abort_pmsr(local, sdata, request);
 }
 
+static int ieee80211_set_tid_config(struct wiphy *wiphy,
+				    struct net_device *dev,
+				    struct cfg80211_tid_config *tid_conf)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct sta_info *sta;
+	int ret;
+
+	if (!sdata->local->ops->set_tid_config)
+		return -EOPNOTSUPP;
+
+	if (!tid_conf->peer)
+		return drv_set_tid_config(sdata->local, sdata, NULL, tid_conf);
+
+	mutex_lock(&sdata->local->sta_mtx);
+	sta = sta_info_get_bss(sdata, tid_conf->peer);
+	if (!sta) {
+		mutex_unlock(&sdata->local->sta_mtx);
+		return -ENOENT;
+	}
+
+	ret = drv_set_tid_config(sdata->local, sdata, &sta->sta, tid_conf);
+	mutex_unlock(&sdata->local->sta_mtx);
+
+	return ret;
+}
+
+static int ieee80211_reset_tid_config(struct wiphy *wiphy,
+				      struct net_device *dev,
+				      const u8 *peer, u8 tids)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct sta_info *sta;
+	int ret;
+
+	if (!sdata->local->ops->reset_tid_config)
+		return -EOPNOTSUPP;
+
+	if (!peer)
+		return drv_reset_tid_config(sdata->local, sdata, NULL, tids);
+
+	mutex_lock(&sdata->local->sta_mtx);
+	sta = sta_info_get_bss(sdata, peer);
+	if (!sta) {
+		mutex_unlock(&sdata->local->sta_mtx);
+		return -ENOENT;
+	}
+
+	ret = drv_reset_tid_config(sdata->local, sdata, &sta->sta, tids);
+	mutex_unlock(&sdata->local->sta_mtx);
+
+	return ret;
+}
+
 static int ieee80211_set_sar_specs(struct wiphy *wiphy,
 				   struct cfg80211_sar_specs *sar)
 {
@@ -4078,5 +4142,7 @@ const struct cfg80211_ops mac80211_config_ops = {
 	.start_pmsr = ieee80211_start_pmsr,
 	.abort_pmsr = ieee80211_abort_pmsr,
 	.probe_mesh_link = ieee80211_probe_mesh_link,
+	.set_tid_config = ieee80211_set_tid_config,
+	.reset_tid_config = ieee80211_reset_tid_config,
 	.set_sar_specs = ieee80211_set_sar_specs,
 };

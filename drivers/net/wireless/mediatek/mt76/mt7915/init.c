@@ -7,34 +7,6 @@
 #include "mcu.h"
 #include "eeprom.h"
 
-#define CCK_RATE(_idx, _rate) {						\
-	.bitrate = _rate,						\
-	.flags = IEEE80211_RATE_SHORT_PREAMBLE,				\
-	.hw_value = (MT_PHY_TYPE_CCK << 8) | (_idx),			\
-	.hw_value_short = (MT_PHY_TYPE_CCK << 8) | (4 + (_idx)),	\
-}
-
-#define OFDM_RATE(_idx, _rate) {					\
-	.bitrate = _rate,						\
-	.hw_value = (MT_PHY_TYPE_OFDM << 8) | (_idx),			\
-	.hw_value_short = (MT_PHY_TYPE_OFDM << 8) | (_idx),		\
-}
-
-static struct ieee80211_rate mt7915_rates[] = {
-	CCK_RATE(0, 10),
-	CCK_RATE(1, 20),
-	CCK_RATE(2, 55),
-	CCK_RATE(3, 110),
-	OFDM_RATE(11, 60),
-	OFDM_RATE(15, 90),
-	OFDM_RATE(10, 120),
-	OFDM_RATE(14, 180),
-	OFDM_RATE(9,  240),
-	OFDM_RATE(13, 360),
-	OFDM_RATE(8,  480),
-	OFDM_RATE(12, 540),
-};
-
 static const struct ieee80211_iface_limit if_limits[] = {
 	{
 		.max = 1,
@@ -279,8 +251,8 @@ static int mt7915_register_ext_phy(struct mt7915_dev *dev)
 	if (ret)
 		goto error;
 
-	ret = mt76_register_phy(mphy, true, mt7915_rates,
-				ARRAY_SIZE(mt7915_rates));
+	ret = mt76_register_phy(mphy, true, mt76_rates,
+				ARRAY_SIZE(mt76_rates));
 	if (ret)
 		goto error;
 
@@ -450,8 +422,8 @@ mt7915_set_stream_he_txbf_caps(struct ieee80211_sta_he_cap *he_cap,
 	    IEEE80211_HE_PHY_CAP5_BEAMFORMEE_NUM_SND_DIM_ABOVE_80MHZ_MASK;
 	elem->phy_cap_info[5] &= ~c;
 
-	c = IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMER_FB |
-	    IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMER_FB;
+	c = IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMING_FB |
+	    IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMING_PARTIAL_BW_FB;
 	elem->phy_cap_info[6] &= ~c;
 
 	elem->phy_cap_info[7] &= ~IEEE80211_HE_PHY_CAP7_MAX_NC_MASK;
@@ -488,8 +460,8 @@ mt7915_set_stream_he_txbf_caps(struct ieee80211_sta_he_cap *he_cap,
 	c = (nss - 1) | (max_t(int, le16_to_cpu(mcs->tx_mcs_160), 1) << 3);
 	elem->phy_cap_info[5] |= c;
 
-	c = IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMER_FB |
-	    IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMER_FB;
+	c = IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMING_FB |
+	    IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMING_PARTIAL_BW_FB;
 	elem->phy_cap_info[6] |= c;
 
 	/* the maximum cap is 4 x 3, (Nr, Nc) = (3, 2) */
@@ -556,9 +528,9 @@ mt7915_init_he_caps(struct mt7915_phy *phy, enum nl80211_band band,
 			IEEE80211_HE_MAC_CAP0_HTC_HE;
 		he_cap_elem->mac_cap_info[3] =
 			IEEE80211_HE_MAC_CAP3_OMI_CONTROL |
-			IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_RESERVED;
+			IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_EXT_3;
 		he_cap_elem->mac_cap_info[4] =
-			IEEE80211_HE_MAC_CAP4_AMDSU_IN_AMPDU;
+			IEEE80211_HE_MAC_CAP4_AMSDU_IN_AMPDU;
 
 		if (band == NL80211_BAND_2GHZ)
 			he_cap_elem->phy_cap_info[0] =
@@ -615,7 +587,7 @@ mt7915_init_he_caps(struct mt7915_phy *phy, enum nl80211_band band,
 				IEEE80211_HE_PHY_CAP6_PARTIAL_BW_EXT_RANGE |
 				IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT;
 			he_cap_elem->phy_cap_info[7] |=
-				IEEE80211_HE_PHY_CAP7_POWER_BOOST_FACTOR_AR |
+				IEEE80211_HE_PHY_CAP7_POWER_BOOST_FACTOR_SUPP |
 				IEEE80211_HE_PHY_CAP7_HE_SU_MU_PPDU_4XLTF_AND_08_US_GI;
 			he_cap_elem->phy_cap_info[8] |=
 				IEEE80211_HE_PHY_CAP8_20MHZ_IN_40MHZ_HE_PPDU_IN_2G |
@@ -729,8 +701,8 @@ int mt7915_register_device(struct mt7915_dev *dev)
 	dev->mt76.test_ops = &mt7915_testmode_ops;
 #endif
 
-	ret = mt76_register_device(&dev->mt76, true, mt7915_rates,
-				   ARRAY_SIZE(mt7915_rates));
+	ret = mt76_register_device(&dev->mt76, true, mt76_rates,
+				   ARRAY_SIZE(mt76_rates));
 	if (ret)
 		return ret;
 

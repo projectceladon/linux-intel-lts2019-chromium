@@ -493,7 +493,7 @@ static int cam_jpeg_mgr_process_cmd(void *priv, void *data)
 			rc);
 		goto rel_cpu_buf;
 	}
-	cam_common_util_get_curr_timestamp(&p_cfg_req->submit_timestamp);
+	p_cfg_req->submit_timestamp = cam_common_util_get_curr_timestamp();
 	if (cam_mem_put_cpu_buf(
 		config_args->hw_update_entries[CAM_JPEG_CHBASE].handle))
 		CAM_WARN(CAM_JPEG, "unable to put info for cmd buf: 0x%x",
@@ -538,7 +538,6 @@ static int cam_jpeg_mgr_config_hw(void *hw_mgr_priv, void *config_hw_args)
 	struct cam_hw_config_args *config_args = config_hw_args;
 	struct cam_jpeg_hw_ctx_data *ctx_data = NULL;
 	uintptr_t request_id = 0;
-	struct cam_hw_update_entry *hw_update_entries;
 	struct crm_workq_task *task;
 	struct cam_jpeg_process_frame_work_data_t *task_data;
 	struct cam_jpeg_hw_cfg_req *p_cfg_req = NULL;
@@ -579,8 +578,7 @@ static int cam_jpeg_mgr_config_hw(void *hw_mgr_priv, void *config_hw_args)
 
 	request_id = (uintptr_t)config_args->priv;
 	p_cfg_req->req_id = request_id;
-	hw_update_entries = config_args->hw_update_entries;
-	CAM_DBG(CAM_JPEG, "ctx_data = %pK req_id = %lld %zd",
+	CAM_DBG(CAM_JPEG, "ctx_data = %pK req_id = %lu %zd",
 		ctx_data, request_id, (uintptr_t)config_args->priv);
 	task = cam_req_mgr_workq_get_task(g_jpeg_hw_mgr.work_process_frame);
 	if (!task) {
@@ -1052,14 +1050,15 @@ static int cam_jpeg_mgr_hw_dump(void *hw_mgr_priv, void *dump_hw_args)
 	struct cam_jpeg_hw_mgr *hw_mgr = hw_mgr_priv;
 	struct cam_jpeg_hw_ctx_data *ctx_data = NULL;
 	struct cam_jpeg_hw_cfg_req *p_cfg_req = NULL;
-	struct timeval cur_time;
+	s64 diff;
+	ktime_t cur_time;
 	uint32_t dev_type;
-	uint64_t diff;
 	uint64_t *addr, *start;
 	char *dst;
 	struct cam_jpeg_hw_dump_header *hdr;
 	uint32_t min_len, remain_len;
 	struct cam_jpeg_hw_dump_args jpeg_dump_args;
+	struct timespec64 tm, cur_tm;
 
 	if (!hw_mgr || !dump_args || !dump_args->ctxt_to_hw_map) {
 		CAM_ERR(CAM_JPEG, "Invalid args");
@@ -1083,27 +1082,28 @@ static int cam_jpeg_mgr_hw_dump(void *hw_mgr_priv, void *dump_hw_args)
 	return 0;
 
 hw_dump:
-	cam_common_util_get_curr_timestamp(&cur_time);
-	diff = cam_common_util_get_time_diff(&cur_time,
-		&p_cfg_req->submit_timestamp);
+	cur_time = cam_common_util_get_curr_timestamp();
+	diff = ktime_us_delta(cur_time, p_cfg_req->submit_timestamp);
+	cur_tm = ktime_to_timespec64(cur_time);
+	tm = ktime_to_timespec64(p_cfg_req->submit_timestamp);
 	if (diff < CAM_JPEG_RESPONSE_TIME_THRESHOLD) {
 		CAM_INFO(CAM_JPEG,
 			"No error req %lld %ld:%06ld %ld:%06ld",
 			dump_args->request_id,
-			p_cfg_req->submit_timestamp.tv_sec,
-			p_cfg_req->submit_timestamp.tv_usec,
-			cur_time.tv_sec,
-			cur_time.tv_usec);
+			tm.tv_sec,
+			tm.tv_nsec / NSEC_PER_USEC,
+			cur_tm.tv_sec,
+			cur_tm.tv_nsec / NSEC_PER_USEC);
 		mutex_unlock(&hw_mgr->hw_mgr_mutex);
 		return 0;
 	}
 	CAM_INFO(CAM_JPEG,
 		"Error req %lld %ld:%06ld %ld:%06ld",
 		dump_args->request_id,
-		p_cfg_req->submit_timestamp.tv_sec,
-		p_cfg_req->submit_timestamp.tv_usec,
-		cur_time.tv_sec,
-		cur_time.tv_usec);
+		tm.tv_sec,
+		tm.tv_nsec / NSEC_PER_USEC,
+		cur_tm.tv_sec,
+		cur_tm.tv_nsec / NSEC_PER_USEC);
 	rc  = cam_mem_get_cpu_buf(dump_args->buf_handle,
 		&jpeg_dump_args.cpu_addr, &jpeg_dump_args.buf_len);
 	if (!jpeg_dump_args.cpu_addr || !jpeg_dump_args.buf_len || rc) {
@@ -1128,10 +1128,10 @@ hw_dump:
 	addr = (uint64_t *)(dst + sizeof(struct cam_jpeg_hw_dump_header));
 	start = addr;
 	*addr++ = dump_args->request_id;
-	*addr++ = p_cfg_req->submit_timestamp.tv_sec;
-	*addr++ = p_cfg_req->submit_timestamp.tv_usec;
-	*addr++ = cur_time.tv_sec;
-	*addr++ = cur_time.tv_usec;
+	*addr++ = tm.tv_sec;
+	*addr++ = tm.tv_nsec / NSEC_PER_USEC;
+	*addr++ = cur_tm.tv_sec;
+	*addr++ = cur_tm.tv_nsec / NSEC_PER_USEC;
 	hdr->size = hdr->word_size * (addr - start);
 	dump_args->offset += hdr->size +
 		sizeof(struct cam_jpeg_hw_dump_header);
@@ -1237,7 +1237,7 @@ static int cam_jpeg_mgr_release_hw(void *hw_mgr_priv, void *release_hw_args)
 
 	kfree(ctx_data->cdm_cmd);
 	ctx_data->cdm_cmd = NULL;
-	CAM_DBG(CAM_JPEG, "handle %llu", ctx_data);
+	CAM_DBG(CAM_JPEG, "handle %p", ctx_data);
 
 	return rc;
 }
@@ -1252,7 +1252,6 @@ static int cam_jpeg_mgr_acquire_hw(void *hw_mgr_priv, void *acquire_hw_args)
 	struct cam_jpeg_acquire_dev_info jpeg_dev_acquire_info;
 	struct cam_cdm_acquire_data cdm_acquire;
 	uint32_t dev_type;
-	uint32_t size = 0;
 
 	if ((!hw_mgr_priv) || (!acquire_hw_args)) {
 		CAM_ERR(CAM_JPEG, "Invalid params: %pK %pK", hw_mgr_priv,
@@ -1336,9 +1335,6 @@ static int cam_jpeg_mgr_acquire_hw(void *hw_mgr_priv, void *acquire_hw_args)
 	} else {
 		hw_mgr->cdm_info[dev_type][0].ref_cnt++;
 	}
-
-	size =
-	hw_mgr->cdm_info[dev_type][0].cdm_ops->cdm_required_size_changebase();
 
 	if (hw_mgr->cdm_info[dev_type][0].ref_cnt == 1)
 		if (cam_cdm_stream_on(

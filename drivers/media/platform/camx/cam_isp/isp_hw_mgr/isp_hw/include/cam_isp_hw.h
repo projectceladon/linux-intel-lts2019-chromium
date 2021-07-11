@@ -35,8 +35,8 @@
  * @time_usecs:         time in micro seconds
  */
 struct cam_isp_timestamp {
-	struct timeval          mono_time;
-	struct timeval          vt_time;
+	ktime_t                 mono_time;
+	ktime_t                 vt_time;
 	uint64_t                ticks;
 	uint64_t                time_usecs;
 };
@@ -154,7 +154,7 @@ struct cam_isp_resource_node {
 	struct cam_hw_intf            *hw_intf;
 	void                          *res_priv;
 	struct list_head               list;
-	void                          *cdm_ops;
+	const struct cam_cdm_utils_ops *cdm_ops;
 	void                          *tasklet_info;
 	int                            irq_handle;
 	int                            rdi_only_ctx;
