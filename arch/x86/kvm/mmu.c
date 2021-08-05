@@ -3245,9 +3245,8 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep, unsigned pte_access,
 	return ret;
 }
 
-static kvm_pfn_t pte_prefetch_gfn_to_pfn_page(struct kvm_vcpu *vcpu,
-					      gfn_t gfn, bool no_dirty_log,
-					      struct page **page)
+static kvm_pfn_t pte_prefetch_gfn_to_pfn(struct kvm_vcpu *vcpu, gfn_t gfn,
+				     bool no_dirty_log)
 {
 	struct kvm_memory_slot *slot;
 
@@ -3255,7 +3254,7 @@ static kvm_pfn_t pte_prefetch_gfn_to_pfn_page(struct kvm_vcpu *vcpu,
 	if (!slot)
 		return KVM_PFN_ERR_FAULT;
 
-	return gfn_to_pfn_page_memslot_atomic(slot, gfn, page);
+	return gfn_to_pfn_memslot_atomic(slot, gfn);
 }
 
 static int direct_pte_prefetch_many(struct kvm_vcpu *vcpu,
@@ -3428,7 +3427,7 @@ static int kvm_handle_bad_page(struct kvm_vcpu *vcpu, gfn_t gfn, kvm_pfn_t pfn)
 
 static void transparent_hugepage_adjust(struct kvm_vcpu *vcpu,
 					gfn_t gfn, kvm_pfn_t *pfnp,
-					struct page **page, int *levelp)
+					int *levelp)
 {
 	kvm_pfn_t pfn = *pfnp;
 	int level = *levelp;
@@ -3439,7 +3438,7 @@ static void transparent_hugepage_adjust(struct kvm_vcpu *vcpu,
 	 * PT_PAGE_TABLE_LEVEL and there would be no adjustment done
 	 * here.
 	 */
-	if (!is_error_noslot_pfn(pfn) && !kvm_is_reserved_pfn(pfn) && *page &&
+	if (!is_error_noslot_pfn(pfn) && !kvm_is_reserved_pfn(pfn) &&
 	    !kvm_is_zone_device_pfn(pfn) && level == PT_PAGE_TABLE_LEVEL &&
 	    PageTransCompoundMap(pfn_to_page(pfn)) &&
 	    !mmu_gfn_lpage_is_disallowed(vcpu, gfn, PT_DIRECTORY_LEVEL)) {
@@ -3457,11 +3456,10 @@ static void transparent_hugepage_adjust(struct kvm_vcpu *vcpu,
 		mask = KVM_PAGES_PER_HPAGE(level) - 1;
 		VM_BUG_ON((gfn & mask) != (pfn & mask));
 		if (pfn & mask) {
-			put_page(*page);
+			kvm_release_pfn_clean(pfn);
 			pfn &= ~mask;
+			kvm_get_pfn(pfn);
 			*pfnp = pfn;
-			*page = pfn_to_page(pfn);
-			get_page(*page);
 		}
 	}
 }
@@ -3678,7 +3676,7 @@ static bool fast_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, int level,
 
 static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 			 gpa_t cr2_or_gpa, kvm_pfn_t *pfn, hva_t *hva,
-			 bool write, bool *writable, struct page **page);
+			 bool write, bool *writable);
 static int make_mmu_pages_available(struct kvm_vcpu *vcpu);
 
 static int nonpaging_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
@@ -3693,7 +3691,6 @@ static int nonpaging_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool map_writable, write = error_code & PFERR_WRITE_MASK;
 	bool lpage_disallowed = (error_code & PFERR_FETCH_MASK) &&
 				is_nx_huge_page_enabled();
-	struct page *page;
 
 	force_pt_level = lpage_disallowed;
 	level = mapping_level(vcpu, gfn, &force_pt_level);
@@ -3716,7 +3713,7 @@ static int nonpaging_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	smp_rmb();
 
 	if (try_async_pf(vcpu, prefault, gfn, gpa, &pfn, &hva,
-			 write, &map_writable, &page))
+			 write, &map_writable))
 		return RET_PF_RETRY;
 
 	if (handle_abnormal_pfn(vcpu, gpa, gfn, pfn, ACC_ALL, &r))
@@ -3730,13 +3727,12 @@ static int nonpaging_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	if (make_mmu_pages_available(vcpu) < 0)
 		goto out_unlock;
 	if (likely(!force_pt_level))
-		transparent_hugepage_adjust(vcpu, gfn, &pfn, &page, &level);
+		transparent_hugepage_adjust(vcpu, gfn, &pfn, &level);
 	r = __direct_map(vcpu, gpa, write, map_writable, level, pfn,
 			 prefault, false);
 out_unlock:
 	spin_unlock(&vcpu->kvm->mmu_lock);
-	if (page)
-		put_page(page);
+	kvm_release_pfn_clean(pfn);
 	return r;
 }
 
@@ -4236,9 +4232,8 @@ static int kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 }
 
 static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
-			 gpa_t cr2_or_gpa, kvm_pfn_t *pfn,
-			 hva_t *hva, bool write, bool *writable,
-			 struct page **page)
+			 gpa_t cr2_or_gpa, kvm_pfn_t *pfn, hva_t *hva,
+			 bool write, bool *writable)
 {
 	struct kvm_memory_slot *slot;
 	bool async;
@@ -4253,8 +4248,8 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 
 	slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
 	async = false;
-	*pfn = __gfn_to_pfn_page_memslot(slot, gfn, false, &async,
-					 write, writable, hva, page);
+	*pfn = __gfn_to_pfn_memslot(slot, gfn, false, &async,
+				    write, writable, hva);
 	if (!async)
 		return false; /* *pfn has correct page already */
 
@@ -4268,8 +4263,8 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 			return true;
 	}
 
-	*pfn = __gfn_to_pfn_page_memslot(slot, gfn, false, NULL,
-					 write, writable, hva, page);
+	*pfn = __gfn_to_pfn_memslot(slot, gfn, false, NULL,
+				    write, writable, hva);
 	return false;
 }
 
@@ -4335,7 +4330,6 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	bool map_writable;
 	bool lpage_disallowed = (error_code & PFERR_FETCH_MASK) &&
 				is_nx_huge_page_enabled();
-	struct page *page;
 
 	MMU_WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa));
 
@@ -4364,7 +4358,7 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	smp_rmb();
 
 	if (try_async_pf(vcpu, prefault, gfn, gpa, &pfn, &hva,
-			 write, &map_writable, &page))
+			 write, &map_writable))
 		return RET_PF_RETRY;
 
 	if (handle_abnormal_pfn(vcpu, 0, gfn, pfn, ACC_ALL, &r))
@@ -4378,13 +4372,12 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	if (make_mmu_pages_available(vcpu) < 0)
 		goto out_unlock;
 	if (likely(!force_pt_level))
-		transparent_hugepage_adjust(vcpu, gfn, &pfn, &page, &level);
+		transparent_hugepage_adjust(vcpu, gfn, &pfn, &level);
 	r = __direct_map(vcpu, gpa, write, map_writable, level, pfn,
 			 prefault, lpage_disallowed);
 out_unlock:
 	spin_unlock(&vcpu->kvm->mmu_lock);
-	if (page)
-		put_page(page);
+	kvm_release_pfn_clean(pfn);
 	return r;
 }
 
