@@ -366,6 +366,8 @@ static const struct usb_device_id blacklist_table[] = {
 	/* Realtek 8822CE Bluetooth devices */
 	{ USB_DEVICE(0x0bda, 0xb00c), .driver_info = BTUSB_REALTEK |
 						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x0bda, 0xc822), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
 
 	/* Realtek 8852AE Bluetooth devices */
 	{ USB_DEVICE(0x0bda, 0xc852), .driver_info = BTUSB_REALTEK |
@@ -3674,6 +3676,8 @@ static int btusb_mtk_setup(struct hci_dev *hdev)
 			bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)", err);
 			return err;
 		}
+
+		hci_set_msft_opcode(hdev, 0xFD30);
 		goto done;
 	default:
 		bt_dev_err(hdev, "Unsupported hardware variant (%08x)",
@@ -3981,6 +3985,11 @@ static int btusb_setup_qca_download_fw(struct hci_dev *hdev,
 
 	sent += size;
 	count -= size;
+
+	/* ep2 need time to switch from function acl to function dfu,
+	 * so we add 20ms delay here.
+	 */
+	msleep(20);
 
 	while (count) {
 		size = min_t(size_t, count, QCA_DFU_PACKET_LEN);

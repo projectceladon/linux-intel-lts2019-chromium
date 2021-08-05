@@ -1376,9 +1376,10 @@ static void uclamp_sync_util_min_rt_default(void)
 static inline struct uclamp_se
 uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 {
+	/* Copy by value as we could modify it */
 	struct uclamp_se uc_req = p->uclamp_req[clamp_id];
 #ifdef CONFIG_UCLAMP_TASK_GROUP
-	struct uclamp_se uc_max;
+	unsigned int tg_min, tg_max, value;
 
 	/*
 	 * Tasks in autogroups or root task group will be
@@ -1389,9 +1390,11 @@ uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 	if (task_group(p) == &root_task_group)
 		return uc_req;
 
-	uc_max = task_group(p)->uclamp[clamp_id];
-	if (uc_req.value > uc_max.value || !uc_req.user_defined)
-		return uc_max;
+	tg_min = task_group(p)->uclamp[UCLAMP_MIN].value;
+	tg_max = task_group(p)->uclamp[UCLAMP_MAX].value;
+	value = uc_req.value;
+	value = clamp(value, tg_min, tg_max);
+	uclamp_se_set(&uc_req, value, false);
 #endif
 
 	return uc_req;
@@ -1590,8 +1593,9 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 }
 
 static inline void
-uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
+uclamp_update_active(struct task_struct *p)
 {
+	enum uclamp_id clamp_id;
 	struct rq_flags rf;
 	struct rq *rq;
 
@@ -1611,9 +1615,11 @@ uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
 	 * affecting a valid clamp bucket, the next time it's enqueued,
 	 * it will already see the updated clamp bucket value.
 	 */
-	if (p->uclamp[clamp_id].active) {
-		uclamp_rq_dec_id(rq, p, clamp_id);
-		uclamp_rq_inc_id(rq, p, clamp_id);
+	for_each_clamp_id(clamp_id) {
+		if (p->uclamp[clamp_id].active) {
+			uclamp_rq_dec_id(rq, p, clamp_id);
+			uclamp_rq_inc_id(rq, p, clamp_id);
+		}
 	}
 
 	task_rq_unlock(rq, p, &rf);
@@ -1621,20 +1627,14 @@ uclamp_update_active(struct task_struct *p, enum uclamp_id clamp_id)
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 static inline void
-uclamp_update_active_tasks(struct cgroup_subsys_state *css,
-			   unsigned int clamps)
+uclamp_update_active_tasks(struct cgroup_subsys_state *css)
 {
-	enum uclamp_id clamp_id;
 	struct css_task_iter it;
 	struct task_struct *p;
 
 	css_task_iter_start(css, 0, &it);
-	while ((p = css_task_iter_next(&it))) {
-		for_each_clamp_id(clamp_id) {
-			if ((0x1 << clamp_id) & clamps)
-				uclamp_update_active(p, clamp_id);
-		}
-	}
+	while ((p = css_task_iter_next(&it)))
+		uclamp_update_active(p);
 	css_task_iter_end(&it);
 }
 
@@ -3667,6 +3667,21 @@ fire_sched_out_preempt_notifiers(struct task_struct *curr,
 		__fire_sched_out_preempt_notifiers(curr, next);
 }
 
+#ifdef CONFIG_KVM_HETEROGENEOUS_RT
+static bool
+fire_may_preempt_notifiers(struct task_struct *prev)
+{
+	struct preempt_notifier *notifier;
+
+	if (static_branch_unlikely(&preempt_notifier_key))
+		hlist_for_each_entry(notifier, &prev->preempt_notifiers, link)
+			if (notifier->ops->may_preempt &&
+			    !notifier->ops->may_preempt(notifier, prev))
+				return false;
+	return true;
+}
+#endif
+
 #else /* !CONFIG_PREEMPT_NOTIFIERS */
 
 static inline void fire_sched_in_preempt_notifiers(struct task_struct *curr)
@@ -3677,6 +3692,12 @@ static inline void
 fire_sched_out_preempt_notifiers(struct task_struct *curr,
 				 struct task_struct *next)
 {
+}
+
+static inline bool
+fire_may_preempt_notifiers(struct task_struct *curr)
+{
+	return true;
 }
 
 #endif /* CONFIG_PREEMPT_NOTIFIERS */
@@ -5213,6 +5234,15 @@ static void __sched notrace __schedule(bool preempt)
 
 	if (sched_feat(HRTICK))
 		hrtick_clear(rq);
+
+#ifdef CONFIG_KVM_HETEROGENEOUS_RT
+	if (preempt && prev->sched_class == &fair_sched_class &&
+	    !fire_may_preempt_notifiers(prev)) {
+		clear_tsk_need_resched(prev);
+		clear_preempt_need_resched();
+		return;
+	}
+#endif
 
 	local_irq_disable();
 	rcu_note_context_switch(preempt);
@@ -8177,8 +8207,11 @@ int task_set_core_sched(int set, struct task_struct *tsk,
 	 * added to tagged CGroup, then the prctl() returns -EBUSY.
 	 */
 	if (!!tsk->core_cookie == set) {
-		if ((tsk->core_cookie == (unsigned long)tsk) ||
-		    (tsk->core_cookie == (unsigned long)tsk->sched_task_group)) {
+		if ((tsk->core_cookie == (unsigned long)tsk)
+#ifdef CONFIG_CGROUP_SCHED
+		    || tsk->core_cookie == (unsigned long)tsk->sched_task_group
+#endif
+		    ) {
 			return -EBUSY;
 		}
 	}
@@ -8487,7 +8520,11 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 	/* Propagate the effective uclamp value for the new group */
+	mutex_lock(&uclamp_mutex);
+	rcu_read_lock();
 	cpu_util_update_eff(css);
+	rcu_read_unlock();
+	mutex_unlock(&uclamp_mutex);
 #endif
 
 	return 0;
@@ -8595,6 +8632,9 @@ static void cpu_util_update_eff(struct cgroup_subsys_state *css)
 	enum uclamp_id clamp_id;
 	unsigned int clamps;
 
+	lockdep_assert_held(&uclamp_mutex);
+	SCHED_WARN_ON(!rcu_read_lock_held());
+
 	css_for_each_descendant_pre(css, top_css) {
 		uc_parent = css_tg(css)->parent
 			? css_tg(css)->parent->uclamp : NULL;
@@ -8627,7 +8667,7 @@ static void cpu_util_update_eff(struct cgroup_subsys_state *css)
 		}
 
 		/* Immediately update descendants RUNNABLE tasks */
-		uclamp_update_active_tasks(css, clamps);
+		uclamp_update_active_tasks(css);
 	}
 }
 
