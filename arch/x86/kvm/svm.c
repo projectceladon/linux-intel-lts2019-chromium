@@ -517,6 +517,9 @@ static void recalc_intercepts(struct vcpu_svm *svm)
 	c->intercept_dr = h->intercept_dr | g->intercept_dr;
 	c->intercept_exceptions = h->intercept_exceptions | g->intercept_exceptions;
 	c->intercept = h->intercept | g->intercept;
+
+	c->intercept |= (1ULL << INTERCEPT_VMLOAD);
+	c->intercept |= (1ULL << INTERCEPT_VMSAVE);
 }
 
 static inline struct vmcb *get_host_vmcb(struct vcpu_svm *svm)
@@ -1444,12 +1447,7 @@ static __init int svm_hardware_setup(void)
 		}
 	}
 
-	if (vgif) {
-		if (!boot_cpu_has(X86_FEATURE_VGIF))
-			vgif = false;
-		else
-			pr_info("Virtual GIF supported\n");
-	}
+	vgif = false; /* Disabled for CVE-2021-3653 */
 
 	return 0;
 
@@ -1784,7 +1782,7 @@ static void __sev_asid_free(int asid)
 
 	for_each_possible_cpu(cpu) {
 		sd = per_cpu(svm_data, cpu);
-		sd->sev_vmcbs[pos] = NULL;
+		sd->sev_vmcbs[asid] = NULL;
 	}
 }
 
@@ -3608,7 +3606,13 @@ static void enter_svm_guest_mode(struct vcpu_svm *svm, u64 vmcb_gpa,
 	svm->nested.intercept            = nested_vmcb->control.intercept;
 
 	svm_flush_tlb(&svm->vcpu, true);
-	svm->vmcb->control.int_ctl = nested_vmcb->control.int_ctl | V_INTR_MASKING_MASK;
+
+	svm->vmcb->control.int_ctl &=
+			V_INTR_MASKING_MASK | V_GIF_ENABLE_MASK | V_GIF_MASK;
+
+	svm->vmcb->control.int_ctl |= nested_vmcb->control.int_ctl &
+			(V_TPR_MASK | V_IRQ_INJECTION_BITS_MASK);
+
 	if (nested_vmcb->control.int_ctl & V_INTR_MASKING_MASK)
 		svm->vcpu.arch.hflags |= HF_VINTR_MASK;
 	else
@@ -5864,6 +5868,21 @@ static void svm_vcpu_run(struct kvm_vcpu *vcpu)
 	svm->next_rip = 0;
 
 	svm->vmcb->control.tlb_ctl = TLB_CONTROL_DO_NOTHING;
+
+#ifdef CONFIG_KVM_HETEROGENEOUS_RT
+	vcpu->arch.preempt_count.may_boost = 0;
+	if (svm->vmcb->control.exit_code == SVM_EXIT_INTR ||
+	    (svm->vmcb->control.exit_code == SVM_EXIT_MSR &&
+	    svm->vmcb->control.exit_info_1)) {
+		/*
+		 * Boost when MSR write when sending IPI for function call,
+		 * otherwise the sending cpu might not be able to release lock
+		 * and the destination cpu will not be able to progress.
+		 */
+		if (kvm_vcpu_dont_preempt(vcpu))
+			vcpu->arch.preempt_count.may_boost = 1;
+	}
+#endif
 
 	/* if exit due to PF check for async PF */
 	if (svm->vmcb->control.exit_code == SVM_EXIT_EXCP_BASE + PF_VECTOR)
