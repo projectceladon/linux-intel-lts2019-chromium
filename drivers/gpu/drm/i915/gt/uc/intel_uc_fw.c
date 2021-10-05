@@ -294,6 +294,13 @@ int intel_uc_fw_fetch(struct intel_uc_fw *uc_fw)
 	__force_fw_fetch_failures(uc_fw, -EINVAL);
 	__force_fw_fetch_failures(uc_fw, -ESTALE);
 
+	/* Ignore firmware load for GVT-g */
+	if (intel_vgpu_active(i915)) {
+		dev_warn(dev, "%s firmware load ignored for GVT-g\n",
+			intel_uc_fw_type_repr(uc_fw->type));
+		goto fail;
+	}
+
 	err = request_firmware(&fw, uc_fw->path, dev);
 	if (err)
 		goto fail;
