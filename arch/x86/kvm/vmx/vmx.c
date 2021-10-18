@@ -7883,6 +7883,8 @@ static __exit void hardware_unsetup(void)
 }
 
 static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
+	.name = "kvm_intel",
+
 	.cpu_has_kvm_support = cpu_has_kvm_support,
 	.disabled_by_bios = vmx_disabled_by_bios,
 	.hardware_setup = hardware_setup,
