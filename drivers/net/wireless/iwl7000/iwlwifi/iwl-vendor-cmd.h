@@ -135,6 +135,8 @@
  * @IWL_MVM_VENDOR_CMD_GEO_SAR_GET_TABLE: retrieves the full GEO SAR table.
  *	Contains a &IWL_MVM_VENDOR_ATTR_SAR_TABLE and a
  *	&IWL_MVM_VENDOR_ATTR_GEO_SAR_VER attributes.
+ * @IWL_MVM_VENDOR_CMD_GET_FW_VERSION: Driver version
+ * @IWL_MVM_VENDOR_CMD_GET_FW_VERSION: Firmware version
  */
 
 enum iwl_mvm_vendor_cmd {
@@ -192,6 +194,8 @@ enum iwl_mvm_vendor_cmd {
 	IWL_MVM_VENDOR_CMD_PPAG_GET_TABLE                       = 0x33,
 	IWL_MVM_VENDOR_CMD_SAR_GET_TABLE                        = 0x34,
 	IWL_MVM_VENDOR_CMD_GEO_SAR_GET_TABLE                    = 0x35,
+	IWL_MVM_VENDOR_CMD_GET_FW_VERSION                       = 0x36,
+	IWL_MVM_VENDOR_CMD_GET_DRV_VERSION                      = 0x37,
 };
 
 /**
@@ -895,6 +899,8 @@ enum iwl_vendor_sw_rfkill_state {
  *	iwl_vendor_sar_per_chain_geo_table.
  * @IWL_MVM_VNDOR_ATTR_GEO_SAR_VER: u32 attribute. Contains the GEO SAR
  *	table version
+ * @IWL_MVM_VENDOR_ATTR_DRV_VER: string attribute. Driver version
+ * @IWL_MVM_VENDOR_ATTR_FW_VER: string attribute. Firmware version
  *
  * @NUM_IWL_MVM_VENDOR_ATTR: number of vendor attributes
  * @MAX_IWL_MVM_VENDOR_ATTR: highest vendor attribute number
@@ -1015,6 +1021,8 @@ enum iwl_mvm_vendor_attr {
 	IWL_MVM_VENDOR_ATTR_SAR_VER                             = 0x75,
 	IWL_MVM_VENDOR_ATTR_GEO_SAR_TABLE                       = 0x76,
 	IWL_MVM_VENDOR_ATTR_GEO_SAR_VER                         = 0x77,
+	IWL_MVM_VENDOR_ATTR_FW_VER                              = 0x78,
+	IWL_MVM_VENDOR_ATTR_DRV_VER                             = 0x79,
 
 	NUM_IWL_MVM_VENDOR_ATTR,
 	MAX_IWL_MVM_VENDOR_ATTR = NUM_IWL_MVM_VENDOR_ATTR - 1,
