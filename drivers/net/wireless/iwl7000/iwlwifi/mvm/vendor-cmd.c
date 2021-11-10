@@ -1,18 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-/*
+// iSPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*i
  * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
 #include <linux/etherdevice.h>
 #include <net/netlink.h>
+#include <linux/utsname.h>
+#include <linux/version.h>
 #include <net/mac80211.h>
 #include "mvm.h"
 #include "iwl-vendor-cmd.h"
 #include "fw/api/datapath.h"
 
 #include "iwl-io.h"
-#include "iwl-prph.h"
+#include "iwl-prph.h"iii
 
 static LIST_HEAD(device_list);
 static DEFINE_SPINLOCK(device_list_lock);
@@ -40,7 +42,7 @@ static int iwl_mvm_netlink_notifier(struct notifier_block *nb,
 static struct notifier_block iwl_mvm_netlink_notifier_block = {
 	.notifier_call = iwl_mvm_netlink_notifier,
 };
-
+i
 void iwl_mvm_vendor_cmd_init(void)
 {
 	WARN_ON(netlink_register_notifier(&iwl_mvm_netlink_notifier_block));
@@ -102,7 +104,7 @@ iwl_mvm_vendor_attr_policy[NUM_IWL_MVM_VENDOR_ATTR] = {
 	[IWL_MVM_VENDOR_ATTR_TIME_SYNC_T3] = { .type = NLA_U64 },
 	[IWL_MVM_VENDOR_ATTR_TIME_SYNC_T3_MAX_ERROR] = { .type = NLA_U32 },
 	[IWL_MVM_VENDOR_ATTR_ROAMING_FORBIDDEN] = { .type = NLA_U8 },
-	[IWL_MVM_VENDOR_ATTR_AUTH_MODE] = { .type = NLA_U32 },
+	[IWL_MVM_VENDOR_ATTR_AUTH_MODE] = { .type = NLA_U32 },i
 	[IWL_MVM_VENDOR_ATTR_CHANNEL_NUM] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_HOST_DISASSOC_TYPE] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_SSID] = { .type = NLA_BINARY,
@@ -111,6 +113,8 @@ iwl_mvm_vendor_attr_policy[NUM_IWL_MVM_VENDOR_ATTR] = {
 	[IWL_MVM_VENDOR_ATTR_BAND] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_COLLOC_CHANNEL] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_COLLOC_ADDR] = { .type = NLA_BINARY, .len = ETH_ALEN },
+	[IWL_MVM_VENDOR_ATTR_FW_VER] = { .type = NLA_STRING, .len = 50 },
+	[IWL_MVM_VENDOR_ATTR_DRV_VER] = { .type = NLA_STRING, .len = 50 },
 };
 
 static struct nlattr **iwl_mvm_parse_vendor_data(const void *data, int data_len)
@@ -1810,6 +1814,48 @@ free:
 	return err;
 }
 
+static int iwl_mvm_vendor_get_fw_version(struct wiphy *wiphy,
+				   struct wireless_dev *wdev,
+				   const void *data, int data_len)
+{
+	int err = 0;
+	struct sk_buff *skb;
+	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
+	const struct iwl_fw *fw = mvm->fw;
+
+	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, sizeof(fw->fw_version));
+        if (!skb)
+                return -ENOMEM;
+        if (nla_put_string(skb, IWL_MVM_VENDOR_ATTR_FW_VER, fw->fw_version)) {
+                kfree_skb(skb);
+                return -ENOBUFS;
+	}
+
+	return cfg80211_vendor_cmd_reply(skb);
+}
+
+static int iwl_mvm_vendor_get_drv_version(struct wiphy *wiphy,
+				   struct wireless_dev *wdev,
+				   const void *data, int data_len)
+{
+	int err = 0;
+	struct sk_buff *skb;
+	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
+	const struct iwl_fw *fw = mvm->fw;
+
+	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, sizeof(utsname()->release));
+        if (!skb)
+                return -ENOMEM;
+        if (nla_put_string(skb, IWL_MVM_VENDOR_ATTR_DRV_VER, utsname()->release)) {
+                kfree_skb(skb);
+                return -ENOBUFS;
+	}
+
+	return cfg80211_vendor_cmd_reply(skb);
+}
+
 static const struct wiphy_vendor_command iwl_mvm_vendor_commands[] = {
 	{
 		.info = {
@@ -2256,6 +2302,33 @@ static const struct wiphy_vendor_command iwl_mvm_vendor_commands[] = {
 		.maxattr = MAX_IWL_MVM_VENDOR_ATTR,
 #endif
 	},
+	{
+	.info = {
+			.vendor_id = INTEL_OUI,
+			.subcmd = IWL_MVM_VENDOR_CMD_GET_FW_VERSION,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_NETDEV |
+			 WIPHY_VENDOR_CMD_NEED_RUNNING,
+		.doit = iwl_mvm_vendor_get_fw_version,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+		.policy = iwl_mvm_vendor_attr_policy,
+		.maxattr = MAX_IWL_MVM_VENDOR_ATTR,
+#endif
+	},
+	{
+		.info = {
+			.vendor_id = INTEL_OUI,
+			.subcmd = IWL_MVM_VENDOR_CMD_GET_DRV_VERSION,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_NETDEV |
+			 WIPHY_VENDOR_CMD_NEED_RUNNING,
+		.doit = iwl_mvm_vendor_get_drv_version,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+		.policy = iwl_mvm_vendor_attr_policy,
+		.maxattr = MAX_IWL_MVM_VENDOR_ATTR,
+#endif
+	},
+
 };
 
 enum iwl_mvm_vendor_events_idx {
