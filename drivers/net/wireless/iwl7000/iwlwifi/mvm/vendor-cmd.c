@@ -1,5 +1,5 @@
 // iSPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-/*i
+/*
  * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
@@ -14,7 +14,7 @@
 #include "fw/api/datapath.h"
 
 #include "iwl-io.h"
-#include "iwl-prph.h"iii
+#include "iwl-prph.h"
 
 static LIST_HEAD(device_list);
 static DEFINE_SPINLOCK(device_list_lock);
@@ -42,7 +42,7 @@ static int iwl_mvm_netlink_notifier(struct notifier_block *nb,
 static struct notifier_block iwl_mvm_netlink_notifier_block = {
 	.notifier_call = iwl_mvm_netlink_notifier,
 };
-i
+
 void iwl_mvm_vendor_cmd_init(void)
 {
 	WARN_ON(netlink_register_notifier(&iwl_mvm_netlink_notifier_block));
@@ -104,7 +104,7 @@ iwl_mvm_vendor_attr_policy[NUM_IWL_MVM_VENDOR_ATTR] = {
 	[IWL_MVM_VENDOR_ATTR_TIME_SYNC_T3] = { .type = NLA_U64 },
 	[IWL_MVM_VENDOR_ATTR_TIME_SYNC_T3_MAX_ERROR] = { .type = NLA_U32 },
 	[IWL_MVM_VENDOR_ATTR_ROAMING_FORBIDDEN] = { .type = NLA_U8 },
-	[IWL_MVM_VENDOR_ATTR_AUTH_MODE] = { .type = NLA_U32 },i
+	[IWL_MVM_VENDOR_ATTR_AUTH_MODE] = { .type = NLA_U32 },
 	[IWL_MVM_VENDOR_ATTR_CHANNEL_NUM] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_HOST_DISASSOC_TYPE] = { .type = NLA_U8 },
 	[IWL_MVM_VENDOR_ATTR_SSID] = { .type = NLA_BINARY,
