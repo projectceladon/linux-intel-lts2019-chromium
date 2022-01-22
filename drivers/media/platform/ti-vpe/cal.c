@@ -905,13 +905,9 @@ static irqreturn_t cal_irq(int irq_cal, void *data)
 static int cal_querycap(struct file *file, void *priv,
 			struct v4l2_capability *cap)
 {
-	struct cal_ctx *ctx = video_drvdata(file);
-
 	strscpy(cap->driver, CAL_MODULE_NAME, sizeof(cap->driver));
 	strscpy(cap->card, CAL_MODULE_NAME, sizeof(cap->card));
 
-	snprintf(cap->bus_info, sizeof(cap->bus_info),
-		 "platform:%s", ctx->v4l2_dev.name);
 	return 0;
 }
 
