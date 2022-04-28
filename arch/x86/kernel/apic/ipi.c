@@ -103,7 +103,9 @@ static inline int __prepare_ICR2(unsigned int mask)
 
 static inline void __xapic_wait_icr_idle(void)
 {
-	while (native_apic_mem_read(APIC_ICR) & APIC_ICR_BUSY)
+	int count=100;
+
+	while(count-- > 0)
 		cpu_relax();
 }
 
