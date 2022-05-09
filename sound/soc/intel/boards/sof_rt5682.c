@@ -51,6 +51,7 @@
 #define SOF_MAX98373_SPEAKER_AMP_PRESENT	BIT(16)
 #define SOF_MAX98360A_SPEAKER_AMP_PRESENT	BIT(17)
 #define SOF_RT5682S_HEADPHONE_CODEC_PRESENT	BIT(18)
+#define SOF_RT1019_SPEAKER_AMP_PRESENT	BIT(26)
 
 /* Default: MCLK on, MCLK 19.2M, SSP0  */
 static unsigned long sof_rt5682_quirk = SOF_RT5682_MCLK_EN |
@@ -703,6 +704,8 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 			links[id].ops = &sof_rt1015_ops;
 		} else if (sof_rt5682_quirk & SOF_RT1015P_SPEAKER_AMP_PRESENT) {
 			sof_rt1015p_dai_link(&links[id]);
+		} else if (sof_rt5682_quirk & SOF_RT1019_SPEAKER_AMP_PRESENT) {
+			sof_rt1019_dai_link(&links[id]);
 		} else if (sof_rt5682_quirk &
 				SOF_MAX98373_SPEAKER_AMP_PRESENT) {
 			links[id].codecs = max_98373_components;
