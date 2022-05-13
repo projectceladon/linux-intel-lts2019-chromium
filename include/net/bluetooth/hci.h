@@ -234,8 +234,13 @@ enum {
 	 */
 	HCI_QUIRK_NO_SUSPEND_NOTIFIER,
 
-	/* This quirk will be set when running on Intel StP controller */
-	HCI_QUIRK_INTEL_STP_CONTROLLER,
+	/* CHROMIUM-only: This quirk prevents RTL8822 to perform remote wake
+	 * on system suspend to save power. This shouldn't be upstreamed.
+	 */
+	HCI_QUIRK_DISABLE_REMOTE_WAKE,
+
+	/* This quirk will be set when running on Intel SdP/StP controller */
+	HCI_QUIRK_RESTRICT_CONN_PARAMS,
 };
 
 /* HCI device flags */
@@ -320,10 +325,7 @@ enum {
 	HCI_ENABLE_LL_PRIVACY,
 	HCI_CMD_PENDING,
 	HCI_FORCE_NO_MITM,
-
-#ifdef CONFIG_BT_FEATURE_QUALITY_REPORT
 	HCI_QUALITY_REPORT,
-#endif
 
 	__HCI_NUM_FLAGS,
 };

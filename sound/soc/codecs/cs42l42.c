@@ -619,6 +619,8 @@ static int cs42l42_pll_config(struct snd_soc_component *component)
 
 	for (i = 0; i < ARRAY_SIZE(pll_ratio_table); i++) {
 		if (pll_ratio_table[i].sclk == clk) {
+			cs42l42->pll_config = i;
+
 			/* Configure the internal sample rate */
 			snd_soc_component_update_bits(component, CS42L42_MCLK_CTL,
 					CS42L42_INTERNAL_FS_MASK,
@@ -627,14 +629,9 @@ static int cs42l42_pll_config(struct snd_soc_component *component)
 					(pll_ratio_table[i].mclk_int !=
 					24000000)) <<
 					CS42L42_INTERNAL_FS_SHIFT);
-			/* Set the MCLK src (PLL or SCLK) and the divide
-			 * ratio
-			 */
+
 			snd_soc_component_update_bits(component, CS42L42_MCLK_SRC_SEL,
-					CS42L42_MCLK_SRC_SEL_MASK |
 					CS42L42_MCLKDIV_MASK,
-					(pll_ratio_table[i].mclk_src_sel
-					<< CS42L42_MCLK_SRC_SEL_SHIFT) |
 					(pll_ratio_table[i].mclk_div <<
 					CS42L42_MCLKDIV_SHIFT));
 			/* Set up the LRCLK */
@@ -827,7 +824,14 @@ static int cs42l42_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (channels == 1)
 		cs42l42->bclk *= 2;
 
-	switch(substream->stream) {
+	/*
+	 * Assume 24-bit samples are in 32-bit slots, to prevent SCLK being
+	 * more than assumed (which would result in overclocking).
+	 */
+	if (params_width(params) == 24)
+		cs42l42->bclk = (cs42l42->bclk / 3) * 4;
+
+	switch (substream->stream) {
 	case SNDRV_PCM_STREAM_CAPTURE:
 		if (channels == 2) {
 			val |= CS42L42_ASP_TX_CH2_AP_MASK;
@@ -898,11 +902,29 @@ static int cs42l42_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 						      CS42L42_HP_ANA_BMUTE_MASK);
 
 		cs42l42->stream_use &= ~(1 << stream);
+		if (!cs42l42->stream_use) {
+			/*
+			 * Switch to the internal oscillator.
+			 * SCLK must remain running until after this clock switch.
+			 * Without a source of clock the I2C bus doesn't work.
+			 */
+			regmap_multi_reg_write(cs42l42->regmap, cs42l42_to_osc_seq,
+					       ARRAY_SIZE(cs42l42_to_osc_seq));
 
+			/* Must disconnect PLL before stopping it */
+			snd_soc_component_update_bits(component,
+						      CS42L42_MCLK_SRC_SEL,
+						      CS42L42_MCLK_SRC_SEL_MASK,
+						      0);
+			usleep_range(100, 200);
+
+			snd_soc_component_update_bits(component, CS42L42_PLL_CTL1,
+						      CS42L42_PLL_START_MASK, 0);
+		}
 	} else {
 		if (!cs42l42->stream_use) {
 			/* SCLK must be running before codec unmute */
-			if ((cs42l42->bclk < 11289600) && (cs42l42->sclk < 11289600)) {
+			if (pll_ratio_table[cs42l42->pll_config].mclk_src_sel) {
 				snd_soc_component_update_bits(component, CS42L42_PLL_CTL1,
 							      CS42L42_PLL_START_MASK, 1);
 
@@ -921,17 +943,20 @@ static int cs42l42_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 							       (regval & 1),
 							       CS42L42_PLL_LOCK_POLL_US,
 							       CS42L42_PLL_LOCK_TIMEOUT_US);
-				if (ret < 0) {
+				if (ret < 0)
 					dev_warn(component->dev, "PLL failed to lock: %d\n", ret);
-				} else {
-					dev_dbg(component->dev, "PLL is locked switching to PLL\n");
-					/* Mark SCLK as present, turn off internal oscillator */
-					regmap_multi_reg_write(cs42l42->regmap, cs42l42_to_sclk_seq,
-							       ARRAY_SIZE(cs42l42_to_sclk_seq));
-				}
-			}
-		}
 
+				/* PLL must be running to drive glitchless switch logic */
+				snd_soc_component_update_bits(component,
+							      CS42L42_MCLK_SRC_SEL,
+							      CS42L42_MCLK_SRC_SEL_MASK,
+							      CS42L42_MCLK_SRC_SEL_MASK);
+			}
+
+			/* Mark SCLK as present, turn off internal oscillator */
+			regmap_multi_reg_write(cs42l42->regmap, cs42l42_to_sclk_seq,
+					       ARRAY_SIZE(cs42l42_to_sclk_seq));
+		}
 		cs42l42->stream_use |= 1 << stream;
 
 		if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
@@ -955,69 +980,9 @@ static int cs42l42_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 	return 0;
 }
 
-static int cs42l42_trigger(struct snd_pcm_substream *substream, int cmd, struct snd_soc_dai *dai)
-{
-	struct snd_soc_component *component = dai->component;
-	struct cs42l42_private *cs42l42 = snd_soc_component_get_drvdata(component);
-	unsigned int regval;
-	unsigned int count = 0;
-	int streams = cs42l42->stream_use;
-
-	/* Count currently active streams */
-	while (streams) {
-		if (streams & 1)
-			++count;
-		streams >>= 1;
-	}
-
-	dev_dbg(component->dev, "%s() cs42l42->stream_use=%08x, active streams=%d\n",
-		__func__, cs42l42->stream_use, count);
-
-	regmap_read(cs42l42->regmap, CS42L42_PLL_LOCK_STATUS, &regval);
-
-	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_START:
-		if (!regval)
-			snd_soc_component_update_bits(component, CS42L42_PLL_CTL1,
-						     CS42L42_PLL_START_MASK, 1);
-		break;
-
-	case SNDRV_PCM_TRIGGER_STOP:
-		/* Last active stream, switching to SCO */
-		if (count ==  1) {
-			dev_dbg(component->dev, "%s() Switching to SCO\n", __func__);
-
-			regmap_multi_reg_write(cs42l42->regmap, cs42l42_to_osc_seq,
-					       ARRAY_SIZE(cs42l42_to_osc_seq));
-
-			snd_soc_component_update_bits(component, CS42L42_MCLK_SRC_SEL,
-						CS42L42_MCLK_SRC_SEL_MASK |
-						CS42L42_MCLKDIV_MASK,
-						(0 << CS42L42_MCLK_SRC_SEL_SHIFT) |
-						(0 << CS42L42_MCLKDIV_SHIFT));
-
-			snd_soc_component_update_bits(component, CS42L42_PLL_CTL1,
-					    CS42L42_PLL_START_MASK, 0);
-
-			/* PLL unlock delay 10ms*/
-			usleep_range(10000, 12000);
-
-			regmap_read(cs42l42->regmap, CS42L42_PLL_LOCK_STATUS, &regval);
-		}
-		break;
-
-	default:
-		break;
-	}
-
-	cs42l42->pll_lock = regval;
-
-	return 0;
-}
-
 #define CS42L42_FORMATS (SNDRV_PCM_FMTBIT_S16_LE |\
 			 SNDRV_PCM_FMTBIT_S24_LE |\
-			 SNDRV_PCM_FMTBIT_S32_LE )
+			 SNDRV_PCM_FMTBIT_S32_LE)
 
 
 static const struct snd_soc_dai_ops cs42l42_ops = {
@@ -1025,7 +990,6 @@ static const struct snd_soc_dai_ops cs42l42_ops = {
 	.set_fmt	= cs42l42_set_dai_fmt,
 	.set_sysclk	= cs42l42_set_sysclk,
 	.mute_stream	= cs42l42_mute_stream,
-	.trigger = cs42l42_trigger,
 };
 
 static struct snd_soc_dai_driver cs42l42_dai = {
@@ -1049,10 +1013,120 @@ static struct snd_soc_dai_driver cs42l42_dai = {
 		.ops = &cs42l42_ops,
 };
 
+static void cs42l42_manual_hs_type_detect(struct cs42l42_private *cs42l42)
+{
+	unsigned int hs_det_status;
+	unsigned int hs_det_comp1;
+	unsigned int hs_det_comp2;
+	unsigned int hs_det_sw;
+
+	/* Set hs detect to manual, active mode */
+	regmap_update_bits(cs42l42->regmap,
+		CS42L42_HSDET_CTL2,
+		CS42L42_HSDET_CTRL_MASK |
+		CS42L42_HSDET_SET_MASK |
+		CS42L42_HSBIAS_REF_MASK |
+		CS42L42_HSDET_AUTO_TIME_MASK,
+		(1 << CS42L42_HSDET_CTRL_SHIFT) |
+		(0 << CS42L42_HSDET_SET_SHIFT) |
+		(0 << CS42L42_HSBIAS_REF_SHIFT) |
+		(0 << CS42L42_HSDET_AUTO_TIME_SHIFT));
+
+	/* Configure HS DET comparator reference levels. */
+	regmap_update_bits(cs42l42->regmap,
+				CS42L42_HSDET_CTL1,
+				CS42L42_HSDET_COMP1_LVL_MASK |
+				CS42L42_HSDET_COMP2_LVL_MASK,
+				(CS42L42_HSDET_COMP1_LVL_VAL << CS42L42_HSDET_COMP1_LVL_SHIFT) |
+				(CS42L42_HSDET_COMP2_LVL_VAL << CS42L42_HSDET_COMP2_LVL_SHIFT));
+
+	/* Open the SW_HSB_HS3 switch and close SW_HSB_HS4 for a Type 1 headset. */
+	regmap_write(cs42l42->regmap, CS42L42_HS_SWITCH_CTL, CS42L42_HSDET_SW_COMP1);
+
+	msleep(100);
+
+	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
+
+	hs_det_comp1 = (hs_det_status & CS42L42_HSDET_COMP1_OUT_MASK) >>
+			CS42L42_HSDET_COMP1_OUT_SHIFT;
+	hs_det_comp2 = (hs_det_status & CS42L42_HSDET_COMP2_OUT_MASK) >>
+			CS42L42_HSDET_COMP2_OUT_SHIFT;
+
+	/* Close the SW_HSB_HS3 switch for a Type 2 headset. */
+	regmap_write(cs42l42->regmap, CS42L42_HS_SWITCH_CTL, CS42L42_HSDET_SW_COMP2);
+
+	msleep(100);
+
+	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
+
+	hs_det_comp1 |= ((hs_det_status & CS42L42_HSDET_COMP1_OUT_MASK) >>
+			CS42L42_HSDET_COMP1_OUT_SHIFT) << 1;
+	hs_det_comp2 |= ((hs_det_status & CS42L42_HSDET_COMP2_OUT_MASK) >>
+			CS42L42_HSDET_COMP2_OUT_SHIFT) << 1;
+
+	/* Use Comparator 1 with 1.25V Threshold. */
+	switch (hs_det_comp1) {
+	case CS42L42_HSDET_COMP_TYPE1:
+		cs42l42->hs_type = CS42L42_PLUG_CTIA;
+		hs_det_sw = CS42L42_HSDET_SW_TYPE1;
+		break;
+	case CS42L42_HSDET_COMP_TYPE2:
+		cs42l42->hs_type = CS42L42_PLUG_OMTP;
+		hs_det_sw = CS42L42_HSDET_SW_TYPE2;
+		break;
+	default:
+		/* Fallback to Comparator 2 with 1.75V Threshold. */
+		switch (hs_det_comp2) {
+		case CS42L42_HSDET_COMP_TYPE1:
+			cs42l42->hs_type = CS42L42_PLUG_CTIA;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE1;
+			break;
+		case CS42L42_HSDET_COMP_TYPE2:
+			cs42l42->hs_type = CS42L42_PLUG_OMTP;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE2;
+			break;
+		case CS42L42_HSDET_COMP_TYPE3:
+			cs42l42->hs_type = CS42L42_PLUG_HEADPHONE;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE3;
+			break;
+		default:
+			cs42l42->hs_type = CS42L42_PLUG_INVALID;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE4;
+			break;
+		}
+	}
+
+	/* Set Switches */
+	regmap_write(cs42l42->regmap, CS42L42_HS_SWITCH_CTL, hs_det_sw);
+
+	/* Set HSDET mode to Manual—Disabled */
+	regmap_update_bits(cs42l42->regmap,
+		CS42L42_HSDET_CTL2,
+		CS42L42_HSDET_CTRL_MASK |
+		CS42L42_HSDET_SET_MASK |
+		CS42L42_HSBIAS_REF_MASK |
+		CS42L42_HSDET_AUTO_TIME_MASK,
+		(0 << CS42L42_HSDET_CTRL_SHIFT) |
+		(0 << CS42L42_HSDET_SET_SHIFT) |
+		(0 << CS42L42_HSBIAS_REF_SHIFT) |
+		(0 << CS42L42_HSDET_AUTO_TIME_SHIFT));
+
+	/* Configure HS DET comparator reference levels. */
+	regmap_update_bits(cs42l42->regmap,
+				CS42L42_HSDET_CTL1,
+				CS42L42_HSDET_COMP1_LVL_MASK |
+				CS42L42_HSDET_COMP2_LVL_MASK,
+				(CS42L42_HSDET_COMP1_LVL_DEFAULT << CS42L42_HSDET_COMP1_LVL_SHIFT) |
+				(CS42L42_HSDET_COMP2_LVL_DEFAULT << CS42L42_HSDET_COMP2_LVL_SHIFT));
+}
+
 static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
 {
 	unsigned int hs_det_status;
 	unsigned int int_status;
+
+	/* Read and save the hs detection result */
+	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
 
 	/* Mask the auto detect interrupt */
 	regmap_update_bits(cs42l42->regmap,
@@ -1061,6 +1135,10 @@ static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
 		CS42L42_HSDET_AUTO_DONE_MASK,
 		(1 << CS42L42_PDN_DONE_SHIFT) |
 		(1 << CS42L42_HSDET_AUTO_DONE_SHIFT));
+
+
+	cs42l42->hs_type = (hs_det_status & CS42L42_HSDET_TYPE_MASK) >>
+				CS42L42_HSDET_TYPE_SHIFT;
 
 	/* Set hs detect to automatic, disabled mode */
 	regmap_update_bits(cs42l42->regmap,
@@ -1074,11 +1152,15 @@ static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
 		(0 << CS42L42_HSBIAS_REF_SHIFT) |
 		(3 << CS42L42_HSDET_AUTO_TIME_SHIFT));
 
-	/* Read and save the hs detection result */
-	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
-
-	cs42l42->hs_type = (hs_det_status & CS42L42_HSDET_TYPE_MASK) >>
-				CS42L42_HSDET_TYPE_SHIFT;
+	/* Run Manual detection if auto detect has not found a headset.
+	 * We Re-Run with Manual Detection if the original detection was invalid or headphones,
+	 * to ensure that a headset mic is detected in all cases.
+	 */
+	if (cs42l42->hs_type == CS42L42_PLUG_INVALID ||
+		cs42l42->hs_type == CS42L42_PLUG_HEADPHONE) {
+		dev_dbg(cs42l42->component->dev, "Running Manual Detection Fallback\n");
+		cs42l42_manual_hs_type_detect(cs42l42);
+	}
 
 	/* Set up button detection */
 	if ((cs42l42->hs_type == CS42L42_PLUG_CTIA) ||
@@ -1480,24 +1562,6 @@ static irqreturn_t cs42l42_irq_thread(int irq, void *data)
 				irq_params_table[i].mask;
 	}
 
-	if (cs42l42->pll_lock != stickies[10]) {
-
-		dev_dbg(component->dev, "%s() PLL lock transition %d => %d\n",
-			__func__, cs42l42->pll_lock, stickies[10]);
-
-		/* Update pll_lock status */
-		cs42l42->pll_lock = stickies[10];
-
-		if (cs42l42->pll_lock) {
-			dev_dbg(component->dev, "%s() Switching to PLL\n", __func__);
-			/* Mark SCLK as present */
-			regmap_multi_reg_write(cs42l42->regmap, cs42l42_to_sclk_seq,
-						ARRAY_SIZE(cs42l42_to_sclk_seq));
-
-			return IRQ_HANDLED;
-		}
-	}
-
 	/* Read tip sense status before handling type detect */
 	current_plug_status = (stickies[11] &
 		(CS42L42_TS_PLUG_MASK | CS42L42_TS_UNPLUG_MASK)) >>
@@ -1513,7 +1577,7 @@ static irqreturn_t cs42l42_irq_thread(int irq, void *data)
 	if ((~masks[5]) & irq_params_table[5].mask) {
 		if (stickies[5] & CS42L42_HSDET_AUTO_DONE_MASK) {
 			cs42l42_process_hs_type_detect(cs42l42);
-			switch(cs42l42->hs_type){
+			switch (cs42l42->hs_type) {
 			case CS42L42_PLUG_CTIA:
 			case CS42L42_PLUG_OMTP:
 				snd_soc_jack_report(cs42l42->jack, SND_JACK_HEADSET,
@@ -1545,7 +1609,7 @@ static irqreturn_t cs42l42_irq_thread(int irq, void *data)
 				cs42l42->plug_state = CS42L42_TS_UNPLUG;
 				cs42l42_cancel_hs_type_detect(cs42l42);
 
-				switch(cs42l42->hs_type){
+				switch (cs42l42->hs_type) {
 				case CS42L42_PLUG_CTIA:
 				case CS42L42_PLUG_OMTP:
 					snd_soc_jack_report(cs42l42->jack, 0, SND_JACK_HEADSET);
@@ -1680,7 +1744,7 @@ static void cs42l42_set_interrupt_masks(struct cs42l42_private *cs42l42)
 
 	regmap_update_bits(cs42l42->regmap, CS42L42_PLL_LOCK_INT_MASK,
 			CS42L42_PLL_LOCK_MASK,
-			(0 << CS42L42_PLL_LOCK_SHIFT));
+			(1 << CS42L42_PLL_LOCK_SHIFT));
 
 	regmap_update_bits(cs42l42->regmap, CS42L42_TSRS_PLUG_INT_MASK,
 			CS42L42_RS_PLUG_MASK |
@@ -1979,8 +2043,6 @@ static int cs42l42_i2c_probe(struct i2c_client *i2c_client,
 			NULL, cs42l42_irq_thread,
 			IRQF_ONESHOT | IRQF_TRIGGER_LOW,
 			"cs42l42", cs42l42);
-
-	cs42l42->pll_lock = 0;
 
 	if (ret != 0)
 		dev_err(&i2c_client->dev,
