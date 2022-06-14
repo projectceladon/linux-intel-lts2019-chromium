@@ -10,6 +10,7 @@
 #include "capabilities.h"
 #include "ops.h"
 #include "vmcs.h"
+#include "run_flags.h"
 
 extern const u32 vmx_msr_index[];
 extern u64 host_efer;
@@ -397,7 +398,10 @@ static inline int pi_test_sn(struct pi_desc *pi_desc)
 	return test_bit(POSTED_INTR_SN,
 			(unsigned long *)&pi_desc->control);
 }
-bool __vmx_vcpu_run(struct vcpu_vmx *vmx, unsigned long *regs, bool launched);
+
+unsigned int __vmx_vcpu_run_flags(struct vcpu_vmx *vmx);
+bool __vmx_vcpu_run(struct vcpu_vmx *vmx, unsigned long *regs,
+    unsigned int flags);
 
 static inline u8 vmx_get_rvi(void)
 {
