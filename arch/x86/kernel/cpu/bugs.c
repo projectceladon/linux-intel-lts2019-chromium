@@ -78,6 +78,12 @@ void write_spec_ctrl_current(u64 val, bool force)
 		wrmsrl(MSR_IA32_SPEC_CTRL, val);
 }
 
+u64 spec_ctrl_current(void)
+{
+	return this_cpu_read(x86_spec_ctrl_current);
+}
+EXPORT_SYMBOL_GPL(spec_ctrl_current);
+
 /*
  * AMD specific MSR info for Speculative Store Bypass control.
  * x86_amd_ls_cfg_ssbd_mask is initialized in identify_boot_cpu().
