@@ -79,13 +79,6 @@
 	add	$(BITS_PER_LONG/8) * nr, sp;
 #endif
 
-#define __ISSUE_UNBALANCED_RET_GUARD(sp)	\
-	call	881f;				\
-	int3;					\
-881:						\
-	add	$(BITS_PER_LONG/8), sp;		\
-	lfence;
-
 #ifdef __ASSEMBLY__
 
 /*
@@ -155,23 +148,29 @@
 #endif
 .endm
 
-.macro ISSUE_UNBALANCED_RET_GUARD ftr:req
+.macro ISSUE_UNBALANCED_RET_GUARD
 	ANNOTATE_NOSPEC_ALTERNATIVE
-	ALTERNATIVE "jmp .Lskip_pbrsb_\@",				\
-		__stringify(__ISSUE_UNBALANCED_RET_GUARD(%_ASM_SP))	\
-		\ftr
-.Lskip_pbrsb_\@:
+	call .Lunbalanced_ret_guard_\@
+	int3
+.Lunbalanced_ret_guard_\@:
+	add $(BITS_PER_LONG/8), %_ASM_SP
+	lfence
 .endm
 
  /*
   * A simpler FILL_RETURN_BUFFER macro. Don't make people use the CPP
   * monstrosity above, manually.
   */
-.macro FILL_RETURN_BUFFER reg:req nr:req ftr:req
+.macro FILL_RETURN_BUFFER reg:req nr:req ftr:req ftr2
 	ANNOTATE_NOSPEC_ALTERNATIVE
-	ALTERNATIVE "jmp .Lskip_rsb_\@",				\
-		__stringify(__FILL_RETURN_BUFFER(\reg,\nr,%_ASM_SP))	\
-		\ftr
+.ifb \ftr2
+	ALTERNATIVE "jmp .Lskip_rsb_\@", "", \ftr
+.else
+	ALTERNATIVE_2 "jmp .Lskip_rsb_\@", "", \ftr, "jmp .Lunbalanced_\@",\ftr2
+.endif
+	__FILL_RETURN_BUFFER(\reg,\nr,%_ASM_SP)
+.Lunbalanced_\@:
+	ISSUE_UNBALANCED_RET_GUARD
 .Lskip_rsb_\@:
 .endm
 
