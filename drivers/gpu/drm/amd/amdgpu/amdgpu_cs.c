@@ -598,6 +598,8 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 			return r;
 	}
 
+	mutex_lock(&p->bo_list->bo_list_mutex);
+
 	/* One for TTM and one for the CS job */
 	amdgpu_bo_list_for_each_entry(e, p->bo_list)
 		e->tv.num_shared = 2;
@@ -626,6 +628,7 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 					GFP_KERNEL | __GFP_ZERO);
 		if (!e->user_pages) {
 			DRM_ERROR("calloc failure\n");
+			mutex_unlock(&p->bo_list->bo_list_mutex);
 			return -ENOMEM;
 		}
 
@@ -633,6 +636,7 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 		if (r) {
 			kvfree(e->user_pages);
 			e->user_pages = NULL;
+			mutex_unlock(&p->bo_list->bo_list_mutex);
 			return r;
 		}
 
@@ -716,6 +720,7 @@ error_validate:
 	if (r)
 		ttm_eu_backoff_reservation(&p->ticket, &p->validated);
 out:
+	mutex_unlock(&p->bo_list->bo_list_mutex);
 	return r;
 }
 
@@ -750,9 +755,11 @@ static void amdgpu_cs_parser_fini(struct amdgpu_cs_parser *parser, int error,
 {
 	unsigned i;
 
-	if (error && backoff)
+	if (error && backoff) {
 		ttm_eu_backoff_reservation(&parser->ticket,
 					   &parser->validated);
+		mutex_unlock(&parser->bo_list->bo_list_mutex);
+	}
 
 	for (i = 0; i < parser->num_post_deps; i++) {
 		drm_syncobj_put(parser->post_deps[i].syncobj);
@@ -876,13 +883,17 @@ static int amdgpu_cs_vm_handling(struct amdgpu_cs_parser *p)
 		bo_va = fpriv->csa_va;
 		BUG_ON(!bo_va);
 		r = amdgpu_vm_bo_update(adev, bo_va, false);
-		if (r)
+		if (r) {
+			mutex_unlock(&p->bo_list->bo_list_mutex);
 			return r;
+		}
 
 		f = bo_va->last_pt_update;
 		r = amdgpu_sync_fence(adev, &p->job->sync, f, false);
-		if (r)
+		if (r) {
+			mutex_unlock(&p->bo_list->bo_list_mutex);
 			return r;
+		}
 	}
 
 	amdgpu_bo_list_for_each_entry(e, p->bo_list) {
@@ -902,7 +913,7 @@ static int amdgpu_cs_vm_handling(struct amdgpu_cs_parser *p)
 			return r;
 
 		f = bo_va->last_pt_update;
-		r = amdgpu_sync_fence(adev, &p->job->sync, f, false);
+                r = amdgpu_sync_fence(adev, &p->job->sync, f, false);
 		if (r)
 			return r;
 	}
@@ -1335,6 +1346,7 @@ static int amdgpu_cs_submit(struct amdgpu_cs_parser *p,
 
 	ttm_eu_fence_buffer_objects(&p->ticket, &p->validated, p->fence);
 	amdgpu_mn_unlock(p->mn);
+	mutex_unlock(&p->bo_list->bo_list_mutex);
 
 	return 0;
 
