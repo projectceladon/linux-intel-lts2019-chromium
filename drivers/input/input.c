@@ -377,6 +377,23 @@ static void input_handle_event(struct input_dev *dev,
 		return;
 
 	disposition = input_get_disposition(dev, type, code, &value);
+	if (dev->phys && !strncmp(dev->phys, "virtio", 6)) {
+		struct input_value *v = NULL;
+		if (!dev->vals)
+			return;
+
+		v = &dev->vals[dev->num_vals++];
+		if (!v)
+			return;
+
+		v->type = type;
+		v->code = code;
+		v->value = value;
+				input_pass_values(dev, dev->vals, dev->num_vals);
+		dev->num_vals = 0;
+		return;
+	}
+
 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
 		add_input_randomness(type, code, value);
 
