@@ -883,17 +883,13 @@ static int amdgpu_cs_vm_handling(struct amdgpu_cs_parser *p)
 		bo_va = fpriv->csa_va;
 		BUG_ON(!bo_va);
 		r = amdgpu_vm_bo_update(adev, bo_va, false);
-		if (r) {
-			mutex_unlock(&p->bo_list->bo_list_mutex);
+		if (r)
 			return r;
-		}
 
 		f = bo_va->last_pt_update;
 		r = amdgpu_sync_fence(adev, &p->job->sync, f, false);
-		if (r) {
-			mutex_unlock(&p->bo_list->bo_list_mutex);
+		if (r)
 			return r;
-		}
 	}
 
 	amdgpu_bo_list_for_each_entry(e, p->bo_list) {
