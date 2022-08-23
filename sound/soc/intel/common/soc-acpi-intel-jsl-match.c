@@ -86,6 +86,7 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_jsl_machines[] = {
 	{
 		.comp_ids = &rt5682_rt5682s_hp,
 		.drv_name = "jsl_rt5682_rt1019",
+		.sof_fw_filename = "sof-jsl.ri",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &rt1019p_spk,
 		.sof_tplg_filename = "sof-jsl-rt5682-rt1019.tplg",
