@@ -564,6 +564,8 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 		}
 	}
 
+	drm_helper_move_panel_connectors_to_head(ddev);
+
 	ddev->mode_config.funcs = &mode_config_funcs;
 	ddev->mode_config.helper_private = &mode_config_helper_funcs;
 
