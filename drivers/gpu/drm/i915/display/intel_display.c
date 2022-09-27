@@ -17391,6 +17391,17 @@ intel_user_framebuffer_create(struct drm_device *dev,
 	return fb;
 }
 
+static int max_dotclock(struct drm_i915_private *i915)
+{
+	int max_dotclock = i915->max_dotclk_freq;
+
+	/* icl+ might use bigjoiner */
+	if (INTEL_GEN(i915) >= 11)
+		max_dotclock *= 2;
+
+	return max_dotclock;
+}
+
 static enum drm_mode_status
 intel_mode_valid(struct drm_device *dev,
 		 const struct drm_display_mode *mode)
@@ -17427,6 +17438,13 @@ intel_mode_valid(struct drm_device *dev,
 			   DRM_MODE_FLAG_PIXMUX |
 			   DRM_MODE_FLAG_CLKDIV2))
 		return MODE_BAD;
+
+	/*
+	 * Reject clearly excessive dotclocks early to
+	 * avoid having to worry about huge integers later.
+	 */
+	if (mode->clock > max_dotclock(dev_priv))
+		return MODE_CLOCK_HIGH;
 
 	/* Transcoder timing limits */
 	if (INTEL_GEN(dev_priv) >= 11) {
