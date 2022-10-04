@@ -4243,6 +4243,7 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 	 */
 	if (is_guest_mode(vcpu) && !kvm_is_visible_gfn(vcpu->kvm, gfn)) {
 		*pfn = KVM_PFN_NOSLOT;
+		*page = NULL;
 		return false;
 	}
 
