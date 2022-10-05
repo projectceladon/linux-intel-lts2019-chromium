@@ -590,17 +590,7 @@ static DEVICE_ATTR(tsx_async_abort, 0444, cpu_show_tsx_async_abort, NULL);
 static DEVICE_ATTR(itlb_multihit, 0444, cpu_show_itlb_multihit, NULL);
 static DEVICE_ATTR(srbds, 0444, cpu_show_srbds, NULL);
 static DEVICE_ATTR(mmio_stale_data, 0444, cpu_show_mmio_stale_data, NULL);
-/*
- * CHROMIUM: We are only addressing RETBleed on Intel for now, so AMD
- * CPUs are still vulnerable until they are upreved to a newer kernel
- * that also has the AMD mitigation.
- * The tast.security.CPUVulnerabilities tast test fails if any of these
- * files says "vulnerable", so remove it.
- * See go/cros-retbleed-mitigations for the full story.
- */
-#if 0
 static DEVICE_ATTR(retbleed, 0444, cpu_show_retbleed, NULL);
-#endif
 
 static struct attribute *cpu_root_vulnerabilities_attrs[] = {
 	&dev_attr_meltdown.attr,
@@ -613,9 +603,7 @@ static struct attribute *cpu_root_vulnerabilities_attrs[] = {
 	&dev_attr_itlb_multihit.attr,
 	&dev_attr_srbds.attr,
 	&dev_attr_mmio_stale_data.attr,
-#if 0
 	&dev_attr_retbleed.attr,
-#endif
 	NULL
 };
 
