@@ -397,7 +397,6 @@ static inline int pi_test_sn(struct pi_desc *pi_desc)
 	return test_bit(POSTED_INTR_SN,
 			(unsigned long *)&pi_desc->control);
 }
-bool __vmx_vcpu_run(struct vcpu_vmx *vmx, unsigned long *regs, bool launched);
 
 static inline u8 vmx_get_rvi(void)
 {
