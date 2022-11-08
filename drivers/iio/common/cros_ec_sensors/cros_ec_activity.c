@@ -305,8 +305,8 @@ static int cros_ec_sensors_probe(struct platform_device *pdev)
 	if (!indio_dev)
 		return -ENOMEM;
 
-	ret = cros_ec_sensors_core_init(pdev, indio_dev, true, true,
-			cros_ec_activity_capture, cros_ec_activity_push_data);
+	ret = cros_ec_sensors_core_init(pdev, indio_dev, true,
+					cros_ec_activity_capture);
 	if (ret)
 		return ret;
 
@@ -388,9 +388,8 @@ static int cros_ec_sensors_probe(struct platform_device *pdev)
 
 	st->core.read_ec_sensors_data = cros_ec_sensors_read_cmd;
 
-	/* Driver is incomplete: by itself, no way to get event directly */
-	ret = iio_device_register(indio_dev);
-	return ret;
+	return cros_ec_sensors_core_register(dev, indio_dev,
+					     cros_ec_activity_push_data);
 }
 
 static int cros_ec_sensors_remove(struct platform_device *pdev)
