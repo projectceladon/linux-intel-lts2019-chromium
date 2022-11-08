@@ -1287,6 +1287,8 @@ static void set_dp_mst_mode(struct dc_link *link, bool mst_enable)
 		link->type = dc_connection_single;
 		link->local_sink = link->remote_sinks[0];
 		link->local_sink->sink_signal = SIGNAL_TYPE_DISPLAY_PORT;
+		dc_sink_retain(link->local_sink);
+		dm_helpers_dp_mst_stop_top_mgr(link->ctx, link);
 	} else if (mst_enable == true &&
 			link->type == dc_connection_single &&
 			link->remote_sinks[0] != NULL) {
@@ -1399,18 +1401,30 @@ bool dc_link_dp_sync_lt_end(struct dc_link *link, bool link_down)
 	return true;
 }
 
+bool dc_link_dp_get_max_link_enc_cap(const struct dc_link *link, struct dc_link_settings *max_link_enc_cap)
+{
+	if (!max_link_enc_cap) {
+		DC_LOG_ERROR("%s: Could not return max link encoder caps", __func__);
+		return false;
+	}
+
+	if (link->link_enc->funcs->get_max_link_cap) {
+		link->link_enc->funcs->get_max_link_cap(link->link_enc, max_link_enc_cap);
+		return true;
+	}
+
+	DC_LOG_ERROR("%s: Max link encoder caps unknown", __func__);
+	max_link_enc_cap->lane_count = 1;
+	max_link_enc_cap->link_rate = 6;
+	return false;
+}
+
 static struct dc_link_settings get_max_link_cap(struct dc_link *link)
 {
-	/* Set Default link settings */
-	struct dc_link_settings max_link_cap = {LANE_COUNT_FOUR, LINK_RATE_HIGH,
-			LINK_SPREAD_05_DOWNSPREAD_30KHZ, false, 0};
+	struct dc_link_settings max_link_cap = {0};
 
-	/* Higher link settings based on feature supported */
-	if (link->link_enc->features.flags.bits.IS_HBR2_CAPABLE)
-		max_link_cap.link_rate = LINK_RATE_HIGH2;
-
-	if (link->link_enc->features.flags.bits.IS_HBR3_CAPABLE)
-		max_link_cap.link_rate = LINK_RATE_HIGH3;
+	/* get max link encoder capability */
+	link->link_enc->funcs->get_max_link_cap(link->link_enc, &max_link_cap);
 
 	/* Lower link settings based on sink's link cap */
 	if (link->reported_link_cap.lane_count < max_link_cap.lane_count)
@@ -1671,6 +1685,19 @@ bool dp_verify_link_cap_with_retries(
 		msleep(10);
 	}
 	return success;
+}
+
+bool dp_verify_mst_link_cap(
+	struct dc_link *link)
+{
+	struct dc_link_settings max_link_cap = {0};
+
+	max_link_cap = get_max_link_cap(link);
+	link->verified_link_cap = get_common_supported_link_settings(
+		link->reported_link_cap,
+		max_link_cap);
+
+	return true;
 }
 
 static struct dc_link_settings get_common_supported_link_settings(
@@ -2416,7 +2443,7 @@ bool dc_link_handle_hpd_rx_irq(struct dc_link *link, union hpd_irq_data *out_hpd
 
 	if (handle_hpd_irq_psr_sink(link))
 		/* PSR-related error was detected and handled */
-		return true;
+		return false;
 
 	/* If PSR-related error handled, Main link may be off,
 	 * so do not handle as a normal sink status change interrupt.

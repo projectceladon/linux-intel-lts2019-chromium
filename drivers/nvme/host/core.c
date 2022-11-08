@@ -58,6 +58,26 @@ static bool force_apst;
 module_param(force_apst, bool, 0644);
 MODULE_PARM_DESC(force_apst, "allow APST for newly enumerated devices even if quirked off");
 
+static unsigned long apst_primary_timeout_ms = 100;
+module_param(apst_primary_timeout_ms, ulong, 0644);
+MODULE_PARM_DESC(apst_primary_timeout_ms,
+	"primary APST timeout in ms");
+
+static unsigned long apst_secondary_timeout_ms = 2000;
+module_param(apst_secondary_timeout_ms, ulong, 0644);
+MODULE_PARM_DESC(apst_secondary_timeout_ms,
+	"secondary APST timeout in ms");
+
+static unsigned long apst_primary_latency_tol_us = 15000;
+module_param(apst_primary_latency_tol_us, ulong, 0644);
+MODULE_PARM_DESC(apst_primary_latency_tol_us,
+	"primary APST latency tolerance in us");
+
+static unsigned long apst_secondary_latency_tol_us = 100000;
+module_param(apst_secondary_latency_tol_us, ulong, 0644);
+MODULE_PARM_DESC(apst_secondary_latency_tol_us,
+	"secondary APST latency tolerance in us");
+
 static bool streams;
 module_param(streams, bool, 0644);
 MODULE_PARM_DESC(streams, "turn on support for Streams write directives");
@@ -694,7 +714,10 @@ static inline blk_status_t nvme_setup_write_zeroes(struct nvme_ns *ns,
 		cpu_to_le64(nvme_sect_to_lba(ns, blk_rq_pos(req)));
 	cmnd->write_zeroes.length =
 		cpu_to_le16((blk_rq_bytes(req) >> ns->lba_shift) - 1);
-	cmnd->write_zeroes.control = 0;
+	if (nvme_ns_has_pi(ns))
+		cmnd->write_zeroes.control = cpu_to_le16(NVME_RW_PRINFO_PRACT);
+	else
+		cmnd->write_zeroes.control = 0;
 	return BLK_STS_OK;
 }
 
@@ -2015,18 +2038,21 @@ static int nvme_pr_preempt(struct block_device *bdev, u64 old, u64 new,
 		enum pr_type type, bool abort)
 {
 	u32 cdw10 = nvme_pr_type(type) << 8 | (abort ? 2 : 1);
+
 	return nvme_pr_command(bdev, cdw10, old, new, nvme_cmd_resv_acquire);
 }
 
 static int nvme_pr_clear(struct block_device *bdev, u64 key)
 {
-	u32 cdw10 = 1 | (key ? 1 << 3 : 0);
-	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_register);
+	u32 cdw10 = 1 | (key ? 0 : 1 << 3);
+
+	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_release);
 }
 
 static int nvme_pr_release(struct block_device *bdev, u64 key, enum pr_type type)
 {
-	u32 cdw10 = nvme_pr_type(type) << 8 | (key ? 1 << 3 : 0);
+	u32 cdw10 = nvme_pr_type(type) << 8 | (key ? 0 : 1 << 3);
+
 	return nvme_pr_command(bdev, cdw10, key, 0, nvme_cmd_resv_release);
 }
 
@@ -2275,13 +2301,53 @@ static int nvme_configure_acre(struct nvme_ctrl *ctrl)
 }
 
 /*
+ * The function checks whether the given total (exlat + enlat) latency of
+ * a power state allows the latter to be used as an APST transition target.
+ * It does so by comparing the latency to the primary and secondary latency
+ * tolerances defined by module params. If there's a match, the corresponding
+ * timeout value is returned and the matching tolerance index (1 or 2) is
+ * reported.
+ */
+static bool nvme_apst_get_transition_time(u64 total_latency,
+		u64 *transition_time, unsigned *last_index)
+{
+	if (total_latency <= apst_primary_latency_tol_us) {
+		if (*last_index == 1)
+			return false;
+		*last_index = 1;
+		*transition_time = apst_primary_timeout_ms;
+		return true;
+	}
+	if (apst_secondary_timeout_ms &&
+		total_latency <= apst_secondary_latency_tol_us) {
+		if (*last_index <= 2)
+			return false;
+		*last_index = 2;
+		*transition_time = apst_secondary_timeout_ms;
+		return true;
+	}
+	return false;
+}
+
+/*
  * APST (Autonomous Power State Transition) lets us program a table of power
  * state transitions that the controller will perform automatically.
- * We configure it with a simple heuristic: we are willing to spend at most 2%
- * of the time transitioning between power states.  Therefore, when running in
- * any given state, we will enter the next lower-power non-operational state
- * after waiting 50 * (enlat + exlat) microseconds, as long as that state's exit
- * latency is under the requested maximum latency.
+ *
+ * Depending on module params, one of the two supported techniques will be used:
+ *
+ * - If the parameters provide explicit timeouts and tolerances, they will be
+ *   used to build a table with up to 2 non-operational states to transition to.
+ *   The default parameter values were selected based on the values used by
+ *   Microsoft's and Intel's NVMe drivers. Yet, since we don't implement dynamic
+ *   regeneration of the APST table in the event of switching between external
+ *   and battery power, the timeouts and tolerances reflect a compromise
+ *   between values used by Microsoft for AC and battery scenarios.
+ * - If not, we'll configure the table with a simple heuristic: we are willing
+ *   to spend at most 2% of the time transitioning between power states.
+ *   Therefore, when running in any given state, we will enter the next
+ *   lower-power non-operational state after waiting 50 * (enlat + exlat)
+ *   microseconds, as long as that state's exit latency is under the requested
+ *   maximum latency.
  *
  * We will not autonomously enter any non-operational state for which the total
  * latency exceeds ps_max_latency_us.
@@ -2297,6 +2363,7 @@ static int nvme_configure_apst(struct nvme_ctrl *ctrl)
 	int max_ps = -1;
 	int state;
 	int ret;
+	unsigned last_lt_index = UINT_MAX;
 
 	/*
 	 * If APST isn't supported or if we haven't been initialized yet,
@@ -2355,13 +2422,19 @@ static int nvme_configure_apst(struct nvme_ctrl *ctrl)
 			le32_to_cpu(ctrl->psd[state].entry_lat);
 
 		/*
-		 * This state is good.  Use it as the APST idle target for
-		 * higher power states.
+		 * This state is good. It can be used as the APST idle target
+		 * for higher power states.
 		 */
-		transition_ms = total_latency_us + 19;
-		do_div(transition_ms, 20);
-		if (transition_ms > (1 << 24) - 1)
-			transition_ms = (1 << 24) - 1;
+		if (apst_primary_timeout_ms && apst_primary_latency_tol_us) {
+			if (!nvme_apst_get_transition_time(total_latency_us,
+					&transition_ms, &last_lt_index))
+				continue;
+		} else {
+			transition_ms = total_latency_us + 19;
+			do_div(transition_ms, 20);
+			if (transition_ms > (1 << 24) - 1)
+				transition_ms = (1 << 24) - 1;
+		}
 
 		target = cpu_to_le64((state << 3) | (transition_ms << 8));
 		if (max_ps == -1)
@@ -2654,7 +2727,6 @@ static int nvme_init_subsystem(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 	nvme_init_subnqn(subsys, ctrl, id);
 	memcpy(subsys->serial, id->sn, sizeof(subsys->serial));
 	memcpy(subsys->model, id->mn, sizeof(subsys->model));
-	memcpy(subsys->firmware_rev, id->fr, sizeof(subsys->firmware_rev));
 	subsys->vendor_id = le16_to_cpu(id->vid);
 	subsys->cmic = id->cmic;
 	subsys->awupf = le16_to_cpu(id->awupf);
@@ -2807,6 +2879,8 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 				ctrl->quirks |= core_quirks[i].quirks;
 		}
 	}
+	memcpy(ctrl->subsys->firmware_rev, id->fr,
+	       sizeof(ctrl->subsys->firmware_rev));
 
 	if (force_apst && (ctrl->quirks & NVME_QUIRK_NO_DEEPEST_PS)) {
 		dev_warn(ctrl->device, "forcibly allowing all power states due to nvme_core.force_apst -- use at your own risk\n");
@@ -3882,7 +3956,14 @@ static void nvme_async_event_work(struct work_struct *work)
 		container_of(work, struct nvme_ctrl, async_event_work);
 
 	nvme_aen_uevent(ctrl);
-	ctrl->ops->submit_async_event(ctrl);
+
+	/*
+	 * The transport drivers must guarantee AER submission here is safe by
+	 * flushing ctrl async_event_work after changing the controller state
+	 * from LIVE and before freeing the admin queue.
+	*/
+	if (ctrl->state == NVME_CTRL_LIVE)
+		ctrl->ops->submit_async_event(ctrl);
 }
 
 static bool nvme_ctrl_pp_status(struct nvme_ctrl *ctrl)
@@ -4013,6 +4094,8 @@ void nvme_stop_ctrl(struct nvme_ctrl *ctrl)
 	nvme_stop_keep_alive(ctrl);
 	flush_work(&ctrl->async_event_work);
 	cancel_work_sync(&ctrl->fw_act_work);
+	if (ctrl->ops->stop_ctrl)
+		ctrl->ops->stop_ctrl(ctrl);
 }
 EXPORT_SYMBOL_GPL(nvme_stop_ctrl);
 
@@ -4026,6 +4109,7 @@ void nvme_start_ctrl(struct nvme_ctrl *ctrl)
 	if (ctrl->queue_count > 1) {
 		nvme_queue_scan(ctrl);
 		nvme_start_queues(ctrl);
+		nvme_mpath_update(ctrl);
 	}
 	ctrl->created = true;
 }

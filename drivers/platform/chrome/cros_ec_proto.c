@@ -702,6 +702,7 @@ int cros_ec_get_next_event(struct cros_ec_device *ec_dev,
 	u8 event_type;
 	u32 host_event;
 	int ret;
+	u32 ver_mask;
 
 	/*
 	 * Default value for wake_event.
@@ -723,6 +724,37 @@ int cros_ec_get_next_event(struct cros_ec_device *ec_dev,
 		return get_keyboard_state_event(ec_dev);
 
 	ret = get_next_event(ec_dev);
+	/*
+	 * -ENOPROTOOPT is returned when EC returns EC_RES_INVALID_VERSION.
+	 * This can occur when EC based device (e.g. Fingerprint MCU) jumps to
+	 * the RO image which doesn't support newer version of the command. In
+	 * this case we will attempt to update maximum supported version of the
+	 * EC_CMD_GET_NEXT_EVENT.
+	 */
+	if (ret == -ENOPROTOOPT) {
+		dev_dbg(ec_dev->dev,
+			"GET_NEXT_EVENT returned invalid version error.\n");
+		ret = cros_ec_get_host_command_version_mask(ec_dev,
+							EC_CMD_GET_NEXT_EVENT,
+							&ver_mask);
+		if (ret < 0 || ver_mask == 0)
+			/*
+			 * Do not change the MKBP supported version if we can't
+			 * obtain supported version correctly. Please note that
+			 * calling EC_CMD_GET_NEXT_EVENT returned
+			 * EC_RES_INVALID_VERSION which means that the command
+			 * is present.
+			 */
+			return -ENOPROTOOPT;
+
+		ec_dev->mkbp_event_supported = fls(ver_mask);
+		dev_dbg(ec_dev->dev, "MKBP support version changed to %u\n",
+			ec_dev->mkbp_event_supported - 1);
+
+		/* Try to get next event with new MKBP support version set. */
+		ret = get_next_event(ec_dev);
+	}
+
 	if (ret <= 0)
 		return ret;
 
@@ -794,9 +826,9 @@ EXPORT_SYMBOL(cros_ec_get_host_event);
  *
  * Call this function to test whether the ChromeOS EC supports a feature.
  *
- * Return: 1 if supported, 0 if not
+ * Return: true if supported, false if not (or if an error was encountered).
  */
-int cros_ec_check_features(struct cros_ec_dev *ec, int feature)
+bool cros_ec_check_features(struct cros_ec_dev *ec, int feature)
 {
 	struct cros_ec_command *msg;
 	int ret;
@@ -804,8 +836,10 @@ int cros_ec_check_features(struct cros_ec_dev *ec, int feature)
 	if (ec->features[0] == -1U && ec->features[1] == -1U) {
 		/* features bitmap not read yet */
 		msg = kzalloc(sizeof(*msg) + sizeof(ec->features), GFP_KERNEL);
-		if (!msg)
-			return -ENOMEM;
+		if (!msg) {
+			dev_err(ec->dev, "failed to allocate memory to get EC features\n");
+			return false;
+		}
 
 		msg->command = EC_CMD_GET_FEATURES + ec->cmd_offset;
 		msg->insize = sizeof(ec->features);
@@ -825,7 +859,7 @@ int cros_ec_check_features(struct cros_ec_dev *ec, int feature)
 		kfree(msg);
 	}
 
-	return ec->features[feature / 32] & EC_FEATURE_MASK_0(feature);
+	return !!(ec->features[feature / 32] & EC_FEATURE_MASK_0(feature));
 }
 EXPORT_SYMBOL_GPL(cros_ec_check_features);
 
@@ -901,3 +935,51 @@ int cros_ec_get_sensor_count(struct cros_ec_dev *ec)
 	return sensor_count;
 }
 EXPORT_SYMBOL_GPL(cros_ec_get_sensor_count);
+
+/**
+ * cros_ec_command - Send a command to the EC.
+ *
+ * @ec_dev: EC device
+ * @version: EC command version
+ * @command: EC command
+ * @outdata: EC command output data
+ * @outsize: Size of outdata
+ * @indata: EC command input data
+ * @insize: Size of indata
+ *
+ * Return: >= 0 on success, negative error number on failure.
+ */
+int cros_ec_command(struct cros_ec_device *ec_dev,
+		    unsigned int version,
+		    int command,
+		    void *outdata,
+		    int outsize,
+		    void *indata,
+		    int insize)
+{
+	struct cros_ec_command *msg;
+	int ret;
+
+	msg = kzalloc(sizeof(*msg) + max(insize, outsize), GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+
+	msg->version = version;
+	msg->command = command;
+	msg->outsize = outsize;
+	msg->insize = insize;
+
+	if (outsize)
+		memcpy(msg->data, outdata, outsize);
+
+	ret = cros_ec_cmd_xfer_status(ec_dev, msg);
+	if (ret < 0)
+		goto error;
+
+	if (insize)
+		memcpy(indata, msg->data, insize);
+error:
+	kfree(msg);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(cros_ec_command);
