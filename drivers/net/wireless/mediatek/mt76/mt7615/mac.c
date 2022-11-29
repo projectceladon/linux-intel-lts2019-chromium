@@ -716,12 +716,15 @@ int mt7615_mac_write_txwi(struct mt7615_dev *dev, __le32 *txwi,
 	if (info->flags & IEEE80211_TX_CTL_NO_ACK)
 		txwi[3] |= cpu_to_le32(MT_TXD3_NO_ACK);
 
-	txwi[7] = FIELD_PREP(MT_TXD7_TYPE, fc_type) |
-		  FIELD_PREP(MT_TXD7_SUB_TYPE, fc_stype) |
-		  FIELD_PREP(MT_TXD7_SPE_IDX, 0x18);
-	if (!is_mmio)
-		txwi[8] = FIELD_PREP(MT_TXD8_L_TYPE, fc_type) |
-			  FIELD_PREP(MT_TXD8_L_SUB_TYPE, fc_stype);
+	val = FIELD_PREP(MT_TXD7_TYPE, fc_type) |
+	      FIELD_PREP(MT_TXD7_SUB_TYPE, fc_stype) |
+	      FIELD_PREP(MT_TXD7_SPE_IDX, 0x18);
+	txwi[7] = cpu_to_le32(val);
+	if (!is_mmio) {
+		val = FIELD_PREP(MT_TXD8_L_TYPE, fc_type) |
+		      FIELD_PREP(MT_TXD8_L_SUB_TYPE, fc_stype);
+		txwi[8] = cpu_to_le32(val);
+	}
 
 	return 0;
 }
@@ -989,7 +992,7 @@ u32 mt7615_mac_get_sta_tid_sn(struct mt7615_dev *dev, int wcid, u8 tid)
 	offset %= 32;
 
 	val = mt76_rr(dev, addr);
-	val >>= (tid % 32);
+	val >>= offset;
 
 	if (offset > 20) {
 		addr += 4;
@@ -1931,6 +1934,14 @@ void mt7615_pm_power_save_work(struct work_struct *work)
 	delta = dev->pm.idle_timeout;
 	if (test_bit(MT76_HW_SCANNING, &dev->mphy.state) ||
 	    test_bit(MT76_HW_SCHED_SCANNING, &dev->mphy.state))
+		goto out;
+
+	if (mutex_is_locked(&dev->mt76.mutex))
+		/* if mt76 mutex is held we should not put the device
+		 * to sleep since we are currently accessing device
+		 * register map. We need to wait for the next power_save
+		 * trigger.
+		 */
 		goto out;
 
 	if (time_is_after_jiffies(dev->pm.last_activity + delta)) {

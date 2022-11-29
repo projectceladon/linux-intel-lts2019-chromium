@@ -51,6 +51,7 @@
 #define SOF_MAX98373_SPEAKER_AMP_PRESENT	BIT(16)
 #define SOF_MAX98360A_SPEAKER_AMP_PRESENT	BIT(17)
 #define SOF_RT5682S_HEADPHONE_CODEC_PRESENT	BIT(18)
+#define SOF_RT1019_SPEAKER_AMP_PRESENT	BIT(26)
 
 /* Default: MCLK on, MCLK 19.2M, SSP0  */
 static unsigned long sof_rt5682_quirk = SOF_RT5682_MCLK_EN |
@@ -297,11 +298,16 @@ static int sof_rt5682_hw_params(struct snd_pcm_substream *substream,
 
 	pll_out = params_rate(params) * 512;
 
-	/* Configure pll for codec */
-	ret = snd_soc_dai_set_pll(codec_dai, pll_id, pll_source, pll_in,
-				  pll_out);
-	if (ret < 0)
-		dev_err(rtd->dev, "snd_soc_dai_set_pll err = %d\n", ret);
+	/* when MCLK is 512FS, no need to set PLL configuration additionally. */
+	if (pll_in == pll_out)
+		clk_id = RT5682S_SCLK_S_MCLK;
+	else {
+		/* Configure pll for codec */
+		ret = snd_soc_dai_set_pll(codec_dai, pll_id, pll_source, pll_in,
+					  pll_out);
+		if (ret < 0)
+			dev_err(rtd->dev, "snd_soc_dai_set_pll err = %d\n", ret);
+	}
 
 	/* Configure sysclk for codec */
 	ret = snd_soc_dai_set_sysclk(codec_dai, clk_id,
@@ -698,6 +704,8 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 			links[id].ops = &sof_rt1015_ops;
 		} else if (sof_rt5682_quirk & SOF_RT1015P_SPEAKER_AMP_PRESENT) {
 			sof_rt1015p_dai_link(&links[id]);
+		} else if (sof_rt5682_quirk & SOF_RT1019_SPEAKER_AMP_PRESENT) {
+			sof_rt1019_dai_link(&links[id]);
 		} else if (sof_rt5682_quirk &
 				SOF_MAX98373_SPEAKER_AMP_PRESENT) {
 			links[id].codecs = max_98373_components;
@@ -766,6 +774,10 @@ static int sof_audio_probe(struct platform_device *pdev)
 	 */
 	if ((sof_rt5682_quirk & SOF_SPEAKER_AMP_PRESENT) && !mach->quirk_data)
 		sof_rt5682_quirk &= ~SOF_SPEAKER_AMP_PRESENT;
+
+	/* Detect the headset codec variant */
+	if (acpi_dev_present("RTL5682", NULL, -1))
+		sof_rt5682_quirk |= SOF_RT5682S_HEADPHONE_CODEC_PRESENT;
 
 	if (soc_intel_is_byt() || soc_intel_is_cht()) {
 		is_legacy_cpu = 1;
@@ -859,7 +871,7 @@ static const struct platform_device_id board_ids[] = {
 		.name = "sof_rt5682",
 	},
 	{
-		.name = "tgl_mx98357a_rt5682",
+		.name = "tgl_mx98357_rt5682",
 		.driver_data = (kernel_ulong_t)(SOF_RT5682_MCLK_EN |
 					SOF_RT5682_SSP_CODEC(0) |
 					SOF_SPEAKER_AMP_PRESENT |
@@ -885,7 +897,7 @@ static const struct platform_device_id board_ids[] = {
 					SOF_RT5682_NUM_HDMIDEV(4)),
 	},
 	{
-		.name = "jsl_rt5682_mx98360a",
+		.name = "jsl_rt5682_mx98360",
 		.driver_data = (kernel_ulong_t)(SOF_RT5682_MCLK_EN |
 					SOF_RT5682_MCLK_24MHZ |
 					SOF_RT5682_SSP_CODEC(0) |
@@ -912,33 +924,12 @@ static const struct platform_device_id board_ids[] = {
 					SOF_RT5682_SSP_AMP(1)),
 	},
 	{
-		.name = "jsl_rt5682s_rt1015",
+		.name = "jsl_rt5682_rt1019",
 		.driver_data = (kernel_ulong_t)(SOF_RT5682_MCLK_EN |
 					SOF_RT5682_MCLK_24MHZ |
 					SOF_RT5682_SSP_CODEC(0) |
-					SOF_RT5682S_HEADPHONE_CODEC_PRESENT |
 					SOF_SPEAKER_AMP_PRESENT |
-					SOF_RT1015_SPEAKER_AMP_PRESENT |
-					SOF_RT5682_SSP_AMP(1)),
-	},
-	{
-		.name = "jsl_rt5682s_rt1015p",
-		.driver_data = (kernel_ulong_t)(SOF_RT5682_MCLK_EN |
-					SOF_RT5682_MCLK_24MHZ |
-					SOF_RT5682_SSP_CODEC(0) |
-					SOF_RT5682S_HEADPHONE_CODEC_PRESENT |
-					SOF_SPEAKER_AMP_PRESENT |
-					SOF_RT1015P_SPEAKER_AMP_PRESENT |
-					SOF_RT5682_SSP_AMP(1)),
-	},
-	{
-		.name = "jsl_rt5682s_mx98360a",
-		.driver_data = (kernel_ulong_t)(SOF_RT5682_MCLK_EN |
-					SOF_RT5682_MCLK_24MHZ |
-					SOF_RT5682_SSP_CODEC(0) |
-					SOF_RT5682S_HEADPHONE_CODEC_PRESENT |
-					SOF_SPEAKER_AMP_PRESENT |
-					SOF_MAX98360A_SPEAKER_AMP_PRESENT |
+					SOF_RT1019_SPEAKER_AMP_PRESENT |
 					SOF_RT5682_SSP_AMP(1)),
 	},
 	{ }

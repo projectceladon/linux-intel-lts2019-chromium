@@ -1205,9 +1205,9 @@ struct dev_links_info {
  * @coherent_dma_mask: Like dma_mask, but for alloc_coherent mapping as not all
  * 		hardware supports 64-bit addresses for consistent allocations
  * 		such descriptors.
- * @bus_dma_mask: Mask of an upstream bridge or bus which imposes a smaller DMA
- *		limit than the device itself supports.
- * @dma_pfn_offset: offset of DMA memory range relatively of RAM
+ * @bus_dma_limit: Limit of an upstream bridge or bus which imposes a smaller
+ *		DMA limit than the device itself supports.
+ * @dma_range_map: map for DMA memory ranges relative to that of RAM
  * @dma_parms:	A low level driver may set these to teach IOMMU code about
  * 		segment limitations.
  * @dma_pools:	Dma pools (if dma'ble device).
@@ -1233,6 +1233,8 @@ struct dev_links_info {
  *              should be set by the subsystem / bus driver that discovered
  *              the device.
  *
+ * @coredump_disabled: Can be used to selectively enable/disable the coredump
+ *		functionality for a particular device via sysfs entry.
  * @offline_disabled: If set, the device is permanently online.
  * @offline:	Set after successful invocation of bus type's .offline().
  * @of_node_reused: Set if the device-tree node is shared with an ancestor
@@ -1299,8 +1301,8 @@ struct device {
 					     not all hardware supports
 					     64 bit addresses for consistent
 					     allocations such descriptors. */
-	u64		bus_dma_mask;	/* upstream dma_mask constraint */
-	unsigned long	dma_pfn_offset;
+	u64		bus_dma_limit;	/* upstream dma constraint */
+	const struct bus_dma_region *dma_range_map;
 
 	struct device_dma_parameters *dma_parms;
 
@@ -1341,6 +1343,7 @@ struct device {
 
 	enum device_removable	removable;
 
+	bool			coredump_disabled:1;
 	bool			offline_disabled:1;
 	bool			offline:1;
 	bool			of_node_reused:1;

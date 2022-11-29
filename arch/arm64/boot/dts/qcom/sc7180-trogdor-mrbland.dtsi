@@ -15,7 +15,8 @@ ap_h1_spi: &spi0 {};
 #include "sc7180-trogdor.dtsi"
 #include "sc7180-trogdor-mipi-camera.dtsi"
 
-/delete-node/ &sn65dsi86_bridge;
+/* This board only has 1 USB Type-C port. */
+/delete-node/ &usb_c1;
 
 / {
 	avdd_lcd: avdd-lcd {
@@ -67,9 +68,16 @@ ap_h1_spi: &spi0 {};
 	status = "okay";
 };
 
+&cros_ec {
+	keyboard-controller {
+		compatible = "google,cros-ec-keyb-switches";
+	};
+};
+
 &dsi0 {
 
 	panel: panel@0 {
+		/* Compatible will be filled in per-board */
 		reg = <0>;
 		enable-gpios = <&tlmm 87 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";
@@ -103,10 +111,6 @@ ap_h1_spi: &spi0 {};
 	};
 };
 
-&edp_brij_i2c {
-	status = "disabled";
-};
-
 &gpio_keys {
 	status = "okay";
 };
@@ -130,6 +134,26 @@ ap_h1_spi: &spi0 {};
 	};
 };
 
+&pp1800_uf_cam {
+	status = "okay";
+};
+
+&pp1800_wf_cam {
+	status = "okay";
+};
+
+&pp2800_uf_cam {
+	status = "okay";
+};
+
+&pp2800_wf_cam {
+	status = "okay";
+};
+
+&wifi {
+	qcom,ath10k-calibration-variant = "GO_MRBLAND";
+};
+
 /*
  * No eDP on this board but it's logically the same signal so just give it
  * a new name and assign the proper GPIO.
@@ -148,7 +172,8 @@ pp3300_disp_on: &pp3300_dx_edp {
 tp_en: &en_pp3300_dx_edp {
 	pinmux {
 		pins = "gpio85";
-		};
+	};
+
 	pinconf {
 		pins = "gpio85";
 	};
@@ -281,19 +306,6 @@ tp_en: &en_pp3300_dx_edp {
 			  "DP_HOT_PLUG_DET",
 			  "EC_IN_RW_ODL";
 
-	vdd_reset_1800: vdd-reset-1800 {
-		pinmux {
-			pins = "gpio87";
-			function = "gpio";
-		};
-
-		pinconf {
-			pins = "gpio87";
-			drive-strength = <2>;
-			bias-disable;
-		};
-	};
-
 	avdd_lcd_en: avdd-lcd-en {
 		pinmux {
 			pins = "gpio88";
@@ -307,7 +319,7 @@ tp_en: &en_pp3300_dx_edp {
 		};
 	};
 
-	avee_lcd_en: avee-lcd_en {
+	avee_lcd_en: avee-lcd-en {
 		pinmux {
 			pins = "gpio21";
 			function = "gpio";
@@ -328,6 +340,19 @@ tp_en: &en_pp3300_dx_edp {
 
 		pinconf {
 			pins = "gpio86";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	vdd_reset_1800: vdd-reset-1800 {
+		pinmux {
+			pins = "gpio87";
+			function = "gpio";
+		};
+
+		pinconf {
+			pins = "gpio87";
 			drive-strength = <2>;
 			bias-disable;
 		};

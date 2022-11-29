@@ -117,6 +117,8 @@ EXPORT_SYMBOL_GPL(kvm_debugfs_dir);
 static int kvm_debugfs_num_entries;
 static const struct file_operations *stat_fops_per_vm[];
 
+static struct file_operations kvm_chardev_ops;
+
 static long kvm_vcpu_ioctl(struct file *file, unsigned int ioctl,
 			   unsigned long arg);
 #ifdef CONFIG_KVM_COMPAT
@@ -351,6 +353,11 @@ int kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 	kvm_vcpu_set_dy_eligible(vcpu, false);
 	vcpu->preempted = false;
 	vcpu->ready = false;
+
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+	vcpu->suspend_time_ns = kvm->suspend_time_ns;
+	spin_lock_init(&vcpu->suspend_time_ns_lock);
+#endif
 
 	r = kvm_arch_vcpu_init(vcpu);
 	if (r < 0)
@@ -601,11 +608,69 @@ static int kvm_init_mmu_notifier(struct kvm *kvm)
 #endif /* CONFIG_MMU_NOTIFIER && KVM_ARCH_WANT_MMU_NOTIFIER */
 
 #ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
+static int kvm_suspend_notifier(struct kvm *kvm)
+{
+	struct kvm_vcpu *vcpu;
+	int i;
+
+	if (!virt_suspend_time_enabled(kvm))
+		return NOTIFY_DONE;
+
+	mutex_lock(&kvm->lock);
+	kvm_for_each_vcpu(i, vcpu, kvm)
+		kvm_make_request(KVM_REQ_SUSPEND_TIME_ADJ, vcpu);
+	mutex_unlock(&kvm->lock);
+
+	return NOTIFY_DONE;
+}
+
+static int kvm_resume_notifier(struct kvm *kvm)
+{
+	struct kvm_vcpu *vcpu;
+	int i;
+
+	if (!virt_suspend_time_enabled(kvm))
+		return NOTIFY_DONE;
+
+	mutex_lock(&kvm->lock);
+	kvm_for_each_vcpu(i, vcpu, kvm) {
+		/*
+		 * Clear KVM_REQ_SUSPEND_TIME_ADJ if the suspend injection is
+		 * not needed (e.g. suspend failure)
+		 * The following condition is also true when the adjustment is
+		 * already done and it is safe to clear the request again here.
+		 */
+		if (kvm_total_suspend_time(kvm) ==
+		    vcpu_suspend_time_injected(vcpu))
+			kvm_clear_request(KVM_REQ_SUSPEND_TIME_ADJ, vcpu);
+	}
+	mutex_unlock(&kvm->lock);
+
+	return NOTIFY_DONE;
+}
+
+static int kvm_pm_notifier(struct kvm *kvm, unsigned long state)
+{
+	switch (state) {
+	case PM_HIBERNATION_PREPARE:
+	case PM_SUSPEND_PREPARE:
+		return kvm_suspend_notifier(kvm);
+	case PM_POST_HIBERNATION:
+	case PM_POST_SUSPEND:
+		return kvm_resume_notifier(kvm);
+	}
+
+	return NOTIFY_DONE;
+}
+
 static int kvm_pm_notifier_call(struct notifier_block *bl,
 				unsigned long state,
 				void *unused)
 {
 	struct kvm *kvm = container_of(bl, struct kvm, pm_notifier);
+
+	if (kvm_pm_notifier(kvm, state) != NOTIFY_DONE)
+		return NOTIFY_BAD;
 
 	return kvm_arch_pm_notifier(kvm, state);
 }
@@ -631,6 +696,24 @@ static void kvm_destroy_pm_notifier(struct kvm *kvm)
 {
 }
 #endif /* CONFIG_HAVE_KVM_PM_NOTIFIER */
+
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+void kvm_write_suspend_time(struct kvm *kvm)
+{
+	struct kvm_suspend_time st;
+
+	st.suspend_time_ns = kvm->suspend_time_ns;
+	kvm_write_guest(kvm, kvm->arch.msr_suspend_time & ~1ULL,
+			&st, sizeof(st));
+}
+
+int kvm_init_suspend_time_ghc(struct kvm *kvm, gpa_t gpa)
+{
+	kvm->arch.msr_suspend_time = gpa;
+	kvm_write_suspend_time(kvm);
+	return 0;
+}
+#endif
 
 static struct kvm_memslots *kvm_alloc_memslots(void)
 {
@@ -818,6 +901,11 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	INIT_HLIST_HEAD(&kvm->irq_ack_notifier_list);
 #endif
 
+#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
+	spin_lock_init(&kvm->suspend_time_ns_lock);
+	kvm->base_offs_boot_ns = ktime_get_offs_boot_ns();
+#endif
+
 	r = kvm_init_mmu_notifier(kvm);
 	if (r)
 		goto out_err_no_mmu_notifier;
@@ -832,6 +920,16 @@ static struct kvm *kvm_create_vm(unsigned long type)
 
 	preempt_notifier_inc();
 	kvm_init_pm_notifier(kvm);
+
+	/*
+	 * When the fd passed to this ioctl() is opened it pins the module,
+	 * but try_module_get() also prevents getting a reference if the module
+	 * is in MODULE_STATE_GOING (e.g. if someone ran "rmmod --wait").
+	 */
+	if (!try_module_get(kvm_chardev_ops.owner)) {
+		r = -ENODEV;
+		goto out_err;
+	}
 
 	return kvm;
 
@@ -912,6 +1010,7 @@ static void kvm_destroy_vm(struct kvm *kvm)
 	preempt_notifier_dec();
 	hardware_disable_all();
 	mmdrop(mm);
+	module_put(kvm_chardev_ops.owner);
 }
 
 void kvm_get_kvm(struct kvm *kvm)
@@ -2541,14 +2640,18 @@ out:
 
 static void shrink_halt_poll_ns(struct kvm_vcpu *vcpu)
 {
-	unsigned int old, val, shrink;
+	unsigned int old, val, shrink, grow_start;
 
 	old = val = vcpu->halt_poll_ns;
 	shrink = READ_ONCE(halt_poll_ns_shrink);
+	grow_start = READ_ONCE(halt_poll_ns_grow_start);
 	if (shrink == 0)
 		val = 0;
 	else
 		val /= shrink;
+
+	if (val < grow_start)
+		val = 0;
 
 	vcpu->halt_poll_ns = val;
 	trace_kvm_halt_poll_ns_shrink(vcpu->vcpu_id, val, old);
@@ -2991,7 +3094,7 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
 
-	if (vcpu->kvm->mm != current->mm)
+	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_bugged)
 		return -EIO;
 
 	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
@@ -3198,7 +3301,7 @@ static long kvm_vcpu_compat_ioctl(struct file *filp,
 	void __user *argp = compat_ptr(arg);
 	int r;
 
-	if (vcpu->kvm->mm != current->mm)
+	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_bugged)
 		return -EIO;
 
 	switch (ioctl) {
@@ -3263,7 +3366,7 @@ static long kvm_device_ioctl(struct file *filp, unsigned int ioctl,
 {
 	struct kvm_device *dev = filp->private_data;
 
-	if (dev->kvm->mm != current->mm)
+	if (dev->kvm->mm != current->mm || dev->kvm->vm_bugged)
 		return -EIO;
 
 	switch (ioctl) {
@@ -3383,8 +3486,11 @@ static int kvm_ioctl_create_device(struct kvm *kvm,
 		kvm_put_kvm(kvm);
 		mutex_lock(&kvm->lock);
 		list_del(&dev->vm_node);
+		if (ops->release)
+			ops->release(dev);
 		mutex_unlock(&kvm->lock);
-		ops->destroy(dev);
+		if (ops->destroy)
+			ops->destroy(dev);
 		return ret;
 	}
 
@@ -3464,7 +3570,7 @@ static long kvm_vm_ioctl(struct file *filp,
 	void __user *argp = (void __user *)arg;
 	int r;
 
-	if (kvm->mm != current->mm)
+	if (kvm->mm != current->mm || kvm->vm_bugged)
 		return -EIO;
 	switch (ioctl) {
 	case KVM_CREATE_VCPU:
@@ -3672,7 +3778,7 @@ static long kvm_vm_compat_ioctl(struct file *filp,
 	struct kvm *kvm = filp->private_data;
 	int r;
 
-	if (kvm->mm != current->mm)
+	if (kvm->mm != current->mm || kvm->vm_bugged)
 		return -EIO;
 	switch (ioctl) {
 #ifdef CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT

@@ -2212,13 +2212,17 @@ static void dcn10_update_mpcc(struct dc *dc, struct pipe_ctx *pipe_ctx)
 				&blnd_cfg.black_color);
 	}
 
-	if (per_pixel_alpha)
-		blnd_cfg.alpha_mode = MPCC_ALPHA_BLEND_MODE_PER_PIXEL_ALPHA;
-	else
-		blnd_cfg.alpha_mode = MPCC_ALPHA_BLEND_MODE_GLOBAL_ALPHA;
-
 	blnd_cfg.overlap_only = false;
 	blnd_cfg.global_gain = 0xff;
+
+	if (per_pixel_alpha && pipe_ctx->plane_state->global_alpha) {
+		blnd_cfg.alpha_mode = MPCC_ALPHA_BLEND_MODE_PER_PIXEL_ALPHA_COMBINED_GLOBAL_GAIN;
+		blnd_cfg.global_gain = pipe_ctx->plane_state->global_alpha_value;
+	} else if (per_pixel_alpha) {
+		blnd_cfg.alpha_mode = MPCC_ALPHA_BLEND_MODE_PER_PIXEL_ALPHA;
+	} else {
+		blnd_cfg.alpha_mode = MPCC_ALPHA_BLEND_MODE_GLOBAL_ALPHA;
+	}
 
 	if (pipe_ctx->plane_state->global_alpha)
 		blnd_cfg.global_alpha = pipe_ctx->plane_state->global_alpha_value;
@@ -3034,15 +3038,62 @@ static void dcn10_set_cursor_position(struct pipe_ctx *pipe_ctx)
 		.rotation = pipe_ctx->plane_state->rotation,
 		.mirror = pipe_ctx->plane_state->horizontal_mirror
 	};
-	uint32_t x_plane = pipe_ctx->plane_state->dst_rect.x;
-	uint32_t y_plane = pipe_ctx->plane_state->dst_rect.y;
-	uint32_t x_offset = min(x_plane, pos_cpy.x);
-	uint32_t y_offset = min(y_plane, pos_cpy.y);
 
-	pos_cpy.x -= x_offset;
-	pos_cpy.y -= y_offset;
-	pos_cpy.x_hotspot += (x_plane - x_offset);
-	pos_cpy.y_hotspot += (y_plane - y_offset);
+	int x_plane = pipe_ctx->plane_state->dst_rect.x;
+	int y_plane = pipe_ctx->plane_state->dst_rect.y;
+	int x_pos = pos_cpy.x;
+	int y_pos = pos_cpy.y;
+
+	/**
+	 * DC cursor is stream space, HW cursor is plane space and drawn
+	 * as part of the framebuffer.
+	 *
+	 * Cursor position can't be negative, but hotspot can be used to
+	 * shift cursor out of the plane bounds. Hotspot must be smaller
+	 * than the cursor size.
+	 */
+
+	/**
+	 * Translate cursor from stream space to plane space.
+	 *
+	 * If the cursor is scaled then we need to scale the position
+	 * to be in the approximately correct place. We can't do anything
+	 * about the actual size being incorrect, that's a limitation of
+	 * the hardware.
+	 */
+	x_pos = (x_pos - x_plane) * pipe_ctx->plane_state->src_rect.width /
+			pipe_ctx->plane_state->dst_rect.width;
+	y_pos = (y_pos - y_plane) * pipe_ctx->plane_state->src_rect.height /
+			pipe_ctx->plane_state->dst_rect.height;
+
+	/**
+	 * If the cursor's source viewport is clipped then we need to
+	 * translate the cursor to appear in the correct position on
+	 * the screen.
+	 *
+	 * This translation isn't affected by scaling so it needs to be
+	 * done *after* we adjust the position for the scale factor.
+	 */
+	x_pos += pipe_ctx->plane_state->src_rect.x;
+	y_pos += pipe_ctx->plane_state->src_rect.y;
+
+	/**
+	 * If the position is negative then we need to add to the hotspot
+	 * to shift the cursor outside the plane.
+	 */
+
+	if (x_pos < 0) {
+		pos_cpy.x_hotspot -= x_pos;
+		x_pos = 0;
+	}
+
+	if (y_pos < 0) {
+		pos_cpy.y_hotspot -= y_pos;
+		y_pos = 0;
+	}
+
+	pos_cpy.x = (uint32_t)x_pos;
+	pos_cpy.y = (uint32_t)y_pos;
 
 	if (pipe_ctx->plane_state->address.type
 			== PLN_ADDR_TYPE_VIDEO_PROGRESSIVE)

@@ -170,6 +170,8 @@ static int dsi_send_pkt_hdr(struct intel_dsi_host *host,
 
 	if (enable_lpdt)
 		tmp |= LP_DATA_TRANSFER;
+	else
+		tmp &= ~LP_DATA_TRANSFER;
 
 	tmp &= ~(PARAM_WC_MASK | VC_MASK | DT_MASK);
 	tmp |= ((pkt.header[0] & VC_MASK) << VC_SHIFT);
@@ -1079,8 +1081,6 @@ static void gen11_dsi_powerup_panel(struct intel_encoder *encoder)
 	}
 
 	/* panel power on related mipi dsi vbt sequences */
-	intel_dsi_vbt_exec_sequence(intel_dsi, MIPI_SEQ_POWER_ON);
-	intel_dsi_msleep(intel_dsi, intel_dsi->panel_on_delay);
 	intel_dsi_vbt_exec_sequence(intel_dsi, MIPI_SEQ_DEASSERT_RESET);
 	intel_dsi_vbt_exec_sequence(intel_dsi, MIPI_SEQ_INIT_OTP);
 	intel_dsi_vbt_exec_sequence(intel_dsi, MIPI_SEQ_DISPLAY_ON);
@@ -1106,13 +1106,19 @@ static void gen11_dsi_pre_enable(struct intel_atomic_state *state,
 				 const struct intel_crtc_state *pipe_config,
 				 const struct drm_connector_state *conn_state)
 {
+	struct intel_dsi *intel_dsi = enc_to_intel_dsi(encoder);
+
 	/* step3b */
 	gen11_dsi_map_pll(encoder, pipe_config);
+
+	/* for mipi dsi vbt sequence to powerup panel */
+	intel_dsi_vbt_exec_sequence(intel_dsi, MIPI_SEQ_POWER_ON);
+	intel_dsi_msleep(intel_dsi, intel_dsi->panel_on_delay);
 
 	/* step4: enable DSI port and DPHY */
 	gen11_dsi_enable_port_and_phy(encoder, pipe_config);
 
-	/* step5: program and powerup panel */
+	/* step5: program panel */
 	gen11_dsi_powerup_panel(encoder);
 
 	intel_dsc_enable(encoder, pipe_config);
@@ -1624,14 +1630,13 @@ static void icl_dphy_param_init(struct intel_dsi *intel_dsi)
 	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct mipi_config *mipi_config = dev_priv->vbt.dsi.config;
 	u32 tlpx_ns;
-	u32 prepare_cnt, exit_zero_cnt, clk_zero_cnt, trail_cnt;
-	u32 ths_prepare_ns, tclk_trail_ns;
+	u32 prepare_cnt, exit_zero_cnt, clk_zero_cnt;
+	u32 ths_prepare_ns;
 	u32 hs_zero_cnt;
 	u32 tclk_pre_cnt, tclk_post_cnt;
 
 	tlpx_ns = intel_dsi_tlpx_ns(intel_dsi);
 
-	tclk_trail_ns = max(mipi_config->tclk_trail, mipi_config->ths_trail);
 	ths_prepare_ns = max(mipi_config->ths_prepare,
 			     mipi_config->tclk_prepare);
 
@@ -1656,14 +1661,6 @@ static void icl_dphy_param_init(struct intel_dsi *intel_dsi)
 		drm_dbg_kms(&dev_priv->drm,
 			    "clk_zero_cnt out of range (%d)\n", clk_zero_cnt);
 		clk_zero_cnt = ICL_CLK_ZERO_CNT_MAX;
-	}
-
-	/* trail cnt in escape clocks*/
-	trail_cnt = DIV_ROUND_UP(tclk_trail_ns, tlpx_ns);
-	if (trail_cnt > ICL_TRAIL_CNT_MAX) {
-		drm_dbg_kms(&dev_priv->drm, "trail_cnt out of range (%d)\n",
-			    trail_cnt);
-		trail_cnt = ICL_TRAIL_CNT_MAX;
 	}
 
 	/* tclk pre count in escape clocks */
@@ -1709,17 +1706,13 @@ static void icl_dphy_param_init(struct intel_dsi *intel_dsi)
 			       CLK_PRE_OVERRIDE |
 			       CLK_PRE(tclk_pre_cnt) |
 			       CLK_POST_OVERRIDE |
-			       CLK_POST(tclk_post_cnt) |
-			       CLK_TRAIL_OVERRIDE |
-			       CLK_TRAIL(trail_cnt));
+			       CLK_POST(tclk_post_cnt));
 
 	/* data lanes dphy timings */
 	intel_dsi->dphy_data_lane_reg = (HS_PREPARE_OVERRIDE |
 					 HS_PREPARE(prepare_cnt) |
 					 HS_ZERO_OVERRIDE |
 					 HS_ZERO(hs_zero_cnt) |
-					 HS_TRAIL_OVERRIDE |
-					 HS_TRAIL(trail_cnt) |
 					 HS_EXIT_OVERRIDE |
 					 HS_EXIT(exit_zero_cnt));
 

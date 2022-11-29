@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2018-2021 Intel Corporation
+ * Copyright(c) 2018-2022 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -22,11 +22,12 @@
 #define CPTCFG_MAC80211_RC_DEFAULT ""
 #define CPTCFG_MAC80211_STA_HASH_MAX_SIZE 0
 #define CPTCFG_IWL_TIMEOUT_FACTOR 1
+#define CPTCFG_IWL_DELAY_FACTOR 1
 #define CPTCFG_IWLWIFI_MODULE 1
 #define CPTCFG_IWLMVM_MODULE 1
 #define CPTCFG_IWLWIFI_OPMODE_MODULAR 1
 #define CPTCFG_IWLWIFI_DEBUG 1
-#define CPTCFG_IWLWIFI_NUM_CHANNELS 1
+#define CPTCFG_IWLWIFI_NUM_CHANNELS 2
 #define CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES 1
 #define CPTCFG_IWLWIFI_DISALLOW_OLDER_FW 1
 #define CPTCFG_IWLWIFI_NUM_STA_INTERFACES 1
@@ -56,22 +57,12 @@
 #define CPTCFG_IWLXVT_MODULE 1
 #endif
 
-/* cfg80211 version specific backward compat code follows */
-#ifdef CONFIG_WIRELESS_38
-#define CFG80211_VERSION KERNEL_VERSION(3,8,0)
-#else
 #define CFG80211_VERSION LINUX_VERSION_CODE
-#endif
 
-#if CFG80211_VERSION >= KERNEL_VERSION(5, 10, 0)
-#define CPTCFG_IWLWIFI_WIFI_6_SUPPORT 1
-#endif /* >= 5.10.0 */
-
-#if defined(CONFIG_IWL7000_VENDOR_CMDS) && \
-	(CFG80211_VERSION >= KERNEL_VERSION(3, 14, 0))
+#if defined(CONFIG_IWL7000_VENDOR_CMDS)
 #define CPTCFG_IWLMVM_VENDOR_CMDS 1
 #endif
 
-#define CPTCFG_IWLWIFI_DHC 1
+#define CPTCFG_IWLWIFI_DONT_DUMP_FIFOS 1
 
 #endif

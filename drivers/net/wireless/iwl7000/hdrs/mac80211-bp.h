@@ -1,7 +1,7 @@
 /*
  * ChromeOS backport definitions
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2021 Intel Corporation
+ * Copyright (C) 2018-2022 Intel Corporation
  */
 #include <linux/if_ether.h>
 #include <net/cfg80211.h>
@@ -11,6 +11,7 @@
 #include <net/addrconf.h>
 #include <net/ieee80211_radiotap.h>
 #include <crypto/hash.h>
+#include <net/dsfield.h>
 
 /* make sure we include iw_handler.h to get wireless_nlevent_flush() */
 #include <net/iw_handler.h>
@@ -53,277 +54,51 @@ csa_counter_offsets_presp(struct cfg80211_csa_settings *s)
 	return s->counter_offsets_presp;
 }
 
-#if CFG80211_VERSION <= KERNEL_VERSION(9,9,9)
+#if CFG80211_VERSION < KERNEL_VERSION(5,18,0)
 #define IEEE80211_CHAN_NO_HE 0
+#define IEEE80211_CHAN_NO_EHT 0
+
 #define NL80211_RRF_NO_HE 0
-#endif
 
-#if CFG80211_VERSION < KERNEL_VERSION(3,19,0)
-#define NL80211_FEATURE_MAC_ON_CREATE 0 /* cannot be used */
+#define NL80211_CHAN_WIDTH_320 13
 
-struct ocb_setup {
-	struct cfg80211_chan_def chandef;
+#define IEEE80211_EHT_PPE_THRES_MAX_LEN	32
+
+struct ieee80211_eht_mcs_nss_supp {
+	union {
+		struct ieee80211_eht_mcs_nss_supp_20mhz_only only_20mhz;
+		struct {
+			struct ieee80211_eht_mcs_nss_supp_bw _80;
+			struct ieee80211_eht_mcs_nss_supp_bw _160;
+			struct ieee80211_eht_mcs_nss_supp_bw _320;
+		} __packed bw;
+	} __packed;
+} __packed;
+
+struct ieee80211_sta_eht_cap {
+	bool has_eht;
+	struct ieee80211_eht_cap_elem_fixed eht_cap_elem;
+	struct ieee80211_eht_mcs_nss_supp eht_mcs_nss_supp;
+	u8 eht_ppe_thres[IEEE80211_EHT_PPE_THRES_MAX_LEN];
 };
 
-static inline bool ieee80211_viftype_ocb(unsigned int iftype)
+static inline const struct ieee80211_sta_eht_cap *
+ieee80211_get_eht_iftype_cap(const struct ieee80211_supported_band *sband,
+			     enum nl80211_iftype iftype)
 {
-	return false;
+	return NULL;
 }
 
-static inline struct wiphy *
-wiphy_new_nm(const struct cfg80211_ops *ops, int sizeof_priv,
-	     const char *requested_name)
-{
-	/* drop the requested name since it's not supported */
-	return wiphy_new(ops, sizeof_priv);
-}
+#define cfg_eht_cap_has_eht(obj) (false && (obj))
+#define cfg_eht_cap_set_has_eht(obj, val) do { (void)obj; (void)val; } while (0)
+#define cfg_eht_cap(obj) ((struct ieee80211_sta_eht_cap *)((obj) ? NULL : NULL))
 
-static inline void
-cfg80211_cqm_beacon_loss_notify(struct net_device *dev, gfp_t gfp)
-{
-	/* don't do anything - this event is unused by the supplicant here */
-}
-
-/* LAR related functionality privately backported into mac80211 */
-int regulatory_set_wiphy_regd(struct wiphy *wiphy,
-			      struct ieee80211_regdomain *rd);
-int regulatory_set_wiphy_regd_sync_rtnl(struct wiphy *wiphy,
-					struct ieee80211_regdomain *rd);
-
-#define REGULATORY_COUNTRY_IE_IGNORE 0
-#define REGULATORY_WIPHY_SELF_MANAGED WIPHY_FLAG_SELF_MANAGED_REG
-
-#define IEEE80211_CHAN_INDOOR_ONLY 0
-#define IEEE80211_CHAN_IR_CONCURRENT 0
-
-static inline void
-cfg80211_ch_switch_started_notify(struct net_device *dev,
-				  struct cfg80211_chan_def *chandef,
-				  u8 count)
-{
-}
+/* mbssid was added in 5.18.0, so it's safe to return 0 prior to that version */
+#define ieee80211_get_mbssid_beacon_len(...) 0
 #else
-static inline bool ieee80211_viftype_ocb(unsigned int iftype)
-{
-	return iftype == NL80211_IFTYPE_OCB;
-}
-#endif /* 3.19 */
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,0,0)
-struct cfg80211_tid_stats {
-	u32 filled;
-	u64 rx_msdu;
-	u64 tx_msdu;
-	u64 tx_msdu_retries;
-	u64 tx_msdu_failed;
-};
-
-static inline void
-cfg80211_del_sta_sinfo(struct net_device *dev, const u8 *mac_addr,
-		       struct station_info *sinfo, gfp_t gfp)
-{
-	cfg80211_del_sta(dev, mac_addr, gfp);
-}
-
-enum rate_info_bw {
-	RATE_INFO_BW_20 = 0,
-	RATE_INFO_BW_5,
-	RATE_INFO_BW_10,
-	RATE_INFO_BW_40,
-	RATE_INFO_BW_80,
-	RATE_INFO_BW_160,
-};
-
-enum ieee80211_bss_type {
-	IEEE80211_BSS_TYPE_ESS,
-	IEEE80211_BSS_TYPE_PBSS,
-	IEEE80211_BSS_TYPE_IBSS,
-	IEEE80211_BSS_TYPE_MBSS,
-	IEEE80211_BSS_TYPE_ANY
-};
-
-enum ieee80211_privacy {
-	IEEE80211_PRIVACY_ON,
-	IEEE80211_PRIVACY_OFF,
-	IEEE80211_PRIVACY_ANY
-};
-
-#define IEEE80211_PRIVACY(x)	\
-	((x) ? IEEE80211_PRIVACY_ON : IEEE80211_PRIVACY_OFF)
-
-static inline struct cfg80211_bss *
-iwl7000_cfg80211_get_bss(struct wiphy *wiphy,
-			 struct ieee80211_channel *channel,
-			 const u8 *bssid,
-			 const u8 *ssid, size_t ssid_len,
-			 enum ieee80211_bss_type bss_type,
-			 enum ieee80211_privacy privacy)
-{
-	u16 capa_val = 0;
-	u16 capa_msk = 0;
-
-	switch (bss_type) {
-	case IEEE80211_BSS_TYPE_ESS:
-		capa_val |= WLAN_CAPABILITY_ESS;
-		capa_msk |= WLAN_CAPABILITY_ESS;
-		break;
-	case IEEE80211_BSS_TYPE_PBSS:
-	case IEEE80211_BSS_TYPE_MBSS:
-		WARN_ON(1);
-		break;
-	case IEEE80211_BSS_TYPE_IBSS:
-		capa_val |= WLAN_CAPABILITY_IBSS;
-		capa_msk |= WLAN_CAPABILITY_IBSS;
-		break;
-	case IEEE80211_BSS_TYPE_ANY:
-		break;
-	}
-
-	switch (privacy) {
-	case IEEE80211_PRIVACY_ON:
-		capa_val |= WLAN_CAPABILITY_PRIVACY;
-		capa_msk |= WLAN_CAPABILITY_PRIVACY;
-		break;
-	case IEEE80211_PRIVACY_OFF:
-		capa_msk |= WLAN_CAPABILITY_PRIVACY;
-		break;
-	case IEEE80211_PRIVACY_ANY:
-		break;
-	}
-
-	return cfg80211_get_bss(wiphy, channel, bssid, ssid, ssid_len,
-				capa_msk, capa_val);
-}
-#define cfg80211_get_bss iwl7000_cfg80211_get_bss
-
-static inline bool
-ieee80211_chandef_to_operating_class(struct cfg80211_chan_def *chandef,
-				     u8 *op_class)
-{
-	u8 vht_opclass;
-	u16 freq = chandef->center_freq1;
-
-	if (freq >= 2412 && freq <= 2472) {
-		if (chandef->width > NL80211_CHAN_WIDTH_40)
-			return false;
-
-		/* 2.407 GHz, channels 1..13 */
-		if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 83; /* HT40+ */
-			else
-				*op_class = 84; /* HT40- */
-		} else {
-			*op_class = 81;
-		}
-
-		return true;
-	}
-
-	if (freq == 2484) {
-		if (chandef->width > NL80211_CHAN_WIDTH_40)
-			return false;
-
-		*op_class = 82; /* channel 14 */
-		return true;
-	}
-
-	switch (chandef->width) {
-	case NL80211_CHAN_WIDTH_80:
-		vht_opclass = 128;
-		break;
-	case NL80211_CHAN_WIDTH_160:
-		vht_opclass = 129;
-		break;
-	case NL80211_CHAN_WIDTH_80P80:
-		vht_opclass = 130;
-		break;
-	case NL80211_CHAN_WIDTH_10:
-	case NL80211_CHAN_WIDTH_5:
-		return false; /* unsupported for now */
-	default:
-		vht_opclass = 0;
-		break;
-	}
-
-	/* 5 GHz, channels 36..48 */
-	if (freq >= 5180 && freq <= 5240) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 116;
-			else
-				*op_class = 117;
-		} else {
-			*op_class = 115;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 52..64 */
-	if (freq >= 5260 && freq <= 5320) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 119;
-			else
-				*op_class = 120;
-		} else {
-			*op_class = 118;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 100..144 */
-	if (freq >= 5500 && freq <= 5720) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 122;
-			else
-				*op_class = 123;
-		} else {
-			*op_class = 121;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 149..169 */
-	if (freq >= 5745 && freq <= 5845) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 126;
-			else
-				*op_class = 127;
-		} else if (freq <= 5805) {
-			*op_class = 124;
-		} else {
-			*op_class = 125;
-		}
-
-		return true;
-	}
-
-	/* 56.16 GHz, channel 1..4 */
-	if (freq >= 56160 + 2160 * 1 && freq <= 56160 + 2160 * 4) {
-		if (chandef->width >= NL80211_CHAN_WIDTH_40)
-			return false;
-
-		*op_class = 180;
-		return true;
-	}
-
-	/* not supported yet */
-	return false;
-}
+#define cfg_eht_cap_has_eht(obj) (obj)->eht_cap.has_eht
+#define cfg_eht_cap_set_has_eht(obj, val) (obj)->eht_cap.has_eht = val
+#define cfg_eht_cap(obj) (&(obj)->eht_cap)
 #endif
 
 /* backport wiphy_ext_feature_set/_isset
@@ -336,9 +111,7 @@ static inline void iwl7000_wiphy_ext_feature_set(struct wiphy *wiphy, int ftidx)
 {
 	if (ftidx < 0)
 		return;
-#if CFG80211_VERSION >= KERNEL_VERSION(4,0,0)
 	wiphy_ext_feature_set(wiphy, ftidx);
-#endif
 }
 
 static inline bool iwl7000_wiphy_ext_feature_isset(struct wiphy *wiphy,
@@ -346,10 +119,7 @@ static inline bool iwl7000_wiphy_ext_feature_isset(struct wiphy *wiphy,
 {
 	if (ftidx < 0)
 		return false;
-#if CFG80211_VERSION >= KERNEL_VERSION(4,0,0)
 	return wiphy_ext_feature_isset(wiphy, ftidx);
-#endif
-	return false;
 }
 #define wiphy_ext_feature_set iwl7000_wiphy_ext_feature_set
 #define wiphy_ext_feature_isset iwl7000_wiphy_ext_feature_isset
@@ -403,31 +173,6 @@ const u8 *iwl7000_get_fils_nonces(struct cfg80211_assoc_request *req)
 	return req->fils_nonces;
 #endif
 }
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,1,0)
-size_t ieee80211_ie_split_ric(const u8 *ies, size_t ielen,
-			      const u8 *ids, int n_ids,
-			      const u8 *after_ric, int n_after_ric,
-			      size_t offset);
-size_t ieee80211_ie_split(const u8 *ies, size_t ielen,
-			  const u8 *ids, int n_ids, size_t offset);
-#define NL80211_EXT_FEATURE_VHT_IBSS -1
-#endif
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,3,0)
-#define cfg80211_reg_can_beacon_relax(wiphy, chandef, iftype) \
-	cfg80211_reg_can_beacon(wiphy, chandef, iftype)
-#endif
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-#define CFG80211_STA_AP_CLIENT_UNASSOC CFG80211_STA_AP_CLIENT
-#define NL80211_FEATURE_FULL_AP_CLIENT_STATE 0
-
-struct cfg80211_sched_scan_plan {
-	u32 interval;
-	u32 iterations;
-};
-#endif
 
 struct backport_sinfo {
 	u32 filled;
@@ -560,51 +305,10 @@ static inline void iwl7000_convert_sinfo(struct backport_sinfo *bpsinfo,
 #if CFG80211_VERSION >= KERNEL_VERSION(5,2,0)
 	COPY(airtime_link_metric);
 #endif
-#if CFG80211_VERSION >= KERNEL_VERSION(4,0,0)
 	COPY(rx_beacon);
 	COPY(rx_beacon_signal_avg);
 	MCPY(pertid);
 	COPY(filled);
-#else
-#define RENAMED_FLAG(n, o)						\
-	do {								\
-		if (bpsinfo->filled & BIT(NL80211_STA_INFO_ ## n))	\
-			sinfo->filled |= STATION_INFO_ ## o;		\
-	} while (0)
-#define FLAG(flg)	RENAMED_FLAG(flg, flg)
-	FLAG(INACTIVE_TIME);
-	FLAG(RX_BYTES);
-	FLAG(TX_BYTES);
-	FLAG(LLID);
-	FLAG(PLID);
-	FLAG(PLINK_STATE);
-	FLAG(SIGNAL);
-	FLAG(TX_BITRATE);
-	FLAG(RX_PACKETS);
-	FLAG(TX_PACKETS);
-	FLAG(TX_RETRIES);
-	FLAG(TX_FAILED);
-	FLAG(RX_DROP_MISC);
-	FLAG(SIGNAL_AVG);
-	FLAG(RX_BITRATE);
-	FLAG(BSS_PARAM);
-	FLAG(CONNECTED_TIME);
-	if (bpsinfo->assoc_req_ies_len)
-		sinfo->filled |= STATION_INFO_ASSOC_REQ_IES;
-	FLAG(STA_FLAGS);
-	RENAMED_FLAG(BEACON_LOSS, BEACON_LOSS_COUNT);
-	FLAG(T_OFFSET);
-	FLAG(LOCAL_PM);
-	FLAG(PEER_PM);
-	FLAG(NONPEER_PM);
-	FLAG(RX_BYTES64);
-	FLAG(TX_BYTES64);
-	FLAG(CHAIN_SIGNAL);
-	FLAG(CHAIN_SIGNAL_AVG);
-	FLAG(EXPECTED_THROUGHPUT);
-#undef RENAMED_FLAG
-#undef FLAG
-#endif
 #undef COPY
 }
 typedef struct station_info cfg_station_info_t;
@@ -633,65 +337,12 @@ backport_cfg80211_del_sta_sinfo(struct net_device *dev, const u8 *mac_addr,
 #define cfg80211_del_sta_sinfo backport_cfg80211_del_sta_sinfo
 
 typedef struct survey_info cfg_survey_info_t;
-#if CFG80211_VERSION < KERNEL_VERSION(4,0,0)
-#define survey_info bp_survey_info
-struct survey_info {
-	struct ieee80211_channel *channel;
-	u64 time;
-	u64 time_busy;
-	u64 time_ext_busy;
-	u64 time_rx;
-	u64 time_tx;
-	u64 time_scan;
-	u32 filled;
-	s8 noise;
-};
-#define SURVEY_INFO_TIME SURVEY_INFO_CHANNEL_TIME
-#define SURVEY_INFO_TIME_BUSY SURVEY_INFO_CHANNEL_TIME_BUSY
-#define SURVEY_INFO_TIME_EXT_BUSY SURVEY_INFO_CHANNEL_TIME_EXT_BUSY
-#define SURVEY_INFO_TIME_RX SURVEY_INFO_CHANNEL_TIME_RX
-#define SURVEY_INFO_TIME_TX SURVEY_INFO_CHANNEL_TIME_TX
-#define SURVEY_INFO_TIME_SCAN 0
-static inline void iwl7000_convert_survey_info(struct survey_info *survey,
-					       cfg_survey_info_t *cfg)
-{
-	cfg->channel = survey->channel;
-	cfg->channel_time = survey->time;
-	cfg->channel_time_busy = survey->time_busy;
-	cfg->channel_time_ext_busy = survey->time_ext_busy;
-	cfg->channel_time_rx = survey->time_rx;
-	cfg->channel_time_tx = survey->time_tx;
-	cfg->noise = survey->noise;
-	cfg->filled = survey->filled;
-}
-#else
+
 static inline void iwl7000_convert_survey_info(struct survey_info *survey,
 					       cfg_survey_info_t *cfg)
 {
 	memcpy(cfg, survey, sizeof(*cfg));
 }
-#endif
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-struct cfg80211_inform_bss {
-	struct ieee80211_channel *chan;
-	enum nl80211_bss_scan_width scan_width;
-	s32 signal;
-	u64 boottime_ns;
-};
-
-static inline struct cfg80211_bss *
-cfg80211_inform_bss_frame_data(struct wiphy *wiphy,
-			       struct cfg80211_inform_bss *data,
-			       struct ieee80211_mgmt *mgmt, size_t len,
-			       gfp_t gfp)
-
-{
-	return cfg80211_inform_bss_width_frame(wiphy, data->chan,
-					       data->scan_width, mgmt,
-					       len, data->signal, gfp);
-}
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,4,0) */
 
 #if CFG80211_VERSION < KERNEL_VERSION(4,12,0)
 #define mon_opts_flags(p)	flags
@@ -732,87 +383,6 @@ static inline bool ieee80211_has_nan_iftype(unsigned int iftype)
 {
 	return false;
 }
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-struct cfg80211_nan_conf {
-	u8 master_pref;
-	u8 bands;
-};
-
-enum nl80211_nan_function_type {
-	NL80211_NAN_FUNC_PUBLISH,
-	NL80211_NAN_FUNC_SUBSCRIBE,
-	NL80211_NAN_FUNC_FOLLOW_UP,
-
-	/* keep last */
-	__NL80211_NAN_FUNC_TYPE_AFTER_LAST,
-	NL80211_NAN_FUNC_MAX_TYPE = __NL80211_NAN_FUNC_TYPE_AFTER_LAST - 1,
-};
-
-struct cfg80211_nan_func_filter {
-	const u8 *filter;
-	u8 len;
-};
-
-enum nl80211_nan_func_term_reason {
-	NL80211_NAN_FUNC_TERM_REASON_USER_REQUEST,
-	NL80211_NAN_FUNC_TERM_REASON_TTL_EXPIRED,
-	NL80211_NAN_FUNC_TERM_REASON_ERROR,
-};
-
-#define NL80211_NAN_FUNC_SERVICE_ID_LEN 6
-
-struct cfg80211_nan_func {
-	enum nl80211_nan_function_type type;
-	u8 service_id[NL80211_NAN_FUNC_SERVICE_ID_LEN];
-	u8 publish_type;
-	bool close_range;
-	bool publish_bcast;
-	bool subscribe_active;
-	u8 followup_id;
-	u8 followup_reqid;
-	struct mac_address followup_dest;
-	u32 ttl;
-	const u8 *serv_spec_info;
-	u8 serv_spec_info_len;
-	bool srf_include;
-	const u8 *srf_bf;
-	u8 srf_bf_len;
-	u8 srf_bf_idx;
-	struct mac_address *srf_macs;
-	int srf_num_macs;
-	struct cfg80211_nan_func_filter *rx_filters;
-	struct cfg80211_nan_func_filter *tx_filters;
-	u8 num_tx_filters;
-	u8 num_rx_filters;
-	u8 instance_id;
-	u64 cookie;
-};
-
-static inline void cfg80211_free_nan_func(struct cfg80211_nan_func *f)
-{
-}
-
-struct cfg80211_nan_match_params {
-	enum nl80211_nan_function_type type;
-	u8 inst_id;
-	u8 peer_inst_id;
-	const u8 *addr;
-	u8 info_len;
-	const u8 *info;
-	u64 cookie;
-};
-
-static inline bool cfg80211_nan_started(struct wireless_dev *wdev)
-{
-	return false;
-}
-
-enum nl80211_nan_publish_type {
-	NL80211_NAN_SOLICITED_PUBLISH = 1 << 0,
-	NL80211_NAN_UNSOLICITED_PUBLISH = 1 << 1,
-};
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,4,0) */
 #else
 static inline bool ieee80211_viftype_nan(unsigned int iftype)
 {
@@ -832,16 +402,6 @@ bool ieee80211_has_nan_iftype(unsigned int iftype)
 #define beacon_ftm_len(beacon, m) ((beacon)->m)
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,19,0)
-static inline long ktime_get_seconds(void)
-{
-	struct timespec uptime;
-
-	ktime_get_ts(&uptime);
-	return uptime.tv_sec;
-}
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(3,19,0) */
-
 #if CFG80211_VERSION < KERNEL_VERSION(4,6,0)
 #define NL80211_EXT_FEATURE_RRM -1
 #endif
@@ -854,22 +414,6 @@ cfg80211_sta_support_p2p_ps(struct station_parameters *params, bool p2p_go)
 #endif
 	return p2p_go;
 }
-
-#if LINUX_VERSION_IS_LESS(4,4,0)
-int match_string(const char * const *array, size_t n, const char *string);
-#endif /* LINUX_VERSION_IS_LESS(4,4,0) */
-
-/* this was added in v3.2.79, v3.18.30, v4.1.21, v4.4.6 and 4.5 */
-#if !(LINUX_VERSION_IS_GEQ(4,4,6) || \
-      (LINUX_VERSION_IS_GEQ(4,1,21) && \
-       LINUX_VERSION_IS_LESS(4,2,0)) || \
-      (LINUX_VERSION_IS_GEQ(3,18,30) && \
-       LINUX_VERSION_IS_LESS(3,19,0)) || \
-      (LINUX_VERSION_IS_GEQ(3,2,79) && \
-       LINUX_VERSION_IS_LESS(3,3,0)))
-/* we don't have wext */
-static inline void wireless_nlevent_flush(void) {}
-#endif
 
 static inline u8*
 cfg80211_scan_req_bssid(struct cfg80211_scan_request *scan_req)
@@ -915,26 +459,6 @@ ieee80211_operating_class_to_band(u8 operating_class,
 
 #define NUM_NL80211_BANDS ((enum nl80211_band)IEEE80211_NUM_BANDS)
 #endif
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-struct cfg80211_scan_info {
-	u64 scan_start_tsf;
-	u8 tsf_bssid[ETH_ALEN] __aligned(2);
-	bool aborted;
-};
-
-static inline void
-backport_cfg80211_scan_done(struct cfg80211_scan_request *request,
-			    struct cfg80211_scan_info *info)
-{
-	cfg80211_scan_done(request, info->aborted);
-}
-#define cfg80211_scan_done backport_cfg80211_scan_done
-
-#define NL80211_EXT_FEATURE_SCAN_START_TIME -1
-#define NL80211_EXT_FEATURE_BSS_PARENT_TSF -1
-#define NL80211_EXT_FEATURE_SET_SCAN_DWELL -1
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,4,0) */
 
 #if CFG80211_VERSION < KERNEL_VERSION(4,9,0)
 static inline
@@ -991,29 +515,6 @@ void ieee80211_amsdu_to_8023s(struct sk_buff *skb, struct sk_buff_head *list,
 #define IEEE80211_RADIOTAP_TIMESTAMP_FLAG_ACCURACY		0x02
 #endif /* IEEE80211_RADIOTAP_TIMESTAMP_UNIT_MASK */
 
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-/*
- * NB: upstream this only landed in 4.10, but it was backported
- * to almost every kernel, including 4.4 (at least in ChromeOS)
- * If you see a compilation failure on this function you should
- * backport the fix:
- * e6f462df9acd ("cfg80211/mac80211: fix BSS leaks when abandoning assoc attempts")
- */
-static inline void cfg80211_abandon_assoc(struct net_device *dev,
-					  struct cfg80211_bss *bss)
-{
-	/*
-	 * We can't really do anything better - we used to leak in
-	 * this scenario forever, and we can't backport the cfg80211
-	 * function since it needs access to the *internal* BSS to
-	 * remove the pinning (internal_bss->hold).
-	 * Just warn, and hope that ChromeOS will pick up the fix
-	 * from upstream at which point we can remove this inline.
-	 */
-	WARN_ONCE(1, "BSS entry for %pM leaked\n", bss->bssid);
-}
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,4,0) */
-
 #if CFG80211_VERSION < KERNEL_VERSION(4,10,0)
 #define NL80211_EXT_FEATURE_FILS_STA -1
 #define NL80211_EXT_FEATURE_BEACON_RATE_LEGACY -1
@@ -1031,42 +532,6 @@ static inline const u8 *cfg80211_find_ext_ie(u8 ext_eid, const u8 *ies, int len)
 				      &ext_eid, 1, 2);
 }
 #endif /* CFG80211_VERSION < KERNEL_VERSION(4,10,0) */
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0)
-struct iface_combination_params {
-	int num_different_channels;
-	u8 radar_detect;
-	int iftype_num[NUM_NL80211_IFTYPES];
-	u32 new_beacon_int;
-};
-
-static inline
-int iwl7000_check_combinations(struct wiphy *wiphy,
-			       struct iface_combination_params *params)
-{
-	return cfg80211_check_combinations(wiphy,
-					   params->num_different_channels,
-					   params->radar_detect,
-					   params->iftype_num);
-}
-
-#define cfg80211_check_combinations iwl7000_check_combinations
-
-static inline
-int iwl7000_iter_combinations(struct wiphy *wiphy,
-			      struct iface_combination_params *params,
-			      void (*iter)(const struct ieee80211_iface_combination *c,
-					   void *data),
-			      void *data)
-{
-	return cfg80211_iter_combinations(wiphy, params->num_different_channels,
-					  params->radar_detect,
-					  params->iftype_num,
-					  iter, data);
-}
-
-#define cfg80211_iter_combinations iwl7000_iter_combinations
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,4,0) */
 
 #if CFG80211_VERSION >= KERNEL_VERSION(4,11,0) || \
      CFG80211_VERSION < KERNEL_VERSION(4,9,0)
@@ -1374,33 +839,6 @@ static inline void *backport_idr_remove(struct idr *idr, int id)
         __setup_timer((timer), (fn), (data), TIMER_DEFERRABLE)
 #endif
 
-#if LINUX_VERSION_IS_LESS(4,1,0)
-typedef struct {
-#ifdef CONFIG_NET_NS
-	struct net *net;
-#endif
-} possible_net_t;
-
-static inline void possible_write_pnet(possible_net_t *pnet, struct net *net)
-{
-#ifdef CONFIG_NET_NS
-	pnet->net = net;
-#endif
-}
-
-static inline struct net *possible_read_pnet(const possible_net_t *pnet)
-{
-#ifdef CONFIG_NET_NS
-	return pnet->net;
-#else
-	return &init_net;
-#endif
-}
-#else
-#define possible_write_pnet(pnet, net) write_pnet(pnet, net)
-#define possible_read_pnet(pnet) read_pnet(pnet)
-#endif /* LINUX_VERSION_IS_LESS(4,1,0) */
-
 #if LINUX_VERSION_IS_LESS(4,12,0) &&		\
 	!LINUX_VERSION_IN_RANGE(4,11,9, 4,12,0)
 #define netdev_set_priv_destructor(_dev, _destructor) \
@@ -1413,35 +851,6 @@ static inline struct net *possible_read_pnet(const possible_net_t *pnet)
 	(_dev)->priv_destructor = (_destructor);
 #define netdev_set_def_destructor(_dev) \
 	(_dev)->needs_free_netdev = true;
-#endif
-
-/*
- * ChromeOS cherry-picked this in 3.8, 3.14 and 3.18.  And it is also
- * in 4.4 (inherited from stable).  Let's keep the check for 4.8 check
- * still here for the unlikely case that they branch out before
- * 4.8.13 and don't cherry-pick it.
- */
-#if LINUX_VERSION_IS_LESS(4,9,0) &&			\
-	!LINUX_VERSION_IN_RANGE(3,8,0, 3,9,0) &&	\
-	!LINUX_VERSION_IN_RANGE(3,14,0, 3,15,0) &&	\
-	!LINUX_VERSION_IN_RANGE(3,18,0, 3,19,0) &&	\
-	!LINUX_VERSION_IN_RANGE(4,4,37, 4,5,0) &&	\
-	!LINUX_VERSION_IN_RANGE(4,8,13, 4,9,0)
-
-#define pcie_find_root_port iwl7000_pcie_find_root_port
-static inline struct pci_dev *pcie_find_root_port(struct pci_dev *dev)
-{
-	while (1) {
-		if (!pci_is_pcie(dev))
-			break;
-		if (pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT)
-			return dev;
-		if (!dev->bus->self)
-			break;
-		dev = dev->bus->self;
-	}
-	return NULL;
-}
 #endif
 
 #ifndef from_timer
@@ -1459,56 +868,6 @@ static inline void timer_setup(struct timer_list *timer,
 #define from_timer(var, callback_timer, timer_fieldname) \
 	container_of(callback_timer, typeof(*var), timer_fieldname)
 #endif
-
-#if CFG80211_VERSION < KERNEL_VERSION(4,0,0)
-/* must be after the (potential) definition of RATE_INFO_BW_HE_RU */
-static inline void set_rate_info_bw(struct rate_info *ri, int bw)
-{
-	switch (bw) {
-	case RATE_INFO_BW_20:
-		break;
-	case RATE_INFO_BW_5:
-	case RATE_INFO_BW_10:
-	case RATE_INFO_BW_HE_RU:
-		WARN_ONCE(1, "Unsupported bandwidth (%d) on this cfg80211 version\n",
-			  bw);
-		break;
-	case RATE_INFO_BW_40:
-		ri->flags |= RATE_INFO_FLAGS_40_MHZ_WIDTH;
-		break;
-	case RATE_INFO_BW_80:
-		ri->flags |= RATE_INFO_FLAGS_80_MHZ_WIDTH;
-		break;
-	case RATE_INFO_BW_160:
-		ri->flags |= RATE_INFO_FLAGS_160_MHZ_WIDTH;
-		break;
-	}
-}
-
-static inline int get_rate_info_bw(struct rate_info *ri)
-{
-	if (ri->flags & RATE_INFO_FLAGS_40_MHZ_WIDTH)
-		return RATE_INFO_BW_40;
-
-	if (ri->flags & RATE_INFO_FLAGS_80_MHZ_WIDTH)
-		return RATE_INFO_BW_80;
-
-	if (ri->flags & RATE_INFO_FLAGS_160_MHZ_WIDTH)
-		return RATE_INFO_BW_160;
-
-	return RATE_INFO_BW_20;
-}
-#else
-static inline void set_rate_info_bw(struct rate_info *ri, int bw)
-{
-	ri->bw = bw;
-}
-
-static inline int get_rate_info_bw(struct rate_info *ri)
-{
-	return ri->bw;
-}
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,0,0) */
 
 #if LINUX_VERSION_IS_LESS(4,11,0)
 static inline u32 get_random_u32(void)
@@ -1572,6 +931,20 @@ static inline void skb_list_del_init(struct sk_buff *skb)
 	__list_del_entry((struct list_head *)&skb->next);
 	skb_mark_not_on_list(skb);
 }
+
+#define rb_root_cached rb_root
+#define rb_first_cached rb_first
+static inline void rb_insert_color_cached(struct rb_node *node,
+					  struct rb_root_cached *root,
+					  bool leftmost)
+{
+	rb_insert_color(node, root);
+}
+#define rb_erase_cached rb_erase
+#define RB_ROOT_CACHED RB_ROOT
+#define rb_root_node(root) (root)->rb_node
+#else
+#define rb_root_node(root) (root)->rb_root.rb_node
 #endif /* < 4.14 */
 
 #if LINUX_VERSION_IS_LESS(4,20,0)
@@ -1592,8 +965,7 @@ static inline struct sk_buff *__skb_peek(const struct sk_buff_head *list_)
 #define NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION BIT(7)
 #endif
 
-#if CFG80211_VERSION < KERNEL_VERSION(4,4,0) ||		\
-	(CFG80211_VERSION >= KERNEL_VERSION(4,5,0) &&	\
+#if (CFG80211_VERSION >= KERNEL_VERSION(4,5,0) &&	\
 	 CFG80211_VERSION < KERNEL_VERSION(4,17,0))
 struct ieee80211_wmm_ac {
 	u16 cw_min;
@@ -1615,44 +987,7 @@ reg_query_regdb_wmm(char *alpha2, int freq, u32 *ptr,
 		      "iwl7000: ETSI WMM data not implemented yet!\n");
 	return -ENODATA;
 }
-#endif /* < 4.4.0 || (>= 4.5.0 && < 4.17.0) */
-
-#if CFG80211_VERSION < KERNEL_VERSION(99,0,0)
-/* not yet upstream */
-static inline int
-cfg80211_crypto_n_ciphers_group(struct cfg80211_crypto_settings *crypto)
-{
-	return 1;
-}
-
-static inline u32
-cfg80211_crypto_ciphers_group(struct cfg80211_crypto_settings *crypto,
-			      int idx)
-{
-	WARN_ON(idx != 0);
-	return crypto->cipher_group;
-}
-
-static inline void
-cfg80211_assoc_comeback(struct net_device *netdev,
-			struct cfg80211_bss *bss, u32 timeout)
-{
-}
-
-#else
-static inline int
-cfg80211_crypto_n_ciphers_group(struct cfg80211_crypto_settings *crypto)
-{
-	return crypto->n_ciphers_group;
-}
-
-static inline u32
-cfg80211_crypto_ciphers_group(struct cfg80211_crypto_settings *crypto,
-			      int idx)
-{
-	return crypto->cipher_groups[idx];
-}
-#endif
+#endif /* >= 4.5.0 && < 4.17.0 */
 
 #ifndef VHT_MUMIMO_GROUPS_DATA_LEN
 #define VHT_MUMIMO_GROUPS_DATA_LEN (WLAN_MEMBERSHIP_LEN +\
@@ -1717,21 +1052,6 @@ void cfg80211_send_layer2_update(struct net_device *dev, const u8 *addr)
 
 #define NL80211_EXT_FEATURE_CAN_REPLACE_PTK0 -1
 #endif /* >= 4.20 */
-
-/*
- * Upstream this is on 4.16+, but it was backported to chromeos 4.4
- * and 4.14.
- */
-#if LINUX_VERSION_IS_LESS(4,4,0)
-static inline void sk_pacing_shift_update(struct sock *sk, int val)
-{
-#if LINUX_VERSION_IS_GEQ(4,4,0)
-	if (!sk || !sk_fullsock(sk) || sk->sk_pacing_shift == val)
-		return;
-	sk->sk_pacing_shift = val;
-#endif /* >= 4.4 */
-}
-#endif /* < 4.4 */
 
 #if CFG80211_VERSION < KERNEL_VERSION(4,19,0)
 #define NL80211_EXT_FEATURE_SCAN_RANDOM_SN		-1
@@ -2067,6 +1387,18 @@ cfg80211_find_ext_elem(u8 ext_eid, const u8 *ies, int len)
 	return (void *)cfg80211_find_ext_ie(ext_eid, ies, len);
 }
 
+static inline const struct element *
+ieee80211_bss_get_elem(struct cfg80211_bss *bss, u8 id)
+{
+	const struct cfg80211_bss_ies *ies;
+
+	ies = rcu_dereference(bss->ies);
+	if (!ies)
+		return NULL;
+
+	return cfg80211_find_elem(id, ies->data, ies->len);
+}
+
 #define IEEE80211_DEFAULT_AIRTIME_WEIGHT       256
 
 #endif /* CFG80211_VERSION < KERNEL_VERSION(5,1,0) */
@@ -2139,6 +1471,7 @@ int ieee80211_get_vht_max_nss(struct ieee80211_vht_cap *cap,
 #endif
 
 #if CFG80211_VERSION < KERNEL_VERSION(5,7,0)
+#define NL80211_EXT_FEATURE_BEACON_PROTECTION -1
 #define NL80211_EXT_FEATURE_PROTECTED_TWT -1
 #endif
 
@@ -2667,9 +2000,28 @@ static inline void dev_sw_netstats_tx_add(struct net_device *dev,
 #define cfg80211_unregister_netdevice(n) unregister_netdevice(n)
 #define cfg80211_sched_scan_stopped_locked(w, r) cfg80211_sched_scan_stopped_rtnl(w, r)
 #define ASSOC_REQ_DISABLE_HE BIT(4)
+static inline void __iwl7000_cfg80211_unregister_wdev(struct wireless_dev *wdev)
+{
+	if (wdev->netdev)
+		unregister_netdevice(wdev->netdev);
+	else
+		cfg80211_unregister_wdev(wdev);
+}
+#define cfg80211_unregister_wdev __iwl7000_cfg80211_unregister_wdev
+#define lockdep_is_wiphy_held(wiphy) 0
+#else
+#define lockdep_is_wiphy_held(wiphy) lockdep_is_held(&(wiphy)->mtx)
 #endif /* < 5.12 */
 
-#if CFG80211_VERSION < KERNEL_VERSION(5,13,0)
+#if CFG80211_VERSION < KERNEL_VERSION(5,17,0)
+static inline void
+cfg80211_assoc_comeback(struct net_device *netdev,
+			struct cfg80211_bss *bss, u32 timeout)
+{
+}
+#endif /* CFG80211_VERSION < KERNEL_VERSION(5,17,0) */
+
+#if CFG80211_VERSION < KERNEL_VERSION(5,18,0)
 #define ieee80211_data_to_8023_exthdr iwl7000_ieee80211_data_to_8023_exthdr
 int ieee80211_data_to_8023_exthdr(struct sk_buff *skb, struct ethhdr *ehdr,
 				  const u8 *addr, enum nl80211_iftype iftype,
@@ -2681,4 +2033,188 @@ static inline int ieee80211_data_to_8023(struct sk_buff *skb, const u8 *addr,
 {
 	return ieee80211_data_to_8023_exthdr(skb, NULL, addr, iftype, 0, false);
 }
-#endif /* CFG80211_VERSION < KERNEL_VERSION(5,13,0) */
+
+enum nl80211_eht_gi {
+	NL80211_RATE_INFO_EHT_GI_0_8,
+	NL80211_RATE_INFO_EHT_GI_1_6,
+	NL80211_RATE_INFO_EHT_GI_3_2,
+};
+
+#define RATE_INFO_BW_320 (RATE_INFO_BW_HE_RU + 1)
+#endif /* CFG80211_VERSION < KERNEL_VERSION(5,18,0) */
+
+#if LINUX_VERSION_IS_LESS(5,15,0)
+/**
+ * eth_hw_addr_set - Assign Ethernet address to a net_device
+ * @dev: pointer to net_device structure
+ * @addr: address to assign
+ *
+ * Assign given address to the net_device, addr_assign_type is not changed.
+ */
+static inline void eth_hw_addr_set(struct net_device *dev, const u8 *addr)
+{
+	ether_addr_copy(dev->dev_addr, addr);
+}
+#endif /* LINUX_VERSION_IS_LESS(5,15,0) */
+
+#if LINUX_VERSION_IS_LESS(5,16,0)
+#define skb_ext_reset LINUX_BACKPORT(skb_get_dsfield)
+static inline int skb_get_dsfield(struct sk_buff *skb)
+{
+	switch (skb_protocol(skb, true)) {
+	case cpu_to_be16(ETH_P_IP):
+		if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
+			break;
+		return ipv4_get_dsfield(ip_hdr(skb));
+
+	case cpu_to_be16(ETH_P_IPV6):
+		if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr)))
+			break;
+		return ipv6_get_dsfield(ipv6_hdr(skb));
+	}
+
+	return -1;
+}
+#endif
+
+#ifndef NET_DEVICE_PATH_STACK_MAX
+enum net_device_path_type {
+	DEV_PATH_ETHERNET = 0,
+	DEV_PATH_VLAN,
+	DEV_PATH_BRIDGE,
+	DEV_PATH_PPPOE,
+	DEV_PATH_DSA,
+};
+
+struct net_device_path {
+	enum net_device_path_type	type;
+	const struct net_device		*dev;
+	union {
+		struct {
+			u16		id;
+			__be16		proto;
+			u8		h_dest[ETH_ALEN];
+		} encap;
+		struct {
+			enum {
+				DEV_PATH_BR_VLAN_KEEP,
+				DEV_PATH_BR_VLAN_TAG,
+				DEV_PATH_BR_VLAN_UNTAG,
+				DEV_PATH_BR_VLAN_UNTAG_HW,
+			}		vlan_mode;
+			u16		vlan_id;
+			__be16		vlan_proto;
+		} bridge;
+		struct {
+			int port;
+			u16 proto;
+		} dsa;
+	};
+};
+
+#define NET_DEVICE_PATH_STACK_MAX	5
+#define NET_DEVICE_PATH_VLAN_MAX	2
+
+struct net_device_path_stack {
+	int			num_paths;
+	struct net_device_path	path[NET_DEVICE_PATH_STACK_MAX];
+};
+
+struct net_device_path_ctx {
+	const struct net_device *dev;
+	const u8		*daddr;
+
+	int			num_vlans;
+	struct {
+		u16		id;
+		__be16		proto;
+	} vlan[NET_DEVICE_PATH_VLAN_MAX];
+};
+#endif /* NET_DEVICE_PATH_STACK_MAX */
+
+#ifndef memset_after
+#define memset_after(obj, v, member)					\
+({									\
+	u8 *__ptr = (u8 *)(obj);					\
+	typeof(v) __val = (v);						\
+	memset(__ptr + offsetofend(typeof(*(obj)), member), __val,	\
+	       sizeof(*(obj)) - offsetofend(typeof(*(obj)), member));	\
+})
+#endif
+
+#ifndef memset_startat
+#define memset_startat(obj, v, member)					\
+({									\
+	u8 *__ptr = (u8 *)(obj);					\
+	typeof(v) __val = (v);						\
+	memset(__ptr + offsetof(typeof(*(obj)), member), __val,		\
+	       sizeof(*(obj)) - offsetof(typeof(*(obj)), member));	\
+})
+#endif
+
+#if CFG80211_VERSION < KERNEL_VERSION(5,19,0)
+/**
+ * struct cfg80211_rx_info - received management frame info
+ *
+ * @freq: Frequency on which the frame was received in kHz
+ * @sig_dbm: signal strength in dBm, or 0 if unknown
+ * @buf: Management frame (header + body)
+ * @len: length of the frame data
+ * @flags: flags, as defined in enum nl80211_rxmgmt_flags
+ * @rx_tstamp: Hardware timestamp of frame RX in nanoseconds
+ * @ack_tstamp: Hardware timestamp of ack TX in nanoseconds
+ */
+struct cfg80211_rx_info {
+	int freq;
+	int sig_dbm;
+	const u8 *buf;
+	size_t len;
+	u32 flags;
+	u64 rx_tstamp;
+	u64 ack_tstamp;
+};
+
+static inline bool cfg80211_rx_mgmt_ext(struct wireless_dev *wdev,
+					struct cfg80211_rx_info *info)
+{
+	return cfg80211_rx_mgmt(wdev, KHZ_TO_MHZ(info->freq), info->sig_dbm,
+				info->buf, info->len, info->flags);
+}
+
+/**
+ * struct cfg80211_tx_status - TX status for management frame information
+ *
+ * @cookie: Cookie returned by cfg80211_ops::mgmt_tx()
+ * @tx_tstamp: hardware TX timestamp in nanoseconds
+ * @ack_tstamp: hardware ack RX timestamp in nanoseconds
+ * @buf: Management frame (header + body)
+ * @len: length of the frame data
+ * @ack: Whether frame was acknowledged
+ */
+struct cfg80211_tx_status {
+	u64 cookie;
+	u64 tx_tstamp;
+	u64 ack_tstamp;
+	const u8 *buf;
+	size_t len;
+	bool ack;
+};
+
+static inline
+void cfg80211_mgmt_tx_status_ext(struct wireless_dev *wdev,
+				 struct cfg80211_tx_status *status, gfp_t gfp)
+{
+	cfg80211_mgmt_tx_status(wdev, status->cookie, status->buf, status->len,
+				status->ack, gfp);
+}
+
+#define NL80211_EXT_FEATURE_HW_TIMESTAMP -1
+#endif
+
+#if CFG80211_VERSION < KERNEL_VERSION(5,20,0)
+#define cfg80211_ch_switch_notify(dev, chandef, link_id) cfg80211_ch_switch_notify(dev, chandef)
+#define cfg80211_beacon_data_link_id(params)	0
+#define WIPHY_FLAG_SUPPORTS_MLO 0
+#else
+#define cfg80211_beacon_data_link_id(params)	(params->link_id)
+#endif

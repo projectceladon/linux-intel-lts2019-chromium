@@ -40,10 +40,8 @@
 #define KVM_MAX_VCPUS 288
 #define KVM_SOFT_MAX_VCPUS 240
 #define KVM_MAX_VCPU_ID 1023
-#define KVM_USER_MEM_SLOTS 509
 /* memory slots that are not exposed to userspace */
 #define KVM_PRIVATE_MEM_SLOTS 3
-#define KVM_MEM_SLOTS_NUM (KVM_USER_MEM_SLOTS + KVM_PRIVATE_MEM_SLOTS)
 
 #define KVM_HALT_POLL_NS_DEFAULT 200000
 
@@ -902,10 +900,7 @@ struct kvm_arch {
 	bool pause_in_guest;
 	bool cstate_in_guest;
 
-#ifdef CONFIG_KVM_VIRT_SUSPEND_TIMING
 	u64 msr_suspend_time;
-	struct gfn_to_hva_cache suspend_time;
-#endif /* KVM_VIRT_SUSPEND_TIMING */
 
 	unsigned long irq_sources_bitmap;
 	s64 kvmclock_offset;
@@ -1025,6 +1020,8 @@ struct kvm_lapic_irq {
 };
 
 struct kvm_x86_ops {
+	const char *name;
+
 	int (*cpu_has_kvm_support)(void);          /* __init */
 	int (*disabled_by_bios)(void);             /* __init */
 	int (*hardware_enable)(void);

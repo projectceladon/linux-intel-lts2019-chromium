@@ -47,6 +47,7 @@
 #define	OV8856_ANAL_GAIN_STEP		1
 
 /* Digital gain controls from sensor */
+#define OV8856_REG_DIGITAL_GAIN		0x350a
 #define OV8856_REG_MWB_R_GAIN		0x5019
 #define OV8856_REG_MWB_G_GAIN		0x501b
 #define OV8856_REG_MWB_B_GAIN		0x501d
@@ -327,7 +328,7 @@ static const struct ov8856_mode_regs ov8856_mode_lanes_regs[] = {
 		{0x484b, 0x05},
 		{0x5000, 0x57},
 		{0x5001, 0x0a},
-		{0x5004, 0x04},
+		{0x5004, 0x06},
 		{0x502e, 0x03},
 		{0x5030, 0x41},
 		{0x5795, 0x02},
@@ -515,7 +516,7 @@ static const struct ov8856_mode_regs ov8856_mode_lanes_regs[] = {
 		{0x484b, 0x05},
 		{0x5000, 0x57},
 		{0x5001, 0x0a},
-		{0x5004, 0x04},
+		{0x5004, 0x06},
 		{0x502e, 0x03},
 		{0x5030, 0x41},
 		{0x5795, 0x00},
@@ -705,7 +706,7 @@ static const struct ov8856_mode_regs ov8856_mode_lanes_regs[] = {
 		{0x484b, 0x05},
 		{0x5000, 0x57},
 		{0x5001, 0x0a},
-		{0x5004, 0x04},
+		{0x5004, 0x06},
 		{0x502e, 0x03},
 		{0x5030, 0x41},
 		{0x5780, 0x14},
@@ -893,7 +894,7 @@ static const struct ov8856_mode_regs ov8856_mode_lanes_regs[] = {
 		{0x484b, 0x05},
 		{0x5000, 0x57},
 		{0x5001, 0x0a},
-		{0x5004, 0x04},
+		{0x5004, 0x06},
 		{0x502e, 0x03},
 		{0x5030, 0x41},
 		{0x5780, 0x14},
@@ -1206,19 +1207,7 @@ static int ov8856_identify_module(struct ov8856 *ov8856)
 
 static int ov8856_update_digital_gain(struct ov8856 *ov8856, u32 d_gain)
 {
-	int ret;
-
-	ret = ov8856_write_reg(ov8856, OV8856_REG_MWB_R_GAIN,
-			       OV8856_REG_VALUE_16BIT, d_gain);
-	if (ret)
-		return ret;
-
-	ret = ov8856_write_reg(ov8856, OV8856_REG_MWB_G_GAIN,
-			       OV8856_REG_VALUE_16BIT, d_gain);
-	if (ret)
-		return ret;
-
-	return ov8856_write_reg(ov8856, OV8856_REG_MWB_B_GAIN,
+	return ov8856_write_reg(ov8856, OV8856_REG_DIGITAL_GAIN,
 				OV8856_REG_VALUE_16BIT, d_gain);
 }
 

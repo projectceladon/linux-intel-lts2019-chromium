@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2021 Intel Corporation
+ * Copyright (C) 2021 - 2022 Intel Corporation
  */
 
 #ifndef __iwl_mei_h__
@@ -42,7 +42,7 @@ struct iwl_mei_colloc_info {
 struct iwl_mei_ops {
 	void (*me_conn_status)(void *priv,
 			       const struct iwl_mei_conn_info *conn_info);
-	void (*rfkill)(void *priv, bool blocked);
+	void (*rfkill)(void *priv, bool blocked, bool csme_taking_ownership);
 	void (*roaming_forbidden)(void *priv, bool forbidden);
 	void (*sap_connected)(void *priv);
 	void (*nic_stolen)(void *priv);
@@ -107,7 +107,7 @@ static inline void iwl_mei_host_associated(const struct iwl_mei_conn_info *conn_
 static inline void iwl_mei_host_disassociated(void)
 {}
 
-static inline void iwl_mei_device_down(void)
+static inline void iwl_mei_device_state(bool up)
 {}
 
 #endif /* __iwl_mei_h__ */

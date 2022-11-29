@@ -8,6 +8,8 @@ iwlmvm-y += tt.o offloading.o tdls.o
 iwlmvm-y += ftm-responder.o ftm-initiator.o
 iwlmvm-y += rfi.o
 iwlmvm-y += nan.o
+iwlmvm-y += time-sync.o
+iwlmvm-y += mld-key.o mld-mac.o link.o mld-sta.o mld-mac80211.o
 iwlmvm-$(CPTCFG_IWLWIFI_DEBUGFS) += debugfs.o debugfs-vif.o
 iwlmvm-$(CPTCFG_IWLWIFI_LEDS) += led.o
 iwlmvm-$(CONFIG_PM) += d3.o
@@ -17,4 +19,8 @@ ccflags-y += -I$(srctree)/$(src)/../
 # non-upstream things
 iwlmvm-$(CPTCFG_IWLMVM_VENDOR_CMDS) += vendor-cmd.o
 ifeq ($(CPTCFG_IWLMVM_VENDOR_CMDS),y)
+endif
+
+ifeq ($(CPTCFG_IWLWIFI_SIMULATION),y)
+UBSAN_SANITIZE := y
 endif

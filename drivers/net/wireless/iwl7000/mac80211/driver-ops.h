@@ -2,7 +2,7 @@
 /*
 * Portions of this file
 * Copyright(c) 2016 Intel Deutschland GmbH
-* Copyright (C) 2018 - 2019, 2021 Intel Corporation
+* Copyright (C) 2018 - 2019, 2021 - 2022 Intel Corporation
 */
 
 #ifndef __MAC80211_DRIVER_OPS
@@ -147,10 +147,27 @@ static inline int drv_config(struct ieee80211_local *local, u32 changed)
 	return ret;
 }
 
-static inline void drv_bss_info_changed(struct ieee80211_local *local,
-					struct ieee80211_sub_if_data *sdata,
-					struct ieee80211_bss_conf *info,
-					u32 changed)
+static inline void drv_vif_cfg_changed(struct ieee80211_local *local,
+				       struct ieee80211_sub_if_data *sdata,
+				       u64 changed)
+{
+	might_sleep();
+
+	if (!check_sdata_in_driver(sdata))
+		return;
+
+	trace_drv_vif_cfg_changed(local, sdata, changed);
+	if (local->ops->vif_cfg_changed)
+		local->ops->vif_cfg_changed(&local->hw, &sdata->vif, changed);
+	else if (local->ops->bss_info_changed)
+		local->ops->bss_info_changed(&local->hw, &sdata->vif,
+					     &sdata->vif.bss_conf, changed);
+	trace_drv_return_void(local);
+}
+
+static inline void drv_link_info_changed(struct ieee80211_local *local,
+					 struct ieee80211_sub_if_data *sdata,
+					 int link_id, u64 changed)
 {
 	might_sleep();
 
@@ -159,22 +176,26 @@ static inline void drv_bss_info_changed(struct ieee80211_local *local,
 			 sdata->vif.type != NL80211_IFTYPE_AP &&
 			 sdata->vif.type != NL80211_IFTYPE_ADHOC &&
 			 sdata->vif.type != NL80211_IFTYPE_MESH_POINT &&
-			 !ieee80211_viftype_ocb(sdata->vif.type)))
+			 sdata->vif.type != NL80211_IFTYPE_OCB))
 		return;
 
 	if (WARN_ON_ONCE(sdata->vif.type == NL80211_IFTYPE_P2P_DEVICE ||
 			 ieee80211_viftype_nan(sdata->vif.type) ||
 			 (sdata->vif.type == NL80211_IFTYPE_MONITOR &&
-			  !sdata->vif.mu_mimo_owner &&
+			  !sdata->vif.bss_conf.mu_mimo_owner &&
 			  !(changed & BSS_CHANGED_TXPOWER))))
 		return;
 
 	if (!check_sdata_in_driver(sdata))
 		return;
 
-	trace_drv_bss_info_changed(local, sdata, info, changed);
-	if (local->ops->bss_info_changed)
-		local->ops->bss_info_changed(&local->hw, &sdata->vif, info, changed);
+	trace_drv_link_info_changed(local, sdata, link_id, changed);
+	if (local->ops->link_info_changed)
+		local->ops->link_info_changed(&local->hw, &sdata->vif,
+					      link_id, changed);
+	else if (local->ops->bss_info_changed)
+		local->ops->bss_info_changed(&local->hw, &sdata->vif,
+					     &sdata->vif.bss_conf, changed);
 	trace_drv_return_void(local);
 }
 
@@ -917,6 +938,7 @@ static inline void drv_change_chanctx(struct ieee80211_local *local,
 
 static inline int drv_assign_vif_chanctx(struct ieee80211_local *local,
 					 struct ieee80211_sub_if_data *sdata,
+					 unsigned int link_id,
 					 struct ieee80211_chanctx *ctx)
 {
 	int ret = 0;
@@ -924,11 +946,12 @@ static inline int drv_assign_vif_chanctx(struct ieee80211_local *local,
 	if (!check_sdata_in_driver(sdata))
 		return -EIO;
 
-	trace_drv_assign_vif_chanctx(local, sdata, ctx);
+	trace_drv_assign_vif_chanctx(local, sdata, link_id, ctx);
 	if (local->ops->assign_vif_chanctx) {
 		WARN_ON_ONCE(!ctx->driver_present);
 		ret = local->ops->assign_vif_chanctx(&local->hw,
 						     &sdata->vif,
+						     link_id,
 						     &ctx->conf);
 	}
 	trace_drv_return_int(local, ret);
@@ -938,6 +961,7 @@ static inline int drv_assign_vif_chanctx(struct ieee80211_local *local,
 
 static inline void drv_unassign_vif_chanctx(struct ieee80211_local *local,
 					    struct ieee80211_sub_if_data *sdata,
+					    unsigned int link_id,
 					    struct ieee80211_chanctx *ctx)
 {
 	might_sleep();
@@ -945,11 +969,12 @@ static inline void drv_unassign_vif_chanctx(struct ieee80211_local *local,
 	if (!check_sdata_in_driver(sdata))
 		return;
 
-	trace_drv_unassign_vif_chanctx(local, sdata, ctx);
+	trace_drv_unassign_vif_chanctx(local, sdata, link_id, ctx);
 	if (local->ops->unassign_vif_chanctx) {
 		WARN_ON_ONCE(!ctx->driver_present);
 		local->ops->unassign_vif_chanctx(&local->hw,
 						 &sdata->vif,
+						 link_id,
 						 &ctx->conf);
 	}
 	trace_drv_return_void(local);
@@ -1448,6 +1473,64 @@ static inline void drv_sta_set_decap_offload(struct ieee80211_local *local,
 		local->ops->sta_set_decap_offload(&local->hw, &sdata->vif, sta,
 						  enabled);
 	trace_drv_return_void(local);
+}
+
+static inline void drv_add_twt_setup(struct ieee80211_local *local,
+				     struct ieee80211_sub_if_data *sdata,
+				     struct ieee80211_sta *sta,
+				     struct ieee80211_twt_setup *twt)
+{
+	struct ieee80211_twt_params *twt_agrt;
+
+	might_sleep();
+
+	if (!check_sdata_in_driver(sdata))
+		return;
+
+	twt_agrt = (void *)twt->params;
+
+	trace_drv_add_twt_setup(local, sta, twt, twt_agrt);
+	local->ops->add_twt_setup(&local->hw, sta, twt);
+	trace_drv_return_void(local);
+}
+
+static inline void drv_twt_teardown_request(struct ieee80211_local *local,
+					    struct ieee80211_sub_if_data *sdata,
+					    struct ieee80211_sta *sta,
+					    u8 flowid)
+{
+	might_sleep();
+	if (!check_sdata_in_driver(sdata))
+		return;
+
+	if (!local->ops->twt_teardown_request)
+		return;
+
+	trace_drv_twt_teardown_request(local, sta, flowid);
+	local->ops->twt_teardown_request(&local->hw, sta, flowid);
+	trace_drv_return_void(local);
+}
+
+static inline int drv_net_fill_forward_path(struct ieee80211_local *local,
+					    struct ieee80211_sub_if_data *sdata,
+					    struct ieee80211_sta *sta,
+					    struct net_device_path_ctx *ctx,
+					    struct net_device_path *path)
+{
+	int ret = -EOPNOTSUPP;
+
+	sdata = get_bss_sdata(sdata);
+	if (!check_sdata_in_driver(sdata))
+		return -EIO;
+
+	trace_drv_net_fill_forward_path(local, sdata, sta);
+	if (local->ops->net_fill_forward_path)
+		ret = local->ops->net_fill_forward_path(&local->hw,
+							&sdata->vif, sta,
+							ctx, path);
+	trace_drv_return_int(local, ret);
+
+	return ret;
 }
 
 #endif /* __MAC80211_DRIVER_OPS */

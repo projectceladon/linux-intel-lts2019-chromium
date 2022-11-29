@@ -25,7 +25,7 @@
 #define SYNTH_SYSTEM		"synthetic"
 #define SYNTH_FIELDS_MAX	16
 
-#define STR_VAR_LEN_MAX		32 /* must be multiple of sizeof(u64) */
+#define STR_VAR_LEN_MAX		MAX_FILTER_STR_VAL /* must be multiple of sizeof(u64) */
 
 #define ERRORS								\
 	C(NONE,			"No error"),				\
@@ -149,6 +149,8 @@ struct hist_field {
 	 */
 	unsigned int			var_ref_idx;
 	bool                            read_once;
+
+	unsigned int			var_str_idx;
 };
 
 static u64 hist_field_none(struct hist_field *field,
@@ -351,6 +353,7 @@ struct hist_trigger_data {
 	unsigned int			n_keys;
 	unsigned int			n_fields;
 	unsigned int			n_vars;
+	unsigned int			n_var_str;
 	unsigned int			key_size;
 	struct tracing_map_sort_key	sort_keys[TRACING_MAP_SORT_KEYS_MAX];
 	unsigned int			n_sort_keys;
@@ -2305,7 +2308,14 @@ static int hist_trigger_elt_data_alloc(struct tracing_map_elt *elt)
 		}
 	}
 
-	n_str = hist_data->n_field_var_str + hist_data->n_save_var_str;
+	n_str = hist_data->n_field_var_str + hist_data->n_save_var_str +
+		hist_data->n_var_str;
+	if (n_str > SYNTH_FIELDS_MAX) {
+		hist_elt_data_free(elt_data);
+		return -EINVAL;
+	}
+
+	BUILD_BUG_ON(STR_VAR_LEN_MAX & (sizeof(u64) - 1));
 
 	size = STR_VAR_LEN_MAX;
 
@@ -2582,9 +2592,10 @@ static struct hist_field *create_hist_field(struct hist_trigger_data *hist_data,
 		if (!hist_field->type)
 			goto free;
 
-		if (field->filter_type == FILTER_STATIC_STRING)
+		if (field->filter_type == FILTER_STATIC_STRING) {
 			hist_field->fn = hist_field_string;
-		else if (field->filter_type == FILTER_DYN_STRING)
+			hist_field->size = field->size;
+		} else if (field->filter_type == FILTER_DYN_STRING)
 			hist_field->fn = hist_field_dynstring;
 		else
 			hist_field->fn = hist_field_pstring;
@@ -2686,8 +2697,11 @@ static int init_var_ref(struct hist_field *ref_field,
 	return err;
  free:
 	kfree(ref_field->system);
+	ref_field->system = NULL;
 	kfree(ref_field->event_name);
+	ref_field->event_name = NULL;
 	kfree(ref_field->name);
+	ref_field->name = NULL;
 
 	goto out;
 }
@@ -2882,9 +2896,9 @@ parse_field(struct hist_trigger_data *hist_data, struct trace_event_file *file,
 			/*
 			 * For backward compatibility, if field_name
 			 * was "cpu", then we treat this the same as
-			 * common_cpu.
+			 * common_cpu. This also works for "CPU".
 			 */
-			if (strcmp(field_name, "cpu") == 0) {
+			if (field && field->filter_type == FILTER_CPU) {
 				*flags |= HIST_FIELD_FL_CPU;
 			} else {
 				hist_err(tr, HIST_ERR_FIELD_NOT_FOUND,
@@ -3521,8 +3535,10 @@ static inline void __update_field_vars(struct tracing_map_elt *elt,
 		if (val->flags & HIST_FIELD_FL_STRING) {
 			char *str = elt_data->field_var_str[j++];
 			char *val_str = (char *)(uintptr_t)var_val;
+			unsigned int size;
 
-			strscpy(str, val_str, STR_VAR_LEN_MAX);
+			size = min(val->size, STR_VAR_LEN_MAX);
+			strscpy(str, val_str, size);
 			var_val = (u64)(uintptr_t)str;
 		}
 		tracing_map_set_var(elt, var_idx, var_val);
@@ -4389,6 +4405,7 @@ static int trace_action_create(struct hist_trigger_data *hist_data,
 
 			var_ref_idx = find_var_ref_idx(hist_data, var_ref);
 			if (WARN_ON(var_ref_idx < 0)) {
+				kfree(p);
 				ret = var_ref_idx;
 				goto err;
 			}
@@ -4599,6 +4616,7 @@ static int create_var_field(struct hist_trigger_data *hist_data,
 {
 	struct trace_array *tr = hist_data->event_file->tr;
 	unsigned long flags = 0;
+	int ret;
 
 	if (WARN_ON(val_idx >= TRACING_MAP_VALS_MAX + TRACING_MAP_VARS_MAX))
 		return -EINVAL;
@@ -4613,7 +4631,12 @@ static int create_var_field(struct hist_trigger_data *hist_data,
 	if (WARN_ON(hist_data->n_vars > TRACING_MAP_VARS_MAX))
 		return -EINVAL;
 
-	return __create_val_field(hist_data, val_idx, file, var_name, expr_str, flags);
+	ret = __create_val_field(hist_data, val_idx, file, var_name, expr_str, flags);
+
+	if (hist_data->fields[val_idx]->flags & HIST_FIELD_FL_STRING)
+		hist_data->fields[val_idx]->var_str_idx = hist_data->n_var_str++;
+
+	return ret;
 }
 
 static int create_val_fields(struct hist_trigger_data *hist_data,
@@ -4813,6 +4836,8 @@ static int parse_var_defs(struct hist_trigger_data *hist_data)
 
 			s = kstrdup(field_str, GFP_KERNEL);
 			if (!s) {
+				kfree(hist_data->attrs->var_defs.name[n_vars]);
+				hist_data->attrs->var_defs.name[n_vars] = NULL;
 				ret = -ENOMEM;
 				goto free;
 			}
@@ -5231,7 +5256,7 @@ static int create_tracing_map_fields(struct hist_trigger_data *hist_data)
 
 			if (hist_field->flags & HIST_FIELD_FL_STACKTRACE)
 				cmp_fn = tracing_map_cmp_none;
-			else if (!field)
+			else if (!field || hist_field->flags & HIST_FIELD_FL_CPU)
 				cmp_fn = tracing_map_cmp_num(hist_field->size,
 							     hist_field->is_signed);
 			else if (is_string_field(field))
@@ -5333,6 +5358,25 @@ static void hist_trigger_elt_update(struct hist_trigger_data *hist_data,
 		hist_val = hist_field->fn(hist_field, elt, rbe, rec);
 		if (hist_field->flags & HIST_FIELD_FL_VAR) {
 			var_idx = hist_field->var.idx;
+
+			if (hist_field->flags & HIST_FIELD_FL_STRING) {
+				unsigned int str_start, var_str_idx, idx;
+				char *str, *val_str;
+				unsigned int size;
+
+				str_start = hist_data->n_field_var_str +
+					hist_data->n_save_var_str;
+				var_str_idx = hist_field->var_str_idx;
+				idx = str_start + var_str_idx;
+
+				str = elt_data->field_var_str[idx];
+				val_str = (char *)(uintptr_t)hist_val;
+
+				size = min(hist_field->size, STR_VAR_LEN_MAX);
+				strscpy(str, val_str, size);
+
+				hist_val = (u64)(uintptr_t)str;
+			}
 			tracing_map_set_var(elt, var_idx, hist_val);
 			continue;
 		}
@@ -5829,6 +5873,7 @@ static void unregister_field_var_hists(struct hist_trigger_data *hist_data)
 		cmd = hist_data->field_var_hists[i]->cmd;
 		ret = event_hist_trigger_func(&trigger_hist_cmd, file,
 					      "!hist", "hist", cmd);
+		WARN_ON_ONCE(ret < 0);
 	}
 }
 

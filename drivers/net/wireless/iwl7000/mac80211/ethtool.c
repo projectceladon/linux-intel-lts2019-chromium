@@ -5,7 +5,7 @@
  * Copied from cfg.c - originally
  * Copyright 2006-2010	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2014	Intel Corporation (Author: Johannes Berg)
- * Copyright (C) 2018 Intel Corporation
+ * Copyright (C) 2018, 2022 Intel Corporation
  */
 #include <linux/types.h>
 #include <net/cfg80211.h>
@@ -14,7 +14,13 @@
 #include "driver-ops.h"
 
 static int ieee80211_set_ringparam(struct net_device *dev,
-				   struct ethtool_ringparam *rp)
+				   struct ethtool_ringparam *rp
+#if LINUX_VERSION_IS_GEQ(5,17,0)
+,
+				   struct kernel_ethtool_ringparam *kernel_rp,
+				   struct netlink_ext_ack *extack
+#endif
+)
 {
 	struct ieee80211_local *local = wiphy_priv(dev->ieee80211_ptr->wiphy);
 
@@ -25,7 +31,13 @@ static int ieee80211_set_ringparam(struct net_device *dev,
 }
 
 static void ieee80211_get_ringparam(struct net_device *dev,
-				    struct ethtool_ringparam *rp)
+				    struct ethtool_ringparam *rp
+#if LINUX_VERSION_IS_GEQ(5,17,0)
+,
+				    struct kernel_ethtool_ringparam *kernel_rp,
+				    struct netlink_ext_ack *extack
+#endif
+)
 {
 	struct ieee80211_local *local = wiphy_priv(dev->ieee80211_ptr->wiphy);
 
@@ -101,7 +113,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 	mutex_lock(&local->sta_mtx);
 
 	if (sdata->vif.type == NL80211_IFTYPE_STATION) {
-		sta = sta_info_get_bss(sdata, sdata->u.mgd.bssid);
+		sta = sta_info_get_bss(sdata, sdata->deflink.u.mgd.bssid);
 
 		if (!(sta && !WARN_ON(sta->sdata->dev != dev)))
 			goto do_survey;
@@ -110,7 +122,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 		sta_set_sinfo(sta, &sinfo, false);
 
 		i = 0;
-		ADD_STA_STATS(sta);
+		ADD_STA_STATS(sta->link[0]);
 
 		data[i++] = sta->sta_state;
 
@@ -136,7 +148,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 			memset(&sinfo, 0, sizeof(sinfo));
 			sta_set_sinfo(sta, &sinfo, false);
 			i = 0;
-			ADD_STA_STATS(sta);
+			ADD_STA_STATS(sta->link[0]);
 		}
 	}
 
@@ -146,7 +158,7 @@ do_survey:
 	survey.filled = 0;
 
 	rcu_read_lock();
-	chanctx_conf = rcu_dereference(sdata->vif.chanctx_conf);
+	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
 	if (chanctx_conf)
 		channel = chanctx_conf->def.chan;
 	else

@@ -1840,7 +1840,7 @@ static void __init init_uclamp_rq(struct rq *rq)
 		};
 	}
 
-	rq->uclamp_flags = 0;
+	rq->uclamp_flags = UCLAMP_FLAG_IDLE;
 }
 
 static void __init init_uclamp(void)
@@ -1887,9 +1887,6 @@ static inline void init_uclamp(void) { }
 
 static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
-	if (sched_core_enabled(rq))
-		sched_core_enqueue(rq, p);
-
 	if (!(flags & ENQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
@@ -1900,6 +1897,9 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	uclamp_rq_inc(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
+
+	if (sched_core_enabled(rq))
+		sched_core_enqueue(rq, p);
 }
 
 static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
@@ -2992,6 +2992,9 @@ out:
 
 bool cpus_share_cache(int this_cpu, int that_cpu)
 {
+	if (this_cpu == that_cpu)
+		return true;
+
 	return per_cpu(sd_llc_id, this_cpu) == per_cpu(sd_llc_id, that_cpu);
 }
 #endif /* CONFIG_SMP */
@@ -4609,8 +4612,7 @@ restart:
 			return p;
 	}
 
-	/* The idle class should always have a runnable task: */
-	BUG();
+	BUG(); /* The idle class should always have a runnable task. */
 }
 
 #ifdef CONFIG_SCHED_CORE
@@ -4789,66 +4791,33 @@ static inline bool cookie_match(struct task_struct *a, struct task_struct *b)
 	return a->core_cookie == b->core_cookie;
 }
 
-// XXX fairness/fwd progress conditions
-/*
- * Returns
- * - NULL if there is no runnable task for this class.
- * - the highest priority task for this runqueue if it matches
- *   rq->core->core_cookie or its priority is greater than max.
- * - Else returns idle_task.
- */
-static struct task_struct *
-pick_task(struct rq *rq, const struct sched_class *class, struct task_struct *max, bool in_fi)
+static inline struct task_struct *pick_task(struct rq *rq)
 {
-	struct task_struct *class_pick, *cookie_pick;
-	unsigned long cookie = rq->core->core_cookie;
+	const struct sched_class *class;
+	struct task_struct *p;
 
-	class_pick = class->pick_task(rq);
-	if (!class_pick)
-		return NULL;
-
-	if (!cookie) {
-		/*
-		 * If class_pick is tagged, return it only if it has
-		 * higher priority than max.
-		 */
-		if (max && class_pick->core_cookie &&
-		    prio_less(class_pick, max, in_fi))
-			return idle_sched_class.pick_task(rq);
-
-		return class_pick;
+	for_each_class(class) {
+		p = class->pick_task(rq);
+		if (p)
+			return p;
 	}
 
-	/*
-	 * If class_pick is idle or matches cookie, return early.
-	 */
-	if (cookie_equals(class_pick, cookie))
-		return class_pick;
-
-	cookie_pick = sched_core_find(rq, cookie);
-
-	/*
-	 * If class > max && class > cookie, it is the highest priority task on
-	 * the core (so far) and it must be selected, otherwise we must go with
-	 * the cookie pick in order to satisfy the constraint.
-	 */
-	if (prio_less(cookie_pick, class_pick, in_fi) &&
-	    (!max || prio_less(max, class_pick, in_fi)))
-		return class_pick;
-
-	return cookie_pick;
+	BUG(); /* The idle class should always have a runnable task. */
 }
 
 extern void task_vruntime_update(struct rq *rq, struct task_struct *p, bool in_fi);
 
+static void queue_core_balance(struct rq *rq);
+
 static struct task_struct *
 pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
-	struct task_struct *next, *max = NULL;
-	const struct sched_class *class;
+	struct task_struct *next, *p, *max = NULL;
 	const struct cpumask *smt_mask;
 	bool fi_before = false;
-	int i, j, cpu, occ = 0;
+	unsigned long cookie;
+	int i, cpu, occ = 0;
+	struct rq *rq_i;
 	bool need_sync;
 
 	if (!sched_core_enabled(rq))
@@ -4888,7 +4857,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		}
 
 		rq->core_pick = NULL;
-		return next;
+		goto out;
 	}
 
 	put_prev_task_balance(rq, prev, rf);
@@ -4921,12 +4890,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * and there are no cookied tasks running on siblings.
 	 */
 	if (!need_sync) {
-		for_each_class(class) {
-			next = class->pick_task(rq);
-			if (next)
-				break;
-		}
-
+		next = pick_task(rq);
 		if (!next->core_cookie) {
 			rq->core_pick = NULL;
 			/*
@@ -4935,80 +4899,55 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 			 */
 			WARN_ON_ONCE(fi_before);
 			task_vruntime_update(rq, next, false);
-			goto done;
+			goto out_set_next;
 		}
 	}
 
-	for_each_cpu(i, smt_mask) {
-		struct rq *rq_i = cpu_rq(i);
-
-		rq_i->core_pick = NULL;
+	/*
+	 * For each thread: do the regular task pick and find the max prio task
+	 * amongst them.
+	 *
+	 * Tie-break prio towards the current CPU
+	 */
+	for_each_cpu_wrap(i, smt_mask, cpu) {
+		rq_i = cpu_rq(i);
 
 		if (i != cpu)
 			update_rq_clock(rq_i);
+
+		p = rq_i->core_pick = pick_task(rq_i);
+		if (!max || prio_less(max, p, fi_before))
+			max = p;
 	}
 
+	cookie = rq->core->core_cookie = max->core_cookie;
+
 	/*
-	 * Try and select tasks for each sibling in descending sched_class
-	 * order.
+	 * For each thread: try and find a runnable task that matches @max or
+	 * force idle.
 	 */
-	for_each_class(class) {
-again:
-		for_each_cpu_wrap(i, smt_mask, cpu) {
-			struct rq *rq_i = cpu_rq(i);
-			struct task_struct *p;
+	for_each_cpu(i, smt_mask) {
+		rq_i = cpu_rq(i);
+		p = rq_i->core_pick;
 
-			if (rq_i->core_pick)
-				continue;
-
-			/*
-			 * If this sibling doesn't yet have a suitable task to
-			 * run; ask for the most eligible task, given the
-			 * highest priority task already selected for this
-			 * core.
-			 */
-			p = pick_task(rq_i, class, max, fi_before);
+		if (!cookie_equals(p, cookie)) {
+			p = NULL;
+			if (cookie)
+				p = sched_core_find(rq_i, cookie);
 			if (!p)
-				continue;
+				p = idle_sched_class.pick_task(rq_i);
+		}
 
-			if (!is_task_rq_idle(p))
-				occ++;
+		rq_i->core_pick = p;
 
-			rq_i->core_pick = p;
-			if (rq_i->idle == p && rq_i->nr_running) {
+		if (p == rq_i->idle) {
+			if (rq_i->nr_running) {
 				rq->core->core_forceidle = true;
 				if (!fi_before)
 					rq->core->core_forceidle_seq++;
 			}
-
-			/*
-			 * If this new candidate is of higher priority than the
-			 * previous; and they're incompatible; we need to wipe
-			 * the slate and start over. pick_task makes sure that
-			 * p's priority is more than max if it doesn't match
-			 * max's cookie.
-			 *
-			 * NOTE: this is a linear max-filter and is thus bounded
-			 * in execution time.
-			 */
-			if (!max || !cookie_match(max, p)) {
-				struct task_struct *old_max = max;
-
-				rq->core->core_cookie = p->core_cookie;
-				max = p;
-
-				if (old_max) {
-					rq->core->core_forceidle = false;
-					for_each_cpu(j, smt_mask) {
-						if (j == i)
-							continue;
-
-						cpu_rq(j)->core_pick = NULL;
-					}
-					occ = 1;
-					goto again;
-				}
-			}
+		} else {
+			occ++;
 		}
 	}
 
@@ -5028,7 +4967,7 @@ again:
 	 * non-matching user state.
 	 */
 	for_each_cpu(i, smt_mask) {
-		struct rq *rq_i = cpu_rq(i);
+		rq_i = cpu_rq(i);
 
 		/*
 		 * An online sibling might have gone offline before a task
@@ -5069,8 +5008,12 @@ again:
 		resched_curr(rq_i);
 	}
 
-done:
+out_set_next:
 	set_next_task(rq, next);
+out:
+	if (rq->core->core_forceidle && next == rq->idle)
+		queue_core_balance(rq);
+
 	return next;
 }
 
@@ -5168,7 +5111,7 @@ static void sched_core_balance(struct rq *rq)
 
 static DEFINE_PER_CPU(struct callback_head, core_balance_head);
 
-void queue_core_balance(struct rq *rq)
+static void queue_core_balance(struct rq *rq)
 {
 	if (!sched_core_enabled(rq))
 		return;
@@ -5703,20 +5646,21 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 		if (!dl_prio(p->normal_prio) ||
 		    (pi_task && dl_prio(pi_task->prio) &&
 		     dl_entity_preempt(&pi_task->dl, &p->dl))) {
-			p->dl.dl_boosted = 1;
+			p->dl.pi_se = pi_task->dl.pi_se;
 			queue_flag |= ENQUEUE_REPLENISH;
-		} else
-			p->dl.dl_boosted = 0;
+		} else {
+			p->dl.pi_se = &p->dl;
+		}
 		p->sched_class = &dl_sched_class;
 	} else if (rt_prio(prio)) {
 		if (dl_prio(oldprio))
-			p->dl.dl_boosted = 0;
+			p->dl.pi_se = &p->dl;
 		if (oldprio < prio)
 			queue_flag |= ENQUEUE_HEAD;
 		p->sched_class = &rt_sched_class;
 	} else {
 		if (dl_prio(oldprio))
-			p->dl.dl_boosted = 0;
+			p->dl.pi_se = &p->dl;
 		if (rt_prio(oldprio))
 			p->rt.timeout = 0;
 		p->sched_class = &fair_sched_class;
@@ -7473,11 +7417,6 @@ void sched_setnuma(struct task_struct *p, int nid)
 	task_rq_unlock(rq, p, &rf);
 }
 #endif /* CONFIG_NUMA_BALANCING */
-
-int wake_up_process_prefer_current_cpu(struct task_struct *next)
-{
-	return try_to_wake_up(next, TASK_NORMAL, WF_CURRENT_CPU);
-}
 
 #ifdef CONFIG_HOTPLUG_CPU
 /*

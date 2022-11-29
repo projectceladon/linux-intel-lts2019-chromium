@@ -764,6 +764,8 @@ static int a5xx_hw_init(struct msm_gpu *gpu)
 
 			if (IS_ERR(a5xx_gpu->shadow))
 				return PTR_ERR(a5xx_gpu->shadow);
+
+			msm_gem_object_set_name(a5xx_gpu->shadow_bo, "shadow");
 		}
 
 		gpu_write64(gpu, REG_A5XX_CP_RB_RPTR_ADDR,
@@ -1483,28 +1485,15 @@ static struct msm_ringbuffer *a5xx_active_ring(struct msm_gpu *gpu)
 	return a5xx_gpu->cur_ring;
 }
 
-static unsigned long a5xx_gpu_busy(struct msm_gpu *gpu)
+static u64 a5xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
 {
-	u64 busy_cycles, busy_time;
-
-	/* Only read the gpu busy if the hardware is already active */
-	if (pm_runtime_get_if_in_use(&gpu->pdev->dev) == 0)
-		return 0;
+	u64 busy_cycles;
 
 	busy_cycles = gpu_read64(gpu, REG_A5XX_RBBM_PERFCTR_RBBM_0_LO,
 			REG_A5XX_RBBM_PERFCTR_RBBM_0_HI);
+	*out_sample_rate = clk_get_rate(gpu->core_clk);
 
-	busy_time = busy_cycles - gpu->devfreq.busy_cycles;
-	do_div(busy_time, clk_get_rate(gpu->core_clk) / 1000000);
-
-	gpu->devfreq.busy_cycles = busy_cycles;
-
-	pm_runtime_put(&gpu->pdev->dev);
-
-	if (WARN_ON(busy_time > ~0LU))
-		return ~0LU;
-
-	return (unsigned long)busy_time;
+	return busy_cycles;
 }
 
 static uint32_t a5xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
@@ -1521,6 +1510,7 @@ static uint32_t a5xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 static const struct adreno_gpu_funcs funcs = {
 	.base = {
 		.get_param = adreno_get_param,
+		.set_param = adreno_set_param,
 		.hw_init = a5xx_hw_init,
 		.pm_suspend = a5xx_pm_suspend,
 		.pm_resume = a5xx_pm_resume,
@@ -1573,7 +1563,7 @@ static void check_speed_bin(struct device *dev)
 		nvmem_cell_put(cell);
 	}
 
-	dev_pm_opp_set_supported_hw(dev, &val, 1);
+	devm_pm_opp_set_supported_hw(dev, &val, 1);
 }
 
 struct msm_gpu *a5xx_gpu_init(struct drm_device *dev)

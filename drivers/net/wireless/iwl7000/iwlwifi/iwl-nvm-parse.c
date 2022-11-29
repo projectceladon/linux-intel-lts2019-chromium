@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2005-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2022 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -77,7 +77,7 @@ static const u16 iwl_nvm_channels[] = {
 	/* 2.4 GHz */
 	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
 	/* 5 GHz */
-	36, 40, 44 , 48, 52, 56, 60, 64,
+	36, 40, 44, 48, 52, 56, 60, 64,
 	100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
 	149, 153, 157, 161, 165
 };
@@ -333,14 +333,12 @@ static u32 iwl_get_channel_flags(u8 ch_num, int ch_idx, enum nl80211_band band,
 
 static int iwl_nl80211_band_from_channel_idx(int ch_idx)
 {
-	if (ch_idx >= NUM_2GHZ_CHANNELS + NUM_5GHZ_CHANNELS) {
-#ifndef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
-		/* Skip 6 GHz band/channels if UHB is unsupported */
-		return -1;
-#else
+	if (ch_idx >= NUM_2GHZ_CHANNELS + NUM_5GHZ_CHANNELS)
+#if CFG80211_VERSION >= KERNEL_VERSION(5,10,0)
 		return NL80211_BAND_6GHZ;
-#endif /* CPTCFG_IWLWIFI_WIFI_6_SUPPORT */
-	}
+#else
+		return -1;
+#endif
 
 	if (ch_idx >= NUM_2GHZ_CHANNELS)
 		return NL80211_BAND_5GHZ;
@@ -378,10 +376,10 @@ static int iwl_init_channel_map(struct device *dev, const struct iwl_cfg *cfg,
 
 		if (v4)
 			ch_flags =
-				__le32_to_cpup((__le32 *)nvm_ch_flags + ch_idx);
+				__le32_to_cpup((const __le32 *)nvm_ch_flags + ch_idx);
 		else
 			ch_flags =
-				__le16_to_cpup((__le16 *)nvm_ch_flags + ch_idx);
+				__le16_to_cpup((const __le16 *)nvm_ch_flags + ch_idx);
 
 		if (band == NL80211_BAND_5GHZ &&
 		    !data->sku_cap_band_52ghz_enable)
@@ -435,13 +433,11 @@ static int iwl_init_channel_map(struct device *dev, const struct iwl_cfg *cfg,
 		else
 			channel->flags = 0;
 
-#ifdef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
 		/* TODO: Don't put limitations on UHB devices as we still don't
 		 * have NVM for them
 		 */
 		if (cfg->uhb_supported)
 			channel->flags = 0;
-#endif
 		iwl_nvm_print_channel_flags(dev, IWL_DL_EEPROM,
 					    channel->hw_value, ch_flags);
 		IWL_DEBUG_EEPROM(dev, "Ch. %d: %ddBm\n",
@@ -557,15 +553,14 @@ static const u8 iwl_vendor_caps[] = {
 };
 #endif
 
-static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
+static const struct ieee80211_sband_iftype_data iwl_he_eht_capa[] = {
 	{
 		.types_mask = BIT(NL80211_IFTYPE_STATION),
 		.he_cap = {
 			.has_he = true,
 			.he_cap_elem = {
 				.mac_cap_info[0] =
-					IEEE80211_HE_MAC_CAP0_HTC_HE |
-					IEEE80211_HE_MAC_CAP0_TWT_REQ,
+					IEEE80211_HE_MAC_CAP0_HTC_HE,
 				.mac_cap_info[1] =
 					IEEE80211_HE_MAC_CAP1_TF_MAC_PAD_DUR_16US |
 					IEEE80211_HE_MAC_CAP1_MULTI_TID_AGG_RX_QOS_8,
@@ -583,10 +578,6 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 					IEEE80211_HE_MAC_CAP5_UL_2x996_TONE_RU |
 					IEEE80211_HE_MAC_CAP5_HE_DYNAMIC_SM_PS |
 					IEEE80211_HE_MAC_CAP5_HT_VHT_TRIG_FRAME_RX,
-				.phy_cap_info[0] =
-					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G |
-					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G |
-					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G,
 				.phy_cap_info[1] =
 					IEEE80211_HE_PHY_CAP1_PREAMBLE_PUNC_RX_MASK |
 					IEEE80211_HE_PHY_CAP1_DEVICE_CLASS_A |
@@ -595,9 +586,9 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 					IEEE80211_HE_PHY_CAP2_NDP_4x_LTF_AND_3_2US |
 					IEEE80211_HE_PHY_CAP2_STBC_RX_UNDER_80MHZ,
 				.phy_cap_info[3] =
-					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_TX_NO_DCM |
+					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_TX_BPSK |
 					IEEE80211_HE_PHY_CAP3_DCM_MAX_TX_NSS_1 |
-					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_RX_NO_DCM |
+					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_RX_BPSK |
 					IEEE80211_HE_PHY_CAP3_DCM_MAX_RX_NSS_1,
 				.phy_cap_info[4] =
 					IEEE80211_HE_PHY_CAP4_SU_BEAMFORMEE |
@@ -619,7 +610,8 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 				.phy_cap_info[9] =
 					IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_COMP_SIGB |
 					IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_NON_COMP_SIGB |
-					IEEE80211_HE_PHY_CAP9_NOMIMAL_PKT_PADDING_RESERVED,
+					(IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_RESERVED <<
+					IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_POS),
 				.phy_cap_info[10] =
 					IEEE80211_HE_PHY_CAP10_HE_MU_M1RU_MAX_LTF,
 			},
@@ -642,6 +634,82 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 			 */
 			.ppe_thres = {0x61, 0x1c, 0xc7, 0x71},
 		},
+#if CFG80211_VERSION >= KERNEL_VERSION(5,18,0)
+		.eht_cap = {
+			.has_eht = true,
+			.eht_cap_elem = {
+				.mac_cap_info[0] =
+					IEEE80211_EHT_MAC_CAP0_NSEP_PRIO_ACCESS |
+					IEEE80211_EHT_MAC_CAP0_OM_CONTROL |
+					IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE1 |
+					IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE2,
+				.phy_cap_info[0] =
+					IEEE80211_EHT_PHY_CAP0_242_TONE_RU_GT20MHZ |
+					IEEE80211_EHT_PHY_CAP0_NDP_4_EHT_LFT_32_GI |
+					IEEE80211_EHT_PHY_CAP0_PARTIAL_BW_UL_MU_MIMO |
+					IEEE80211_EHT_PHY_CAP0_SU_BEAMFORMEE |
+					IEEE80211_EHT_PHY_CAP0_BEAMFORMEE_SS_80MHZ_MASK,
+				.phy_cap_info[1] =
+					IEEE80211_EHT_PHY_CAP1_BEAMFORMEE_SS_80MHZ_MASK  |
+					IEEE80211_EHT_PHY_CAP1_BEAMFORMEE_SS_160MHZ_MASK |
+					IEEE80211_EHT_PHY_CAP1_BEAMFORMEE_SS_320MHZ_MASK,
+				.phy_cap_info[3] =
+					IEEE80211_EHT_PHY_CAP3_NG_16_SU_FEEDBACK |
+					IEEE80211_EHT_PHY_CAP3_NG_16_MU_FEEDBACK |
+					IEEE80211_EHT_PHY_CAP3_CODEBOOK_4_2_SU_FDBK |
+					IEEE80211_EHT_PHY_CAP3_CODEBOOK_7_5_MU_FDBK |
+					IEEE80211_EHT_PHY_CAP3_TRIG_SU_BF_FDBK |
+					IEEE80211_EHT_PHY_CAP3_TRIG_MU_BF_PART_BW_FDBK |
+					IEEE80211_EHT_PHY_CAP3_TRIG_CQI_FDBK,
+
+				.phy_cap_info[4] =
+					IEEE80211_EHT_PHY_CAP4_PART_BW_DL_MU_MIMO |
+					IEEE80211_EHT_PHY_CAP4_POWER_BOOST_FACT_SUPP |
+					IEEE80211_EHT_PHY_CAP4_EHT_MU_PPDU_4_EHT_LTF_08_GI,
+				.phy_cap_info[5] =
+					IEEE80211_EHT_PHY_CAP5_NON_TRIG_CQI_FEEDBACK |
+					IEEE80211_EHT_PHY_CAP5_TX_LESS_242_TONE_RU_SUPP |
+					IEEE80211_EHT_PHY_CAP5_RX_LESS_242_TONE_RU_SUPP |
+					IEEE80211_EHT_PHY_CAP5_PPE_THRESHOLD_PRESENT,
+				.phy_cap_info[6] =
+					IEEE80211_EHT_PHY_CAP6_MCS15_SUPP_MASK |
+					IEEE80211_EHT_PHY_CAP6_EHT_DUP_6GHZ_SUPP,
+				.phy_cap_info[7] =
+					IEEE80211_EHT_PHY_CAP7_20MHZ_STA_RX_NDP_WIDER_BW,
+				.phy_cap_info[8] =
+					IEEE80211_EHT_PHY_CAP8_RX_1024QAM_WIDER_BW_DL_OFDMA |
+					IEEE80211_EHT_PHY_CAP8_RX_4096QAM_WIDER_BW_DL_OFDMA,
+			},
+
+			/* For all MCS and bandwidth, set 2 NSS for both Tx and
+			 * Rx - note we don't set the only_20mhz, but due to this
+			 * being a union, it gets set correctly anyway.
+			 */
+			.eht_mcs_nss_supp = {
+				.bw._80 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+				.bw._160 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+				.bw._320 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+			},
+
+			/*
+			 * PPE thresholds for NSS = 2, and RU index bitmap set
+			 * to 0xc.
+			 */
+			.eht_ppe_thres = {0xc1, 0x0e, 0xe0 }
+		},
+#endif
 	},
 	{
 		.types_mask = BIT(NL80211_IFTYPE_AP),
@@ -655,18 +723,15 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 					IEEE80211_HE_MAC_CAP1_MULTI_TID_AGG_RX_QOS_8,
 				.mac_cap_info[3] =
 					IEEE80211_HE_MAC_CAP3_OMI_CONTROL,
-				.phy_cap_info[0] =
-					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G |
-					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G,
 				.phy_cap_info[1] =
 					IEEE80211_HE_PHY_CAP1_LDPC_CODING_IN_PAYLOAD,
 				.phy_cap_info[2] =
 					IEEE80211_HE_PHY_CAP2_STBC_RX_UNDER_80MHZ |
 					IEEE80211_HE_PHY_CAP2_NDP_4x_LTF_AND_3_2US,
 				.phy_cap_info[3] =
-					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_TX_NO_DCM |
+					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_TX_BPSK |
 					IEEE80211_HE_PHY_CAP3_DCM_MAX_TX_NSS_1 |
-					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_RX_NO_DCM |
+					IEEE80211_HE_PHY_CAP3_DCM_MAX_CONST_RX_BPSK |
 					IEEE80211_HE_PHY_CAP3_DCM_MAX_RX_NSS_1,
 				.phy_cap_info[6] =
 					IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT,
@@ -676,7 +741,8 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 					IEEE80211_HE_PHY_CAP8_HE_ER_SU_PPDU_4XLTF_AND_08_US_GI |
 					IEEE80211_HE_PHY_CAP8_DCM_MAX_RU_242,
 				.phy_cap_info[9] =
-					IEEE80211_HE_PHY_CAP9_NOMIMAL_PKT_PADDING_RESERVED,
+					IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_RESERVED
+					<< IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_POS,
 			},
 			/*
 			 * Set default Tx/Rx HE MCS NSS Support field.
@@ -697,10 +763,54 @@ static const struct ieee80211_sband_iftype_data iwl_he_capa[] = {
 			 */
 			.ppe_thres = {0x61, 0x1c, 0xc7, 0x71},
 		},
+#if CFG80211_VERSION >= KERNEL_VERSION(5,18,0)
+		.eht_cap = {
+			.has_eht = true,
+			.eht_cap_elem = {
+				.mac_cap_info[0] =
+					IEEE80211_EHT_MAC_CAP0_NSEP_PRIO_ACCESS |
+					IEEE80211_EHT_MAC_CAP0_OM_CONTROL |
+					IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE1 |
+					IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE2,
+				.phy_cap_info[0] =
+					IEEE80211_EHT_PHY_CAP0_242_TONE_RU_GT20MHZ |
+					IEEE80211_EHT_PHY_CAP0_NDP_4_EHT_LFT_32_GI,
+				.phy_cap_info[5] =
+					IEEE80211_EHT_PHY_CAP5_PPE_THRESHOLD_PRESENT,
+			},
+
+			/* For all MCS and bandwidth, set 2 NSS for both Tx and
+			 * Rx - note we don't set the only_20mhz, but due to this
+			 * being a union, it gets set correctly anyway.
+			 */
+			.eht_mcs_nss_supp = {
+				.bw._80 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+				.bw._160 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+				.bw._320 = {
+					.rx_tx_mcs9_max_nss = 0x22,
+					.rx_tx_mcs11_max_nss = 0x22,
+					.rx_tx_mcs13_max_nss = 0x22,
+				},
+			},
+
+			/*
+			 * PPE thresholds for NSS = 2, and RU index bitmap set
+			 * to 0xc.
+			 */
+			.eht_ppe_thres = {0xc1, 0x0e, 0xe0 }
+		},
+#endif
 	},
 };
 
-#ifdef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
 #if CFG80211_VERSION < KERNEL_VERSION(5,8,0)
 static void iwl_init_he_6ghz_capa(struct iwl_trans *trans,
 				  struct iwl_nvm_data *data,
@@ -749,22 +859,25 @@ static void iwl_init_he_6ghz_capa(struct iwl_trans *trans,
 	IWL_DEBUG_EEPROM(trans->dev, "he_6ghz_capa=0x%x\n", he_6ghz_capa);
 
 	/* we know it's writable - we set it before ourselves */
-	iftype_data = (void *) ieee80211_sband_get_iftypes_data(sband);
+	iftype_data = (void *)(uintptr_t) ieee80211_sband_get_iftypes_data(sband);
 	for (i = 0; i < ieee80211_sband_get_num_iftypes_data(sband); i++)
 		cfg80211_iftd_set_he_6ghz_capa(iftype_data,
 				               cpu_to_le16(he_6ghz_capa));
 }
 #endif
-#endif
 
 static void
 iwl_nvm_fixup_sband_iftd(struct iwl_trans *trans,
+			 struct iwl_nvm_data *data,
 			 struct ieee80211_supported_band *sband,
 			 struct ieee80211_sband_iftype_data *iftype_data,
 			 u8 tx_chains, u8 rx_chains,
 			 const struct iwl_fw *fw)
 {
 	bool is_ap = iftype_data->types_mask & BIT(NL80211_IFTYPE_AP);
+
+	if (!data->sku_cap_11be_enable || iwlwifi_mod_params.disable_11be)
+		cfg_eht_cap_set_has_eht(iftype_data, false);
 
 	/* Advertise an A-MPDU exponent extension based on
 	 * operating band
@@ -776,9 +889,37 @@ iwl_nvm_fixup_sband_iftd(struct iwl_trans *trans,
 		iftype_data->he_cap.he_cap_elem.mac_cap_info[3] |=
 			IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_EXT_3;
 
-	if (is_ap && iwlwifi_mod_params.nvm_file)
+	switch (sband->band) {
+	case NL80211_BAND_2GHZ:
 		iftype_data->he_cap.he_cap_elem.phy_cap_info[0] |=
-			IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G;
+			IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G;
+#if CFG80211_VERSION >= KERNEL_VERSION(5,18,0)
+		cfg_eht_cap(iftype_data)->eht_cap_elem.mac_cap_info[0] |=
+			u8_encode_bits(IEEE80211_EHT_MAC_CAP0_MAX_AMPDU_LEN_11454,
+					       IEEE80211_EHT_MAC_CAP0_MAX_AMPDU_LEN_MASK);
+#endif
+		break;
+#if CFG80211_VERSION >= KERNEL_VERSION(5,4,0)
+	case NL80211_BAND_6GHZ:
+		/* keep code in case of fall-through (spatch generated) */
+#endif
+#if CFG80211_VERSION >= KERNEL_VERSION(5,18,0)
+		if (!is_ap || iwlwifi_mod_params.nvm_file)
+			cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[0] |=
+				IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
+#endif
+		fallthrough;
+	case NL80211_BAND_5GHZ:
+		iftype_data->he_cap.he_cap_elem.phy_cap_info[0] |=
+			IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G;
+		if (!is_ap || iwlwifi_mod_params.nvm_file)
+			iftype_data->he_cap.he_cap_elem.phy_cap_info[0] |=
+				IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G;
+		break;
+	default:
+		WARN_ON(1);
+		break;
+	}
 
 	if ((tx_chains & rx_chains) == ANT_AB) {
 		iftype_data->he_cap.he_cap_elem.phy_cap_info[2] |=
@@ -786,30 +927,80 @@ iwl_nvm_fixup_sband_iftd(struct iwl_trans *trans,
 		iftype_data->he_cap.he_cap_elem.phy_cap_info[5] |=
 			IEEE80211_HE_PHY_CAP5_BEAMFORMEE_NUM_SND_DIM_UNDER_80MHZ_2 |
 			IEEE80211_HE_PHY_CAP5_BEAMFORMEE_NUM_SND_DIM_ABOVE_80MHZ_2;
-		if (!is_ap)
+		if (!is_ap) {
 			iftype_data->he_cap.he_cap_elem.phy_cap_info[7] |=
 				IEEE80211_HE_PHY_CAP7_MAX_NC_2;
-	} else if (!is_ap) {
-		/* If not 2x2, we need to indicate 1x1 in the
-		 * Midamble RX Max NSTS - but not for AP mode
-		 */
-		iftype_data->he_cap.he_cap_elem.phy_cap_info[1] &=
-			~IEEE80211_HE_PHY_CAP1_MIDAMBLE_RX_TX_MAX_NSTS;
-		iftype_data->he_cap.he_cap_elem.phy_cap_info[2] &=
-			~IEEE80211_HE_PHY_CAP2_MIDAMBLE_RX_TX_MAX_NSTS;
-		iftype_data->he_cap.he_cap_elem.phy_cap_info[7] |=
-			IEEE80211_HE_PHY_CAP7_MAX_NC_1;
+
+			if (cfg_eht_cap_has_eht(iftype_data)) {
+				/*
+				 * Set the number of sounding dimensions for each
+				 * bandwidth to 1 to indicate the maximal supported
+				 * value of TXVECTOR parameter NUM_STS of 2
+				 */
+				cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[2] |= 0x49;
+
+				/*
+				 * Set the MAX NC to 1 to indicate sounding feedback of
+				 * 2 supported by the beamfomee.
+				 */
+				cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[4] |= 0x10;
+			}
+		}
+	} else {
+		if (cfg_eht_cap_has_eht(iftype_data)) {
+			struct ieee80211_eht_mcs_nss_supp *mcs_nss =
+				&cfg_eht_cap(iftype_data)->eht_mcs_nss_supp;
+
+			memset(mcs_nss, 0x11, sizeof(*mcs_nss));
+		}
+
+		if (!is_ap) {
+			/* If not 2x2, we need to indicate 1x1 in the
+			 * Midamble RX Max NSTS - but not for AP mode
+			 */
+			iftype_data->he_cap.he_cap_elem.phy_cap_info[1] &=
+				~IEEE80211_HE_PHY_CAP1_MIDAMBLE_RX_TX_MAX_NSTS;
+			iftype_data->he_cap.he_cap_elem.phy_cap_info[2] &=
+				~IEEE80211_HE_PHY_CAP2_MIDAMBLE_RX_TX_MAX_NSTS;
+			iftype_data->he_cap.he_cap_elem.phy_cap_info[7] |=
+				IEEE80211_HE_PHY_CAP7_MAX_NC_1;
+		}
 	}
 
 	switch (CSR_HW_RFID_TYPE(trans->hw_rf_id)) {
 	case IWL_CFG_RF_TYPE_GF:
 	case IWL_CFG_RF_TYPE_MR:
+	case IWL_CFG_RF_TYPE_MS:
 		iftype_data->he_cap.he_cap_elem.phy_cap_info[9] |=
 			IEEE80211_HE_PHY_CAP9_TX_1024_QAM_LESS_THAN_242_TONE_RU;
 		if (!is_ap)
 			iftype_data->he_cap.he_cap_elem.phy_cap_info[9] |=
 				IEEE80211_HE_PHY_CAP9_RX_1024_QAM_LESS_THAN_242_TONE_RU;
 		break;
+	}
+
+	if (CSR_HW_REV_TYPE(trans->hw_rev) == IWL_CFG_MAC_TYPE_GL) {
+		cfg_eht_cap(iftype_data)->eht_cap_elem.mac_cap_info[0] &=
+				~(IEEE80211_EHT_MAC_CAP0_NSEP_PRIO_ACCESS |
+				  IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE1 |
+				  IEEE80211_EHT_MAC_CAP0_TRIG_TXOP_SHARING_MODE2);
+		cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[3] &=
+				~(IEEE80211_EHT_PHY_CAP0_PARTIAL_BW_UL_MU_MIMO |
+				  IEEE80211_EHT_PHY_CAP3_NG_16_SU_FEEDBACK |
+				  IEEE80211_EHT_PHY_CAP3_NG_16_MU_FEEDBACK |
+				  IEEE80211_EHT_PHY_CAP3_CODEBOOK_4_2_SU_FDBK |
+				  IEEE80211_EHT_PHY_CAP3_CODEBOOK_7_5_MU_FDBK |
+				  IEEE80211_EHT_PHY_CAP3_TRIG_MU_BF_PART_BW_FDBK);
+		cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[4] &=
+				~(IEEE80211_EHT_PHY_CAP4_PART_BW_DL_MU_MIMO |
+				  IEEE80211_EHT_PHY_CAP4_POWER_BOOST_FACT_SUPP);
+		cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[5] &=
+				~IEEE80211_EHT_PHY_CAP5_NON_TRIG_CQI_FEEDBACK;
+		cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[6] &=
+				~(IEEE80211_EHT_PHY_CAP6_MCS15_SUPP_MASK |
+				  IEEE80211_EHT_PHY_CAP6_EHT_DUP_6GHZ_SUPP);
+		cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info[7] &=
+				~IEEE80211_EHT_PHY_CAP7_20MHZ_STA_RX_NDP_WIDER_BW;
 	}
 
 	if (fw_has_capa(&fw->ucode_capa, IWL_UCODE_TLV_CAPA_BROADCAST_TWT))
@@ -838,19 +1029,17 @@ static void iwl_init_he_hw_capab(struct iwl_trans *trans,
 	if (WARN_ON(ieee80211_sband_get_iftypes_data(sband)))
 		return;
 
-	BUILD_BUG_ON(sizeof(data->iftd.low) != sizeof(iwl_he_capa));
-	BUILD_BUG_ON(sizeof(data->iftd.high) != sizeof(iwl_he_capa));
+	BUILD_BUG_ON(sizeof(data->iftd.low) != sizeof(iwl_he_eht_capa));
+	BUILD_BUG_ON(sizeof(data->iftd.high) != sizeof(iwl_he_eht_capa));
 
 	switch (sband->band) {
 	case NL80211_BAND_2GHZ:
 		iftype_data = data->iftd.low;
 		break;
 	case NL80211_BAND_5GHZ:
-#ifdef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
 #if CFG80211_VERSION >= KERNEL_VERSION(5,4,0)
 	case NL80211_BAND_6GHZ:
 		/* keep code in case of fall-through (spatch generated) */
-#endif
 #endif
 		iftype_data = data->iftd.high;
 		break;
@@ -859,18 +1048,17 @@ static void iwl_init_he_hw_capab(struct iwl_trans *trans,
 		return;
 	}
 
-	memcpy(iftype_data, iwl_he_capa, sizeof(iwl_he_capa));
+	memcpy(iftype_data, iwl_he_eht_capa, sizeof(iwl_he_eht_capa));
 
 	ieee80211_sband_set_iftypes_data(sband, iftype_data);
-	ieee80211_sband_set_num_iftypes_data(sband, ARRAY_SIZE(iwl_he_capa));
+	ieee80211_sband_set_num_iftypes_data(sband,
+					     ARRAY_SIZE(iwl_he_eht_capa));
 
 	for (i = 0; i < ieee80211_sband_get_num_iftypes_data(sband); i++)
-		iwl_nvm_fixup_sband_iftd(trans, sband, &iftype_data[i],
+		iwl_nvm_fixup_sband_iftd(trans, data, sband, &iftype_data[i],
 					 tx_chains, rx_chains, fw);
 
-#ifdef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
 	iwl_init_he_6ghz_capa(trans, data, sband, tx_chains, rx_chains);
-#endif
 }
 
 #ifdef CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES
@@ -894,8 +1082,8 @@ static void iwl_init_he_override(struct iwl_trans *trans,
 
 	for (i = 0; i < ieee80211_sband_get_num_iftypes_data(sband); i++) {
 		/* we know it's writable - we set it before ourselves */
-		iftype_data = (void *) ieee80211_sband_get_iftypes_data_entry(sband,
-									      i);
+		iftype_data = (void *)(uintptr_t) ieee80211_sband_get_iftypes_data_entry(sband,
+											 i);
 
 		if (trans->dbg_cfg.rx_mcs_80) {
 			if (iwl_he_mcs_greater(trans->dbg_cfg.rx_mcs_80,
@@ -1016,6 +1204,87 @@ static void iwl_init_he_override(struct iwl_trans *trans,
 				~IEEE80211_HE_MAC_CAP5_HE_DYNAMIC_SM_PS;
 	}
 }
+
+static void iwl_init_eht_band_override(struct iwl_trans *trans,
+				       struct ieee80211_supported_band *sband)
+{
+	struct ieee80211_sband_iftype_data *iftype_data;
+	int i;
+
+	for (i = 0; i < ieee80211_sband_get_num_iftypes_data(sband); i++) {
+		/* we know it's writable - we set it before ourselves */
+		iftype_data = (void *)(uintptr_t) ieee80211_sband_get_iftypes_data_entry(sband,
+											 i);
+
+		if (trans->dbg_cfg.eht_ppe_thres.len) {
+			if (trans->dbg_cfg.eht_ppe_thres.len >
+			    sizeof(cfg_eht_cap(iftype_data)->eht_ppe_thres)) {
+				IWL_ERR(trans,
+					"Wrong eht_ppe_thres len %u, should be max %zu\n",
+					trans->dbg_cfg.eht_ppe_thres.len,
+					sizeof(cfg_eht_cap(iftype_data)->eht_ppe_thres));
+			} else {
+				/* clear any old values */
+				memset(cfg_eht_cap(iftype_data)->eht_ppe_thres,
+				       0,
+				       sizeof(cfg_eht_cap(iftype_data)->eht_ppe_thres));
+
+				/* set new values */
+				memcpy(cfg_eht_cap(iftype_data)->eht_ppe_thres,
+				       trans->dbg_cfg.eht_ppe_thres.data,
+				       trans->dbg_cfg.eht_ppe_thres.len);
+			}
+		}
+
+		if (trans->dbg_cfg.valid_ants &&
+		    (trans->dbg_cfg.valid_ants & ANT_AB) != ANT_AB) {
+			/* For all MCS and bandwidth, set 1 NSS for both Tx and
+			 * Rx - note we don't set the only_20mhz, but due to this
+			 * being a union, it gets set correctly anyway.
+			 */
+			struct ieee80211_eht_mcs_nss_supp *mcs_nss =
+				&cfg_eht_cap(iftype_data)->eht_mcs_nss_supp;
+
+			memset(mcs_nss, 0x11, sizeof(*mcs_nss));
+		}
+
+		if (trans->dbg_cfg.eht_mac_cap.len) {
+			if (trans->dbg_cfg.eht_mac_cap.len !=
+			    sizeof(cfg_eht_cap(iftype_data)->eht_cap_elem.mac_cap_info)) {
+				IWL_ERR(trans,
+					"Wrong eht_mac_cap len %u, should be %zu\n",
+					trans->dbg_cfg.eht_mac_cap.len,
+					sizeof(cfg_eht_cap(iftype_data)->eht_cap_elem.mac_cap_info));
+			} else {
+				memcpy(cfg_eht_cap(iftype_data)->eht_cap_elem.mac_cap_info,
+				       trans->dbg_cfg.eht_mac_cap.data,
+				       trans->dbg_cfg.eht_mac_cap.len);
+			}
+		}
+		if (trans->dbg_cfg.eht_phy_cap.len) {
+			if (trans->dbg_cfg.eht_phy_cap.len !=
+			    sizeof(cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info)) {
+				IWL_ERR(trans,
+					"Wrong eht_phy_cap len %u, should be %zu\n",
+					trans->dbg_cfg.eht_phy_cap.len,
+					sizeof(cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info));
+			} else {
+				memcpy(cfg_eht_cap(iftype_data)->eht_cap_elem.phy_cap_info,
+				       trans->dbg_cfg.eht_phy_cap.data,
+				       trans->dbg_cfg.eht_phy_cap.len);
+			}
+		}
+	}
+}
+
+static void iwl_init_eht_override(struct iwl_trans *trans,
+				  struct ieee80211_supported_band *sbands)
+{
+	int band_id;
+
+	for (band_id = 0; band_id < NUM_NL80211_BANDS; band_id++)
+		iwl_init_eht_band_override(trans, &sbands[band_id]);
+}
 #endif
 
 static void iwl_init_sbands(struct iwl_trans *trans,
@@ -1061,7 +1330,7 @@ static void iwl_init_sbands(struct iwl_trans *trans,
 		iwl_init_he_hw_capab(trans, data, sband, tx_chains, rx_chains,
 				     fw);
 
-#ifdef CPTCFG_IWLWIFI_WIFI_6_SUPPORT
+#if CFG80211_VERSION >= KERNEL_VERSION(5,10,0)
 	/* 6GHz band. */
 	sband = &data->bands[NL80211_BAND_6GHZ];
 	sband->band = NL80211_BAND_6GHZ;
@@ -1088,7 +1357,7 @@ static int iwl_get_sku(const struct iwl_cfg *cfg, const __le16 *nvm_sw,
 	if (cfg->nvm_type != IWL_NVM_EXT)
 		return le16_to_cpup(nvm_sw + SKU);
 
-	return le32_to_cpup((__le32 *)(phy_sku + SKU_FAMILY_8000));
+	return le32_to_cpup((const __le32 *)(phy_sku + SKU_FAMILY_8000));
 }
 
 static int iwl_get_nvm_version(const struct iwl_cfg *cfg, const __le16 *nvm_sw)
@@ -1096,8 +1365,8 @@ static int iwl_get_nvm_version(const struct iwl_cfg *cfg, const __le16 *nvm_sw)
 	if (cfg->nvm_type != IWL_NVM_EXT)
 		return le16_to_cpup(nvm_sw + NVM_VERSION);
 	else
-		return le32_to_cpup((__le32 *)(nvm_sw +
-					       NVM_VERSION_EXT_NVM));
+		return le32_to_cpup((const __le32 *)(nvm_sw +
+						     NVM_VERSION_EXT_NVM));
 }
 
 static int iwl_get_radio_cfg(const struct iwl_cfg *cfg, const __le16 *nvm_sw,
@@ -1106,7 +1375,7 @@ static int iwl_get_radio_cfg(const struct iwl_cfg *cfg, const __le16 *nvm_sw,
 	if (cfg->nvm_type != IWL_NVM_EXT)
 		return le16_to_cpup(nvm_sw + RADIO_CFG);
 
-	return le32_to_cpup((__le32 *)(phy_sku + RADIO_CFG_FAMILY_EXT_NVM));
+	return le32_to_cpup((const __le32 *)(phy_sku + RADIO_CFG_FAMILY_EXT_NVM));
 
 }
 
@@ -1117,7 +1386,7 @@ static int iwl_get_n_hw_addrs(const struct iwl_cfg *cfg, const __le16 *nvm_sw)
 	if (cfg->nvm_type != IWL_NVM_EXT)
 		return le16_to_cpup(nvm_sw + N_HW_ADDRS);
 
-	n_hw_addr = le32_to_cpup((__le32 *)(nvm_sw + N_HW_ADDRS_FAMILY_8000));
+	n_hw_addr = le32_to_cpup((const __le32 *)(nvm_sw + N_HW_ADDRS_FAMILY_8000));
 
 	return n_hw_addr & N_HW_ADDR_MASK;
 }
@@ -1269,7 +1538,9 @@ static int iwl_set_hw_address(struct iwl_trans *trans,
 		return -EINVAL;
 	}
 
-	IWL_INFO(trans, "base HW address: %pM\n", data->hw_addr);
+	if (!trans->csme_own)
+		IWL_INFO(trans, "base HW address: %pM, OTP minor version: 0x%x\n",
+			 data->hw_addr, iwl_read_prph(trans, REG_OTP_MINOR));
 
 	return 0;
 }
@@ -1473,6 +1744,7 @@ iwl_parse_nvm_data(struct iwl_trans *trans, const struct iwl_cfg *cfg,
 #ifdef CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES
 	iwl_init_he_override(trans, &data->bands[NL80211_BAND_2GHZ]);
 	iwl_init_he_override(trans, &data->bands[NL80211_BAND_5GHZ]);
+	iwl_init_eht_override(trans, data->bands);
 #endif
 	return data;
 }
@@ -1589,8 +1861,12 @@ iwl_parse_nvm_mcc_info(struct device *dev, const struct iwl_cfg *cfg,
 		nvm_chan = iwl_nvm_channels;
 	}
 
-	if (WARN_ON(num_of_ch > max_num_ch))
+	if (num_of_ch > max_num_ch) {
+		IWL_DEBUG_DEV(dev, IWL_DL_LAR,
+			      "Num of channels (%d) is greater than expected. Truncating to %d\n",
+			      num_of_ch, max_num_ch);
 		num_of_ch = max_num_ch;
+	}
 
 	if (WARN_ON_ONCE(num_of_ch > NL80211_MAX_SUPP_REG_RULES))
 		return ERR_PTR(-EINVAL);
@@ -1801,7 +2077,7 @@ int iwl_read_external_nvm(struct iwl_trans *trans,
 	}
 
 	eof = fw_entry->data + fw_entry->size;
-	dword_buff = (__le32 *)fw_entry->data;
+	dword_buff = (const __le32 *)fw_entry->data;
 
 	/* some NVM file will contain a header.
 	 * The header is identified by 2 dwords header as follow:
@@ -1813,20 +2089,20 @@ int iwl_read_external_nvm(struct iwl_trans *trans,
 	if (fw_entry->size > NVM_HEADER_SIZE &&
 	    dword_buff[0] == cpu_to_le32(NVM_HEADER_0) &&
 	    dword_buff[1] == cpu_to_le32(NVM_HEADER_1)) {
-		file_sec = (void *)(fw_entry->data + NVM_HEADER_SIZE);
+		file_sec = (const void *)(fw_entry->data + NVM_HEADER_SIZE);
 		IWL_INFO(trans, "NVM Version %08X\n", le32_to_cpu(dword_buff[2]));
 		IWL_INFO(trans, "NVM Manufacturing date %08X\n",
 			 le32_to_cpu(dword_buff[3]));
 
 		/* nvm file validation, dword_buff[2] holds the file version */
 		if (trans->trans_cfg->device_family == IWL_DEVICE_FAMILY_8000 &&
-		    CSR_HW_REV_STEP(trans->hw_rev) == SILICON_C_STEP &&
+		    trans->hw_rev_step == SILICON_C_STEP &&
 		    le32_to_cpu(dword_buff[2]) < 0xE4A) {
 			ret = -EFAULT;
 			goto out;
 		}
 	} else {
-		file_sec = (void *)fw_entry->data;
+		file_sec = (const void *)fw_entry->data;
 	}
 
 	while (true) {
@@ -1894,7 +2170,7 @@ int iwl_read_external_nvm(struct iwl_trans *trans,
 		nvm_sections[section_id].length = section_size;
 
 		/* advance to the next section */
-		file_sec = (void *)(file_sec->data + section_size);
+		file_sec = (const void *)(file_sec->data + section_size);
 	}
 out:
 	release_firmware(fw_entry);
@@ -1997,6 +2273,8 @@ struct iwl_nvm_data *iwl_get_nvm(struct iwl_trans *trans,
 		!!(mac_flags & NVM_MAC_SKU_FLAGS_BAND_5_2_ENABLED);
 	nvm->sku_cap_mimo_disabled =
 		!!(mac_flags & NVM_MAC_SKU_FLAGS_MIMO_DISABLED);
+	if (CSR_HW_RFID_TYPE(trans->hw_rf_id) == IWL_CFG_RF_TYPE_FM)
+		nvm->sku_cap_11be_enable = true;
 
 	/* Initialize PHY sku data */
 	nvm->valid_tx_ant = (u8)le32_to_cpu(rsp->phy_sku.tx_chains);
@@ -2021,6 +2299,7 @@ struct iwl_nvm_data *iwl_get_nvm(struct iwl_trans *trans,
 #ifdef CPTCFG_IWLWIFI_SUPPORT_DEBUG_OVERRIDES
 	iwl_init_he_override(trans, &nvm->bands[NL80211_BAND_2GHZ]);
 	iwl_init_he_override(trans, &nvm->bands[NL80211_BAND_5GHZ]);
+	iwl_init_eht_override(trans, nvm->bands);
 #endif
 	iwl_free_resp(&hcmd);
 	return nvm;

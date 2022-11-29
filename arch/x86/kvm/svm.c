@@ -1905,7 +1905,8 @@ static void sev_clflush_pages(struct page *pages[], unsigned long npages)
 	uint8_t *page_virtual;
 	unsigned long i;
 
-	if (npages == 0 || pages == NULL)
+	if (this_cpu_has(X86_FEATURE_SME_COHERENT) || npages == 0 ||
+	    pages == NULL)
 		return;
 
 	for (i = 0; i < npages; i++) {
@@ -4586,8 +4587,6 @@ static int avic_incomplete_ipi_interception(struct vcpu_svm *svm)
 		break;
 	}
 	case AVIC_IPI_FAILURE_INVALID_TARGET:
-		WARN_ONCE(1, "Invalid IPI target: index=%u, vcpu=%d, icr=%#0x:%#0x\n",
-			  index, svm->vcpu.vcpu_id, icrh, icrl);
 		break;
 	case AVIC_IPI_FAILURE_INVALID_BACKING_PAGE:
 		WARN_ONCE(1, "Invalid backing page\n");
@@ -5138,8 +5137,6 @@ static inline void svm_inject_irq(struct vcpu_svm *svm, int irq)
 static void svm_set_irq(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
-
-	BUG_ON(!(gif_set(svm)));
 
 	trace_kvm_inj_virq(vcpu->arch.interrupt.nr);
 	++vcpu->stat.irq_injections;
@@ -7273,6 +7270,8 @@ static bool svm_apic_init_signal_blocked(struct kvm_vcpu *vcpu)
 }
 
 static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
+	.name = "kvm_amd",
+
 	.cpu_has_kvm_support = has_svm,
 	.disabled_by_bios = is_disabled,
 	.hardware_setup = svm_hardware_setup,

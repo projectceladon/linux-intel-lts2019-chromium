@@ -685,6 +685,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 
 	init_data.asic_id.pci_revision_id = adev->rev_id;
 	init_data.asic_id.hw_internal_rev = adev->external_rev_id;
+	init_data.asic_id.chip_id = adev->pdev->device;
 
 	init_data.asic_id.vram_width = adev->gmc.vram_width;
 	/* TODO: initialize init_data.asic_id.vram_type here!!!! */
@@ -764,9 +765,6 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 		"amdgpu: failed to initialize sw for display support.\n");
 		goto error;
 	}
-
-	/* Update the actual used number of crtc */
-	adev->mode_info.num_crtc = adev->dm.display_indexes_num;
 
 	/* TODO: Add_display_info? */
 
@@ -1257,7 +1255,8 @@ static int dm_resume(void *handle)
 		 * this is the case when traversing through already created
 		 * MST connectors, should be skipped
 		 */
-		if (aconnector->mst_port)
+		if (aconnector->dc_link &&
+		    aconnector->dc_link->type == dc_connection_mst_branch)
 			continue;
 
 		mutex_lock(&aconnector->hpd_lock);
@@ -2446,6 +2445,10 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
 	enum dc_connection_type new_connection_type = dc_connection_none;
 	const struct dc_plane_cap *plane;
 
+	dm->display_indexes_num = dm->dc->caps.max_streams;
+	/* Update the actual used number of crtc */
+	adev->mode_info.num_crtc = adev->dm.display_indexes_num;
+
 	link_cnt = dm->dc->caps.max_links;
 	if (amdgpu_dm_mode_config_init(dm->adev)) {
 		DRM_ERROR("DM: Failed to initialize mode config\n");
@@ -2506,8 +2509,6 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
 			DRM_ERROR("KMS: Failed to initialize crtc\n");
 			goto fail;
 		}
-
-	dm->display_indexes_num = dm->dc->caps.max_streams;
 
 	/* loops over all connectors on the board */
 	for (i = 0; i < link_cnt; i++) {
@@ -5745,6 +5746,9 @@ static void amdgpu_dm_connector_add_common_modes(struct drm_encoder *encoder,
 		mode = amdgpu_dm_create_common_mode(encoder,
 				common_modes[i].name, common_modes[i].w,
 				common_modes[i].h);
+		if (!mode)
+			continue;
+
 		drm_mode_probed_add(connector, mode);
 		amdgpu_dm_connector->num_modes++;
 	}
@@ -6203,12 +6207,6 @@ static int get_cursor_position(struct drm_plane *plane, struct drm_crtc *crtc,
 	if (x <= -amdgpu_crtc->max_cursor_width ||
 	    y <= -amdgpu_crtc->max_cursor_height)
 		return 0;
-
-	if (crtc->primary->state) {
-		/* avivo cursor are offset into the total surface */
-		x += crtc->primary->state->src_x >> 16;
-		y += crtc->primary->state->src_y >> 16;
-	}
 
 	if (x < 0) {
 		xorigin = min(-x, amdgpu_crtc->max_cursor_width - 1);
@@ -8091,10 +8089,13 @@ cleanup:
 static int add_affected_mst_dsc_crtcs(struct drm_atomic_state *state, struct drm_crtc *crtc)
 {
 	struct drm_connector *connector;
-	struct drm_connector_state *conn_state;
+	struct drm_connector_state *conn_state, *old_conn_state;
 	struct amdgpu_dm_connector *aconnector = NULL;
 	int i;
-	for_each_new_connector_in_state(state, connector, conn_state, i) {
+	for_each_oldnew_connector_in_state(state, connector, old_conn_state, conn_state, i) {
+		if (!conn_state->crtc)
+			conn_state = old_conn_state;
+
 		if (conn_state->crtc != crtc)
 			continue;
 
@@ -8111,53 +8112,6 @@ static int add_affected_mst_dsc_crtcs(struct drm_atomic_state *state, struct drm
 	return drm_dp_mst_add_affected_dsc_crtcs(state, &aconnector->mst_port->mst_mgr);
 }
 #endif
-
-static int validate_overlay(struct drm_atomic_state *state)
-{
-	int i;
-	struct drm_plane *plane;
-	struct drm_plane_state *old_plane_state, *new_plane_state;
-	struct drm_plane_state *primary_state, *overlay_state = NULL;
-
-	/* Check if primary plane is contained inside overlay */
-	for_each_oldnew_plane_in_state_reverse(state, plane, old_plane_state, new_plane_state, i) {
-		if (plane->type == DRM_PLANE_TYPE_OVERLAY) {
-			if (drm_atomic_plane_disabling(plane->state, new_plane_state))
-				return 0;
-
-			overlay_state = new_plane_state;
-			continue;
-		}
-	}
-
-	/* check if we're making changes to the overlay plane */
-	if (!overlay_state)
-		return 0;
-
-	/* check if overlay plane is enabled */
-	if (!overlay_state->crtc)
-		return 0;
-
-	/* find the primary plane for the CRTC that the overlay is enabled on */
-	primary_state = drm_atomic_get_plane_state(state, overlay_state->crtc->primary);
-	if (IS_ERR(primary_state))
-		return PTR_ERR(primary_state);
-
-	/* check if primary plane is enabled */
-	if (!primary_state->crtc)
-		return 0;
-
-	/* Perform the bounds check to ensure the overlay plane covers the primary */
-	if (primary_state->crtc_x < overlay_state->crtc_x ||
-	    primary_state->crtc_y < overlay_state->crtc_y ||
-	    primary_state->crtc_x + primary_state->crtc_w > overlay_state->crtc_x + overlay_state->crtc_w ||
-	    primary_state->crtc_y + primary_state->crtc_h > overlay_state->crtc_y + overlay_state->crtc_h) {
-		DRM_DEBUG_ATOMIC("Overlay plane is enabled with hardware cursor but does not fully cover primary plane\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
 
 /**
  * amdgpu_dm_atomic_check() - Atomic check implementation for AMDgpu DM.
@@ -8335,10 +8289,6 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 		if (ret)
 			goto fail;
 	}
-
-	ret = validate_overlay(state);
-	if (ret)
-		goto fail;
 
 	/* Add new/modified planes */
 	for_each_oldnew_plane_in_state_reverse(state, plane, old_plane_state, new_plane_state, i) {

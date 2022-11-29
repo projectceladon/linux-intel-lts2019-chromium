@@ -78,7 +78,7 @@ struct soc_tplg {
 };
 
 static int soc_tplg_process_headers(struct soc_tplg *tplg);
-static void soc_tplg_complete(struct soc_tplg *tplg);
+static int soc_tplg_complete(struct soc_tplg *tplg);
 
 /* check we dont overflow the data for this control chunk */
 static int soc_tplg_check_elem_count(struct soc_tplg *tplg, size_t elem_size,
@@ -312,10 +312,12 @@ static int soc_tplg_dai_link_load(struct soc_tplg *tplg,
 }
 
 /* tell the component driver that all firmware has been loaded in this request */
-static void soc_tplg_complete(struct soc_tplg *tplg)
+static int soc_tplg_complete(struct soc_tplg *tplg)
 {
 	if (tplg->ops && tplg->ops->complete)
-		tplg->ops->complete(tplg->comp);
+		return tplg->ops->complete(tplg->comp);
+
+	return 0;
 }
 
 /* add a dynamic kcontrol */
@@ -511,7 +513,8 @@ static int soc_tplg_kcontrol_bind_io(struct snd_soc_tplg_ctl_hdr *hdr,
 
 	if (le32_to_cpu(hdr->ops.info) == SND_SOC_TPLG_CTL_BYTES
 		&& k->iface & SNDRV_CTL_ELEM_IFACE_MIXER
-		&& k->access & SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE
+		&& (k->access & SNDRV_CTL_ELEM_ACCESS_TLV_READ
+		    || k->access & SNDRV_CTL_ELEM_ACCESS_TLV_WRITE)
 		&& k->access & SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK) {
 		struct soc_bytes_ext *sbe;
 		struct snd_soc_tplg_bytes_control *be;
@@ -1096,7 +1099,7 @@ static int soc_tplg_dapm_graph_elems_load(struct soc_tplg *tplg,
 {
 	struct snd_soc_dapm_context *dapm = &tplg->comp->dapm;
 	struct snd_soc_tplg_dapm_graph_elem *elem;
-	struct snd_soc_dapm_route **routes;
+	struct snd_soc_dapm_route *route;
 	int count, i;
 	int ret = 0;
 
@@ -1114,24 +1117,10 @@ static int soc_tplg_dapm_graph_elems_load(struct soc_tplg *tplg,
 	dev_dbg(tplg->dev, "ASoC: adding %d DAPM routes for index %d\n", count,
 		hdr->index);
 
-	/* allocate memory for pointer to array of dapm routes */
-	routes = kcalloc(count, sizeof(struct snd_soc_dapm_route *),
-			 GFP_KERNEL);
-	if (!routes)
-		return -ENOMEM;
-
-	/*
-	 * allocate memory for each dapm route in the array.
-	 * This needs to be done individually so that
-	 * each route can be freed when it is removed in remove_route().
-	 */
 	for (i = 0; i < count; i++) {
-		routes[i] = devm_kzalloc(tplg->dev, sizeof(*routes[i]), GFP_KERNEL);
-		if (!routes[i])
+		route = devm_kzalloc(tplg->dev, sizeof(*route), GFP_KERNEL);
+		if (!route)
 			return -ENOMEM;
-	}
-
-	for (i = 0; i < count; i++) {
 		elem = (struct snd_soc_tplg_dapm_graph_elem *)tplg->pos;
 		tplg->pos += sizeof(struct snd_soc_tplg_dapm_graph_elem);
 
@@ -1152,45 +1141,31 @@ static int soc_tplg_dapm_graph_elems_load(struct soc_tplg *tplg,
 			break;
 		}
 
-		routes[i]->source = elem->source;
-		routes[i]->sink = elem->sink;
+		route->source = elem->source;
+		route->sink = elem->sink;
 
 		/* set to NULL atm for tplg users */
-		routes[i]->connected = NULL;
+		route->connected = NULL;
 		if (strnlen(elem->control, SNDRV_CTL_ELEM_ID_NAME_MAXLEN) == 0)
-			routes[i]->control = NULL;
+			route->control = NULL;
 		else
-			routes[i]->control = elem->control;
+			route->control = elem->control;
 
 		/* add route dobj to dobj_list */
-		routes[i]->dobj.type = SND_SOC_DOBJ_GRAPH;
-		routes[i]->dobj.ops = tplg->ops;
-		routes[i]->dobj.index = tplg->index;
-		list_add(&routes[i]->dobj.list, &tplg->comp->dobj_list);
+		route->dobj.type = SND_SOC_DOBJ_GRAPH;
+		route->dobj.ops = tplg->ops;
+		route->dobj.index = tplg->index;
+		list_add(&route->dobj.list, &tplg->comp->dobj_list);
 
-		ret = soc_tplg_add_route(tplg, routes[i]);
+		ret = soc_tplg_add_route(tplg, route);
 		if (ret < 0) {
 			dev_err(tplg->dev, "ASoC: topology: add_route failed: %d\n", ret);
-			/*
-			 * this route was added to the list, it will
-			 * be freed in remove_route() so increment the
-			 * counter to skip it in the error handling
-			 * below.
-			 */
-			i++;
 			break;
 		}
 
 		/* add route, but keep going if some fail */
-		snd_soc_dapm_add_routes(dapm, routes[i], 1);
+		snd_soc_dapm_add_routes(dapm, route, 1);
 	}
-
-	/*
-	 * free pointer to array of dapm routes as this is no longer needed.
-	 * The memory allocated for each dapm route will be freed
-	 * when it is removed in remove_route().
-	 */
-	kfree(routes);
 
 	return ret;
 }
@@ -1474,12 +1449,12 @@ static int soc_tplg_dapm_widget_create(struct soc_tplg *tplg,
 	template.num_kcontrols = le32_to_cpu(w->num_kcontrols);
 	kc = devm_kcalloc(tplg->dev, le32_to_cpu(w->num_kcontrols), sizeof(*kc), GFP_KERNEL);
 	if (!kc)
-		goto err;
+		goto hdr_err;
 
 	kcontrol_type = devm_kcalloc(tplg->dev, le32_to_cpu(w->num_kcontrols), sizeof(unsigned int),
 				     GFP_KERNEL);
 	if (!kcontrol_type)
-		goto err;
+		goto hdr_err;
 
 	for (i = 0; i < w->num_kcontrols; i++) {
 		control_hdr = (struct snd_soc_tplg_ctl_hdr *)tplg->pos;
@@ -2619,7 +2594,7 @@ static int soc_tplg_load(struct soc_tplg *tplg)
 
 	ret = soc_tplg_process_headers(tplg);
 	if (ret == 0)
-		soc_tplg_complete(tplg);
+		return soc_tplg_complete(tplg);
 
 	return ret;
 }
@@ -2658,6 +2633,7 @@ EXPORT_SYMBOL_GPL(snd_soc_tplg_component_load);
 /* remove dynamic controls from the component driver */
 int snd_soc_tplg_component_remove(struct snd_soc_component *comp)
 {
+	struct snd_card *card = comp->card->snd_card;
 	struct snd_soc_dobj *dobj, *next_dobj;
 	int pass = SOC_TPLG_PASS_END;
 
@@ -2665,6 +2641,7 @@ int snd_soc_tplg_component_remove(struct snd_soc_component *comp)
 	while (pass >= SOC_TPLG_PASS_START) {
 
 		/* remove mixer controls */
+		down_write(&card->controls_rwsem);
 		list_for_each_entry_safe(dobj, next_dobj, &comp->dobj_list,
 			list) {
 
@@ -2703,6 +2680,7 @@ int snd_soc_tplg_component_remove(struct snd_soc_component *comp)
 				break;
 			}
 		}
+		up_write(&card->controls_rwsem);
 		pass--;
 	}
 

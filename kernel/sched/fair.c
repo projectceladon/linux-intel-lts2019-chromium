@@ -4553,8 +4553,8 @@ static int tg_unthrottle_up(struct task_group *tg, void *data)
 
 	cfs_rq->throttle_count--;
 	if (!cfs_rq->throttle_count) {
-		cfs_rq->throttled_clock_task_time += rq_clock_task(rq) -
-					     cfs_rq->throttled_clock_task;
+		cfs_rq->throttled_clock_pelt_time += rq_clock_pelt(rq) -
+					     cfs_rq->throttled_clock_pelt;
 
 		/* Add cfs_rq with already running entity in the list */
 		if (cfs_rq->nr_running >= 1)
@@ -4571,7 +4571,7 @@ static int tg_throttle_down(struct task_group *tg, void *data)
 
 	/* group is entering throttled state, stop time */
 	if (!cfs_rq->throttle_count) {
-		cfs_rq->throttled_clock_task = rq_clock_task(rq);
+		cfs_rq->throttled_clock_pelt = rq_clock_pelt(rq);
 		list_del_leaf_cfs_rq(cfs_rq);
 	}
 	cfs_rq->throttle_count++;
@@ -5000,7 +5000,7 @@ static void sync_throttle(struct task_group *tg, int cpu)
 	pcfs_rq = tg->parent->cfs_rq[cpu];
 
 	cfs_rq->throttle_count = pcfs_rq->throttle_count;
-	cfs_rq->throttled_clock_task = rq_clock_task(cpu_rq(cpu));
+	cfs_rq->throttled_clock_pelt = rq_clock_pelt(cpu_rq(cpu));
 }
 
 /* conditionally throttle active cfs_rq's from put_prev_entity() */
@@ -6668,9 +6668,6 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int want_affine = 0;
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 
-	if ((wake_flags & WF_CURRENT_CPU) && cpumask_test_cpu(cpu, p->cpus_ptr))
-		return cpu;
-
 	/*
 	 * required for stable ->cpus_allowed
 	 */
@@ -6692,9 +6689,6 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 
 	rcu_read_lock();
 	for_each_domain(cpu, tmp) {
-		if (!(tmp->flags & SD_LOAD_BALANCE))
-			break;
-
 		/*
 		 * If both 'cpu' and 'prev_cpu' are part of this domain,
 		 * cpu is a valid SD_WAKE_AFFINE target.
@@ -6820,15 +6814,10 @@ pick_task_fair(struct rq *rq)
 	do {
 		struct sched_entity *curr = cfs_rq->curr;
 
-		se = pick_next_entity(cfs_rq, NULL);
+		if (curr && curr->on_rq)
+			update_curr(cfs_rq);
 
-		if (curr) {
-			if (se && curr->on_rq)
-				update_curr(cfs_rq);
-
-			if (!se || entity_before(curr, se))
-				se = curr;
-		}
+		se = pick_next_entity(cfs_rq, curr);
 
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
@@ -9453,9 +9442,8 @@ static int active_load_balance_cpu_stop(void *data)
 	/* Search for an sd spanning us and the target CPU. */
 	rcu_read_lock();
 	for_each_domain(target_cpu, sd) {
-		if ((sd->flags & SD_LOAD_BALANCE) &&
-		    cpumask_test_cpu(busiest_cpu, sched_domain_span(sd)))
-				break;
+		if (cpumask_test_cpu(busiest_cpu, sched_domain_span(sd)))
+			break;
 	}
 
 	if (likely(sd)) {
@@ -9511,6 +9499,30 @@ void update_max_interval(void)
 	max_load_balance_interval = HZ*num_online_cpus()/10;
 }
 
+static inline bool update_newidle_cost(struct sched_domain *sd, u64 cost)
+{
+	if (cost > sd->max_newidle_lb_cost) {
+		/*
+		 * Track max cost of a domain to make sure to not delay the
+		 * next wakeup on the CPU.
+		 */
+		sd->max_newidle_lb_cost = cost;
+		sd->last_decay_max_lb_cost = jiffies;
+	} else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
+		/*
+		 * Decay the newidle max times by ~1% per second to ensure that
+		 * it is not outdated and the current max cost is actually
+		 * shorter.
+		 */
+		sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
+		sd->last_decay_max_lb_cost = jiffies;
+
+		return true;
+	}
+
+	return false;
+}
+
 /*
  * It checks each scheduling domain to see if it is due to be balanced,
  * and initiates a balancing operation if so.
@@ -9533,18 +9545,10 @@ static void rebalance_domains(struct rq *rq, enum cpu_idle_type idle)
 	for_each_domain(cpu, sd) {
 		/*
 		 * Decay the newidle max times here because this is a regular
-		 * visit to all the domains. Decay ~1% per second.
+		 * visit to all the domains.
 		 */
-		if (time_after(jiffies, sd->next_decay_max_lb_cost)) {
-			sd->max_newidle_lb_cost =
-				(sd->max_newidle_lb_cost * 253) / 256;
-			sd->next_decay_max_lb_cost = jiffies + HZ;
-			need_decay = 1;
-		}
+		need_decay = update_newidle_cost(sd, 0);
 		max_cost += sd->max_newidle_lb_cost;
-
-		if (!(sd->flags & SD_LOAD_BALANCE))
-			continue;
 
 		/*
 		 * Stop the load balance at this level. There is another
@@ -10096,9 +10100,9 @@ int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 {
 	unsigned long next_balance = jiffies + HZ;
 	int this_cpu = this_rq->cpu;
+	u64 t0, t1, curr_cost = 0;
 	struct sched_domain *sd;
 	int pulled_task = 0;
-	u64 curr_cost = 0;
 
 	update_misfit_status(NULL, this_rq);
 	/*
@@ -10121,49 +10125,48 @@ int newidle_balance(struct rq *this_rq, struct rq_flags *rf)
 	 */
 	rq_unpin_lock(this_rq, rf);
 
-	if (this_rq->avg_idle < sysctl_sched_migration_cost ||
-	    !READ_ONCE(this_rq->rd->overload)) {
+	rcu_read_lock();
+	sd = rcu_dereference_check_sched_domain(this_rq->sd);
 
-		rcu_read_lock();
-		sd = rcu_dereference_check_sched_domain(this_rq->sd);
+	if (!READ_ONCE(this_rq->rd->overload) ||
+	    (sd && this_rq->avg_idle < sd->max_newidle_lb_cost)) {
+
 		if (sd)
 			update_next_balance(sd, &next_balance);
 		rcu_read_unlock();
 
 		goto out;
 	}
+	rcu_read_unlock();
 
 	raw_spin_unlock(rq_lockp(this_rq));
 
+	t0 = sched_clock_cpu(this_cpu);
 	update_blocked_averages(this_cpu);
+
 	rcu_read_lock();
 	for_each_domain(this_cpu, sd) {
 		int continue_balancing = 1;
-		u64 t0, domain_cost;
+		u64 domain_cost;
 
-		if (!(sd->flags & SD_LOAD_BALANCE))
-			continue;
+		update_next_balance(sd, &next_balance);
 
-		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost) {
-			update_next_balance(sd, &next_balance);
+		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
 			break;
-		}
 
 		if (sd->flags & SD_BALANCE_NEWIDLE) {
-			t0 = sched_clock_cpu(this_cpu);
 
 			pulled_task = load_balance(this_cpu, this_rq,
 						   sd, CPU_NEWLY_IDLE,
 						   &continue_balancing);
 
-			domain_cost = sched_clock_cpu(this_cpu) - t0;
-			if (domain_cost > sd->max_newidle_lb_cost)
-				sd->max_newidle_lb_cost = domain_cost;
+			t1 = sched_clock_cpu(this_cpu);
+			domain_cost = t1 - t0;
+			update_newidle_cost(sd, domain_cost);
 
 			curr_cost += domain_cost;
+			t0 = t1;
 		}
-
-		update_next_balance(sd, &next_balance);
 
 		/*
 		 * Stop searching for tasks to pull if there are

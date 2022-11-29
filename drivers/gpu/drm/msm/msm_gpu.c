@@ -16,6 +16,8 @@
 #include <linux/devcoredump.h>
 #include <linux/sched/task.h>
 
+static void hangcheck_timer_reset(struct msm_gpu *gpu);
+
 /*
  * gpu-boost, get notified of input events to get a head start on booting
  * up the GPU
@@ -49,7 +51,7 @@ static void msm_gpuboost_input_event(struct input_handle *handle,
 	 * a worker if the GPU is already ticking
 	 */
 	ret = pm_runtime_get_if_in_use(&gpu->pdev->dev);
-	if (ret == 0) {
+	if (ret <= 0) {
 		trace_msm_gpu_boost(type, code, value);
 		kthread_queue_work(gpu->worker, &gpu->boost_work);
 		return;
@@ -316,7 +318,7 @@ static void update_fences(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 
 	spin_lock_irqsave(&ring->submit_lock, flags);
 	list_for_each_entry(submit, &ring->submits, node) {
-		if (submit->seqno > fence)
+		if (fence_after(submit->seqno, fence))
 			break;
 
 		msm_update_fence(submit->ring->fctx,
@@ -428,6 +430,16 @@ static void msm_gpu_crashstate_capture(struct msm_gpu *gpu,
 	if (submit) {
 		int i, nr = 0;
 
+		if (state->fault_info.smmu_info.ttbr0) {
+			struct msm_gpu_fault_info *info = &state->fault_info;
+			struct msm_mmu *mmu = submit->aspace->mmu;
+
+			msm_iommu_pagetable_params(mmu, &info->pgtbl_ttbr0,
+						   &info->asid);
+			msm_iommu_pagetable_walk(mmu, info->iova, info->ptes,
+						 ARRAY_SIZE(info->ptes));
+		}
+
 		/* count # of buffers to dump: */
 		for (i = 0; i < submit->nr_bos; i++)
 			if (should_dump(submit, i))
@@ -514,8 +526,9 @@ static void recover_worker(struct kthread_work *work)
 		struct task_struct *task;
 
 		/* Increment the fault counts */
-		gpu->global_faults++;
 		submit->queue->faults++;
+		if (submit->aspace)
+			submit->aspace->faults++;
 
 		task = get_pid_task(submit->pid, PIDTYPE_PID);
 		if (task) {
@@ -533,6 +546,12 @@ static void recover_worker(struct kthread_work *work)
 		} else {
 			msm_rd_dump_submit(priv->hangrd, submit, NULL);
 		}
+	} else {
+		/*
+		 * We couldn't attribute this fault to any particular context,
+		 * so increment the global fault count instead.
+		 */
+		gpu->global_faults++;
 	}
 
 	/* Record the crash state */
@@ -584,6 +603,10 @@ static void recover_worker(struct kthread_work *work)
 				gpu->funcs->submit(gpu, submit);
 			spin_unlock_irqrestore(&ring->submit_lock, flags);
 		}
+
+		hangcheck_timer_reset(gpu);
+	} else {
+		del_timer(&gpu->hangcheck_timer);
 	}
 
 	mutex_unlock(&dev->struct_mutex);
@@ -639,8 +662,9 @@ resume_smmu:
 
 static void hangcheck_timer_reset(struct msm_gpu *gpu)
 {
+	struct msm_drm_private *priv = gpu->dev->dev_private;
 	mod_timer(&gpu->hangcheck_timer,
-			round_jiffies_up(jiffies + DRM_MSM_HANGCHECK_JIFFIES));
+			round_jiffies_up(jiffies + msecs_to_jiffies(priv->hangcheck_period)));
 }
 
 static void hangcheck_handler(struct timer_list *t)
@@ -653,7 +677,7 @@ static void hangcheck_handler(struct timer_list *t)
 	if (fence != ring->hangcheck_fence) {
 		/* some progress has been made.. ya! */
 		ring->hangcheck_fence = fence;
-	} else if (fence < ring->seqno) {
+	} else if (fence_before(fence, ring->seqno)) {
 		/* no progress and not done.. hung! */
 		ring->hangcheck_fence = fence;
 		DRM_DEV_ERROR(dev->dev, "%s: hangcheck detected gpu lockup rb %d!\n",
@@ -667,7 +691,7 @@ static void hangcheck_handler(struct timer_list *t)
 	}
 
 	/* if still more pending work, reset the hangcheck timer: */
-	if (ring->seqno > ring->hangcheck_fence)
+	if (fence_after(ring->seqno, ring->hangcheck_fence))
 		hangcheck_timer_reset(gpu);
 
 	/* workaround for missing irq: */
@@ -801,7 +825,6 @@ static void retire_submit(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 	msm_submit_retire(submit);
 
 	pm_runtime_mark_last_busy(&gpu->pdev->dev);
-	pm_runtime_put_autosuspend(&gpu->pdev->dev);
 
 	spin_lock_irqsave(&ring->submit_lock, flags);
 	list_del(&submit->node);
@@ -814,6 +837,8 @@ static void retire_submit(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 	if (!gpu->active_submits)
 		msm_devfreq_idle(gpu);
 	mutex_unlock(&gpu->active_lock);
+
+	pm_runtime_put_autosuspend(&gpu->pdev->dev);
 
 	msm_gem_submit_put(submit);
 }
@@ -847,6 +872,8 @@ static void retire_submits(struct msm_gpu *gpu)
 			}
 		}
 	}
+
+	wake_up_all(&gpu->retire_event);
 }
 
 static void retire_worker(struct kthread_work *work)
@@ -854,6 +881,10 @@ static void retire_worker(struct kthread_work *work)
 	struct msm_gpu *gpu = container_of(work, struct msm_gpu, retire_work);
 
 	retire_submits(gpu);
+
+	if (!msm_gpu_active(gpu)) {
+		del_timer(&gpu->hangcheck_timer);
+	}
 }
 
 /* call from irq handler to schedule work to retire bo's */
@@ -992,6 +1023,7 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	INIT_LIST_HEAD(&gpu->active_list);
 	mutex_init(&gpu->active_lock);
 	kthread_init_work(&gpu->boost_work, boost_worker);
+	init_waitqueue_head(&gpu->retire_event);
 	kthread_init_work(&gpu->retire_work, retire_worker);
 	kthread_init_work(&gpu->recover_work, recover_worker);
 	kthread_init_work(&gpu->fault_work, fault_worker);
@@ -1095,6 +1127,8 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	gpu->nr_rings = nr_rings;
 
 	msm_gpuboost_init(gpu);
+
+	refcount_set(&gpu->sysprof_active, 1);
 
 	return 0;
 

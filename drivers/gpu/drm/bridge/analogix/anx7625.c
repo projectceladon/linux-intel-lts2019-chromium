@@ -946,7 +946,7 @@ static int edid_read(struct anx7625_data *ctx, u8 offset, u8 *pblock_buf)
 		ret = sp_tx_aux_rd(ctx, 0xf1);
 
 		if (ret) {
-			sp_tx_rst_aux(ctx);
+			ret = sp_tx_rst_aux(ctx);
 			DRM_DEV_DEBUG_DRIVER(dev, "edid read fail, reset!\n");
 		} else {
 			ret = anx7625_reg_block_read(ctx, ctx->i2c.rx_p0_client,
@@ -961,7 +961,7 @@ static int edid_read(struct anx7625_data *ctx, u8 offset, u8 *pblock_buf)
 	if (cnt > EDID_TRY_CNT)
 		return -EIO;
 
-	return 0;
+	return ret;
 }
 
 static int segments_edid_read(struct anx7625_data *ctx,
@@ -1011,17 +1011,18 @@ static int segments_edid_read(struct anx7625_data *ctx,
 	if (cnt > EDID_TRY_CNT)
 		return -EIO;
 
-	return 0;
+	return ret;
 }
 
 static int sp_tx_edid_read(struct anx7625_data *ctx,
 			   u8 *pedid_blocks_buf)
 {
-	u8 offset, edid_pos;
+	u8 offset;
+	int edid_pos;
 	int count, blocks_num;
 	u8 pblock_buf[MAX_DPCD_BUFFER_SIZE];
 	u8 i, j;
-	u8 g_edid_break = 0;
+	int g_edid_break = 0;
 	int ret;
 	struct device *dev = &ctx->client->dev;
 
@@ -1052,7 +1053,7 @@ static int sp_tx_edid_read(struct anx7625_data *ctx,
 				g_edid_break = edid_read(ctx, offset,
 							 pblock_buf);
 
-				if (g_edid_break)
+				if (g_edid_break < 0)
 					break;
 
 				memcpy(&pedid_blocks_buf[offset],
@@ -1113,7 +1114,11 @@ static int sp_tx_edid_read(struct anx7625_data *ctx,
 	}
 
 	/* Reset aux channel */
-	sp_tx_rst_aux(ctx);
+	ret = sp_tx_rst_aux(ctx);
+	if (ret < 0) {
+		DRM_DEV_ERROR(dev, "Failed to reset aux channel!\n");
+		return ret;
+	}
 
 	return (blocks_num + 1);
 }
@@ -2081,40 +2086,54 @@ static const struct drm_bridge_funcs anx7625_bridge_funcs = {
 static int anx7625_register_i2c_dummy_clients(struct anx7625_data *ctx,
 					      struct i2c_client *client)
 {
+	int err = 0;
+
 	ctx->i2c.tx_p0_client = i2c_new_dummy_device(client->adapter,
 						     TX_P0_ADDR >> 1);
-	if (!ctx->i2c.tx_p0_client)
-		return -ENOMEM;
+	if (IS_ERR(ctx->i2c.tx_p0_client))
+		return PTR_ERR(ctx->i2c.tx_p0_client);
 
 	ctx->i2c.tx_p1_client = i2c_new_dummy_device(client->adapter,
 						     TX_P1_ADDR >> 1);
-	if (!ctx->i2c.tx_p1_client)
+	if (IS_ERR(ctx->i2c.tx_p1_client)) {
+		err = PTR_ERR(ctx->i2c.tx_p1_client);
 		goto free_tx_p0;
+	}
 
 	ctx->i2c.tx_p2_client = i2c_new_dummy_device(client->adapter,
 						     TX_P2_ADDR >> 1);
-	if (!ctx->i2c.tx_p2_client)
+	if (IS_ERR(ctx->i2c.tx_p2_client)) {
+		err = PTR_ERR(ctx->i2c.tx_p2_client);
 		goto free_tx_p1;
+	}
 
 	ctx->i2c.rx_p0_client = i2c_new_dummy_device(client->adapter,
 						     RX_P0_ADDR >> 1);
-	if (!ctx->i2c.rx_p0_client)
+	if (IS_ERR(ctx->i2c.rx_p0_client)) {
+		err = PTR_ERR(ctx->i2c.rx_p0_client);
 		goto free_tx_p2;
+	}
 
 	ctx->i2c.rx_p1_client = i2c_new_dummy_device(client->adapter,
 						     RX_P1_ADDR >> 1);
-	if (!ctx->i2c.rx_p1_client)
+	if (IS_ERR(ctx->i2c.rx_p1_client)) {
+		err = PTR_ERR(ctx->i2c.rx_p1_client);
 		goto free_rx_p0;
+	}
 
 	ctx->i2c.rx_p2_client = i2c_new_dummy_device(client->adapter,
 						     RX_P2_ADDR >> 1);
-	if (!ctx->i2c.rx_p2_client)
+	if (IS_ERR(ctx->i2c.rx_p2_client)) {
+		err = PTR_ERR(ctx->i2c.rx_p2_client);
 		goto free_rx_p1;
+	}
 
 	ctx->i2c.tcpc_client = i2c_new_dummy_device(client->adapter,
 						    TCPC_INTERFACE_ADDR >> 1);
-	if (!ctx->i2c.tcpc_client)
+	if (IS_ERR(ctx->i2c.tcpc_client)) {
+		err = PTR_ERR(ctx->i2c.tcpc_client);
 		goto free_rx_p2;
+	}
 
 	return 0;
 
@@ -2131,7 +2150,7 @@ free_tx_p1:
 free_tx_p0:
 	i2c_unregister_device(ctx->i2c.tx_p0_client);
 
-	return -ENOMEM;
+	return err;
 }
 
 static void anx7625_unregister_i2c_dummy_clients(struct anx7625_data *ctx)

@@ -675,10 +675,14 @@ phys_addr_t swiotlb_tbl_map_single(struct device *hwdev,
 	nslots = ALIGN(alloc_size, 1 << IO_TLB_SHIFT) >> IO_TLB_SHIFT;
 	for (i = 0; i < nslots; i++)
 		swiotlb->orig_addr[index + i] = orig_addr + (i << IO_TLB_SHIFT);
-	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC) &&
-	    (dir == DMA_TO_DEVICE || dir == DMA_BIDIRECTIONAL))
-		swiotlb_bounce(orig_addr, tlb_addr, mapping_size, DMA_TO_DEVICE);
-
+	/*
+	 * When dir == DMA_FROM_DEVICE we could omit the copy from the orig
+	 * to the tlb buffer, if we knew for sure the device will
+	 * overwirte the entire current content. But we don't. Thus
+	 * unconditional bounce may prevent leaking swiotlb content (i.e.
+	 * kernel memory) to user-space.
+	 */
+	swiotlb_bounce(orig_addr, tlb_addr, mapping_size, DMA_TO_DEVICE);
 	return tlb_addr;
 }
 
@@ -754,14 +758,14 @@ bool swiotlb_map(struct device *dev, phys_addr_t *phys, dma_addr_t *dma_addr,
 	}
 
 	/* Oh well, have to allocate and map a bounce buffer. */
-	*phys = swiotlb_tbl_map_single(dev, __phys_to_dma(dev, swiotlb->start),
+	*phys = swiotlb_tbl_map_single(dev, phys_to_dma_unencrypted(dev, swiotlb->start),
 			*phys, size, size, dir, attrs);
 	if (*phys == (phys_addr_t)DMA_MAPPING_ERROR)
 		return false;
 
 	/* Ensure that the address returned is DMA'ble */
-	*dma_addr = __phys_to_dma(dev, *phys);
-	if (unlikely(!dma_capable(dev, *dma_addr, size))) {
+	*dma_addr = phys_to_dma_unencrypted(dev, *phys);
+	if (unlikely(!dma_capable(dev, *dma_addr, size, true))) {
 		swiotlb_tbl_unmap_single(dev, *phys, size, size, dir,
 			attrs | DMA_ATTR_SKIP_CPU_SYNC);
 		return false;

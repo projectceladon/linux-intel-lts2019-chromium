@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2010-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2010-2014, 2018-2022 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -184,10 +184,6 @@ static int iwl_tm_validate_sram_write_req(struct iwl_tm_gnl_dev *dev,
 	if (iwl_tm_gnl_valid_hw_addr(cmd_in->offset))
 		return 0;
 
-	if ((cmd_in->offset < IWL_ABS_PRPH_START)  &&
-	    (cmd_in->offset >= IWL_ABS_PRPH_START + PRPH_END))
-		return 0;
-
 	return -EINVAL;
 }
 
@@ -213,10 +209,6 @@ static int iwl_tm_validate_sram_read_req(struct iwl_tm_gnl_dev *dev,
 	cmd_in = data_in->data;
 
 	if (iwl_tm_gnl_valid_hw_addr(cmd_in->offset))
-		return 0;
-
-	if ((cmd_in->offset < IWL_ABS_PRPH_START)  &&
-	    (cmd_in->offset >= IWL_ABS_PRPH_START + PRPH_END))
 		return 0;
 
 	return -EINVAL;
@@ -360,7 +352,7 @@ static int iwl_tm_gnl_get_sil_step(struct iwl_trans *trans,
 		return -ENOMEM;
 	data_out->len = sizeof(struct iwl_sil_step);
 	resp = (struct iwl_sil_step *)data_out->data;
-	resp->silicon_step = CSR_HW_REV_STEP(trans->hw_rev);
+	resp->silicon_step = trans->hw_rev_step;
 	return 0;
 }
 
@@ -428,6 +420,28 @@ static int iwl_tm_gnl_get_rfid(struct iwl_trans *trans,
 	return 0;
 }
 
+static int iwl_tm_gnl_get_rfid_v2(struct iwl_trans *trans,
+				  struct iwl_tm_data *data_out)
+{
+	struct iwl_tm_rfid *resp;
+
+	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	if (!resp)
+		return -ENOMEM;
+
+	resp->flavor = CSR_HW_RFID_FLAVOR(trans->hw_crf_id);
+	resp->dash   = CSR_HW_RFID_DASH(trans->hw_crf_id);
+	resp->step   = CSR_HW_RFID_STEP(trans->hw_crf_id);
+	resp->type   = CSR_HW_RFID_TYPE(trans->hw_rf_id);
+	resp->is_cdb = CSR_HW_RFID_IS_CDB(trans->hw_rf_id);
+	resp->is_jacket = CSR_HW_RFID_IS_JACKET(trans->hw_rf_id);
+
+	data_out->data = resp;
+	data_out->len = sizeof(*resp);
+
+	return 0;
+}
+
 /*
  * Testmode GNL family types (This NL family
  * will eventually replace nl80211 support in
@@ -470,7 +484,7 @@ enum iwl_tm_gnl_cmd_attr_t {
 
 /* TM GNL family definition */
 static struct genl_family iwl_tm_gnl_family;
-static __genl_const struct genl_multicast_group iwl_tm_gnl_mcgrps[] = {
+static const struct genl_multicast_group iwl_tm_gnl_mcgrps[] = {
 	{ .name = IWL_TM_GNL_MC_GRP_NAME, },
 };
 
@@ -509,7 +523,7 @@ static struct iwl_tm_gnl_dev *iwl_tm_gnl_get_dev(const char *dev_name)
 }
 
 /**
- * iwl_tm_gnl_create_message() - Creates a genl message
+ * iwl_tm_gnl_create_msg - Creates a genl message
  * @pid:	Netlink PID that the message is addressed to
  * @seq:	sequence number (usually the one of the sender)
  * @cmd_data:	Message's data
@@ -562,11 +576,13 @@ send_msg_err:
 }
 
 /**
- * iwl_tm_gnl_send_msg() - Sends a message to mcast or userspace listener
+ * iwl_tm_gnl_send_msg - Sends a message to mcast or userspace listener
  * @trans:	transport
  * @cmd:	Command index
  * @check_notify: only send when notify is set
  * @data_out:	Data to be sent
+ * @data_len: data length
+ * @flags: allocation flags
  *
  * Initiate a message sending to user space (as apposed
  * to replying to a message that was initiated by user
@@ -618,7 +634,7 @@ static int iwl_tm_gnl_reply(struct genl_info *info,
 {
 	struct sk_buff *skb;
 
-	skb = iwl_tm_gnl_create_msg(genl_info_snd_portid(info), info->snd_seq,
+	skb = iwl_tm_gnl_create_msg(info->snd_portid, info->snd_seq,
 				    cmd_data, GFP_KERNEL);
 	if (!skb)
 		return -EINVAL;
@@ -720,7 +736,13 @@ static int iwl_tm_gnl_cmd_execute(struct iwl_tm_gnl_cmd *cmd_data)
 		ret = iwl_tm_gnl_get_rfid(dev->trans, &cmd_data->data_out);
 		common_op = true;
 		break;
+
+	case IWL_TM_USER_CMD_GET_RFID_V2:
+		ret = iwl_tm_gnl_get_rfid_v2(dev->trans, &cmd_data->data_out);
+		common_op = true;
+		break;
 	}
+
 	if (ret) {
 		IWL_ERR(dev->trans, "%s Error=%d\n", __func__, ret);
 		return ret;
@@ -760,8 +782,8 @@ static int iwl_tm_mem_dump(struct iwl_tm_gnl_dev *dev,
 }
 
 /**
- * iwl_tm_trace_dump() - Returns trace buffer data
- * @tst:	Device's test data
+ * iwl_tm_trace_dump - Returns trace buffer data
+ * @dev:	Device pointer
  * @data_out:	Dump data
  */
 static int iwl_tm_trace_dump(struct iwl_tm_gnl_dev *dev,
@@ -861,6 +883,8 @@ static int iwl_tm_gnl_parse_msg(struct nlattr **attrs,
 
 /**
  * iwl_tm_gnl_cmd_do() - Executes IWL testmode GNL command
+ * @skb: SKB with the command data
+ * @info: generic netlink info
  */
 static int iwl_tm_gnl_cmd_do(struct sk_buff *skb, struct genl_info *info)
 {
@@ -887,6 +911,9 @@ static int iwl_tm_gnl_cmd_do(struct sk_buff *skb, struct genl_info *info)
 
 /**
  * iwl_tm_gnl_dump() - Executes IWL testmode GNL command
+ * @skb: SKB to fill
+ * @cb: netlink callback data
+ *
  * cb->args[0]:	Command number, incremented by one (as it may be zero)
  *		We're keeping the command so we can tell if is it the
  *		first dump call or not.
@@ -899,7 +926,7 @@ static int iwl_tm_gnl_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	struct iwl_tm_gnl_cmd cmd_data;
 	void *nlmsg_head = NULL;
 	struct nlattr *attrs[IWL_TM_GNL_MSG_ATTR_MAX];
-	void *dump_addr;
+	u8 *dump_addr;
 	unsigned long dump_offset;
 	int dump_size, chunk_size, ret;
 
@@ -1009,7 +1036,7 @@ static int iwl_tm_gnl_cmd_subscribe(struct sk_buff *skb, struct genl_info *info)
 		goto unlock;
 	}
 
-	dev->nl_events_portid = genl_info_snd_portid(info);
+	dev->nl_events_portid = info->snd_portid;
 	ret = 0;
 
  unlock:
@@ -1022,7 +1049,7 @@ static int iwl_tm_gnl_cmd_subscribe(struct sk_buff *skb, struct genl_info *info)
  * There is only one NL command, and only one callback,
  * which handles all NL messages.
  */
-static __genl_const struct genl_ops iwl_tm_gnl_ops[] = {
+static const struct genl_ops iwl_tm_gnl_ops[] = {
 	{
 	  .cmd = IWL_TM_GNL_CMD_EXECUTE,
 #if LINUX_VERSION_IS_GEQ(5,2,0)
@@ -1180,7 +1207,7 @@ int iwl_tm_gnl_exit(void)
 }
 
 /**
- * iwl_tm_fw_send_rx() - Send a spontaneous rx message to user
+ * iwl_tm_gnl_send_rx - Send a spontaneous rx message to user
  * @trans:	Pointer to the transport layer
  * @rxb:	Contains rx packet to be sent
  */

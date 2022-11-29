@@ -19,43 +19,17 @@
 #define kstrtobool __iwl7000_kstrtobool
 #define kstrtobool_from_user __iwl7000_kstrtobool_from_user
 #endif /* < 4.6.0 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,4,0)
-#ifdef CONFIG_DEBUG_FS
-#define iwl_debugfs_create_bool __iwl7000_iwl_debugfs_create_bool
-#endif /* CONFIG_DEBUG_FS */
-#define tso_count_descs __iwl7000_tso_count_descs
-#define tso_build_hdr __iwl7000_tso_build_hdr
-#define tso_build_data __iwl7000_tso_build_data
-#define tso_start __iwl7000_tso_start
-#define match_string __iwl7000_match_string
-#endif /* < 4.4.0 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
-#define netdev_rss_key_fill __iwl7000_netdev_rss_key_fill
-#endif /* < 3.19.0 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 17, 0)
-#define devm_kvasprintf __iwl7000_devm_kvasprintf
-#define devm_kasprintf __iwl7000_devm_kasprintf
-#endif /* < 3.17 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
-#define __backport_genl_register_family __iwl7000___backport_genl_register_family
-#define backport_genl_unregister_family __iwl7000_backport_genl_unregister_family
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0)
-#define sg_pcopy_from_buffer __iwl7000_sg_pcopy_from_buffer
-#define sg_pcopy_to_buffer __iwl7000_sg_pcopy_to_buffer
-#endif /* < 3.11 */
 #define __alloc_bucket_spinlocks __iwl7000___alloc_bucket_spinlocks
 #define free_bucket_spinlocks __iwl7000_free_bucket_spinlocks
-#if CFG80211_VERSION < KERNEL_VERSION(4,1,0)
-#define ieee80211_ie_split_ric __iwl7000_ieee80211_ie_split_ric
-#define ieee80211_ie_split __iwl7000_ieee80211_ie_split
-#endif
 #if CFG80211_VERSION < KERNEL_VERSION(5,6,0)
 #define ieee80211_get_vht_max_nss __iwl7000_ieee80211_get_vht_max_nss
 #endif
 #define ieee80211_csa_finish __iwl7000_ieee80211_csa_finish
+#define ieee80211_channel_switch_disconnect __iwl7000_ieee80211_channel_switch_disconnect
 #define ieee80211_nan_func_terminated __iwl7000_ieee80211_nan_func_terminated
 #define ieee80211_nan_func_match __iwl7000_ieee80211_nan_func_match
+#define ieee80211_color_change_finish __iwl7000_ieee80211_color_change_finish
+#define ieeee80211_obss_color_collision_notify __iwl7000_ieeee80211_obss_color_collision_notify
 #define ieee80211_iter_chan_contexts_atomic __iwl7000_ieee80211_iter_chan_contexts_atomic
 #define ieee80211_request_smps __iwl7000_ieee80211_request_smps
 #define ieee80211_iter_keys __iwl7000_ieee80211_iter_keys
@@ -84,6 +58,8 @@
 #define ieee80211_disconnect __iwl7000_ieee80211_disconnect
 #define ieee80211_cqm_rssi_notify __iwl7000_ieee80211_cqm_rssi_notify
 #define ieee80211_cqm_beacon_loss_notify __iwl7000_ieee80211_cqm_beacon_loss_notify
+#define ieee80211_enable_rssi_reports __iwl7000_ieee80211_enable_rssi_reports
+#define ieee80211_disable_rssi_reports __iwl7000_ieee80211_disable_rssi_reports
 #define ieee80211_ready_on_channel __iwl7000_ieee80211_ready_on_channel
 #define ieee80211_remain_on_channel_expired __iwl7000_ieee80211_remain_on_channel_expired
 #define ieee80211_report_wowlan_wakeup __iwl7000_ieee80211_report_wowlan_wakeup
@@ -91,10 +67,6 @@
 #define ieee80211_rate_control_unregister __iwl7000_ieee80211_rate_control_unregister
 #define ieee80211_get_tx_rates __iwl7000_ieee80211_get_tx_rates
 #define rate_control_set_rates __iwl7000_rate_control_set_rates
-#if CFG80211_VERSION < KERNEL_VERSION(4,0,0)
-#define regulatory_set_wiphy_regd __iwl7000_regulatory_set_wiphy_regd
-#define regulatory_set_wiphy_regd_sync_rtnl __iwl7000_regulatory_set_wiphy_regd_sync_rtnl
-#endif /* CFG80211_VERSION < KERNEL_VERSION(4,0,0) */
 #ifdef CONFIG_PROVE_LOCKING
 #define lockdep_rht_mutex_is_held __iwl7000_lockdep_rht_mutex_is_held
 #define lockdep_rht_bucket_is_held __iwl7000_lockdep_rht_bucket_is_held
@@ -145,7 +117,8 @@
 #define ieee80211_tx_prepare_skb __iwl7000_ieee80211_tx_prepare_skb
 #define ieee80211_tx_dequeue __iwl7000_ieee80211_tx_dequeue
 #define ieee80211_next_txq __iwl7000_ieee80211_next_txq
-#define __ieee80211_schedule_txq __iwl7000___ieee80211_schedule_txq
+#define ieee80211_schedule_txq __iwl7000_ieee80211_schedule_txq
+#define ieee80211_return_txq __iwl7000_ieee80211_return_txq
 #define ieee80211_txq_airtime_check __iwl7000_ieee80211_txq_airtime_check
 #define ieee80211_txq_may_transmit __iwl7000_ieee80211_txq_may_transmit
 #define ieee80211_txq_schedule_start __iwl7000_ieee80211_txq_schedule_start
@@ -178,14 +151,14 @@
 #define ieee80211_iterate_interfaces __iwl7000_ieee80211_iterate_interfaces
 #define ieee80211_iterate_active_interfaces_atomic __iwl7000_ieee80211_iterate_active_interfaces_atomic
 #define ieee80211_iterate_active_interfaces_mtx __iwl7000_ieee80211_iterate_active_interfaces_mtx
+#define ieee80211_iterate_stations __iwl7000_ieee80211_iterate_stations
 #define ieee80211_iterate_stations_atomic __iwl7000_ieee80211_iterate_stations_atomic
 #define wdev_to_ieee80211_vif __iwl7000_wdev_to_ieee80211_vif
 #define ieee80211_vif_to_wdev __iwl7000_ieee80211_vif_to_wdev
 #define ieee80211_queue_work __iwl7000_ieee80211_queue_work
 #define ieee80211_queue_delayed_work __iwl7000_ieee80211_queue_delayed_work
+#define ieee80211_hw_restart_disconnect __iwl7000_ieee80211_hw_restart_disconnect
 #define ieee80211_resume_disconnect __iwl7000_ieee80211_resume_disconnect
-#define ieee80211_enable_rssi_reports __iwl7000_ieee80211_enable_rssi_reports
-#define ieee80211_disable_rssi_reports __iwl7000_ieee80211_disable_rssi_reports
 #define ieee80211_ave_rssi __iwl7000_ieee80211_ave_rssi
 #define ieee80211_radar_detected __iwl7000_ieee80211_radar_detected
 #define ieee80211_update_p2p_noa __iwl7000_ieee80211_update_p2p_noa

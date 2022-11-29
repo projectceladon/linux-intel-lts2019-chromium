@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2010-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2010-2014, 2018-2022 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
  */
@@ -68,6 +68,8 @@ enum {
 	IWL_TM_USER_CMD_BUS_DATA_ACCESS,
 	IWL_TM_USER_CMD_GET_SIL_TYPE,
 	IWL_TM_USER_CMD_GET_RFID,
+	IWL_TM_USER_CMD_RESERVED,
+	IWL_TM_USER_CMD_GET_RFID_V2,
 
 	IWL_TM_USER_CMD_NOTIF_UCODE_RX_PKT = TM_CMD_NOTIF_BASE,
 	IWL_TM_USER_CMD_NOTIF_DRIVER,
@@ -89,6 +91,7 @@ enum {
 	IWL_TM_USER_CMD_NOTIF_RUN_TIME_CALIB_DONE,
 	IWL_TM_USER_CMD_NOTIF_MPAPD_EXEC_DONE,
 	IWL_TM_USER_CMD_NOTIF_DTS_MEASUREMENTS_XVT,
+	IWL_TM_USER_CMD_NOTIF_STATISTICS,
 };
 
 /*
@@ -453,11 +456,13 @@ struct iwl_tm_mod_tx_request {
  * @lmac_id:	lmac index
  * @xvt:	pointer to the xvt op mode
  * @tx_req:	pointer to data of transmission request
+ * @completion: the completion to signal when the thread exits
  */
 struct iwl_xvt_tx_mod_task_data {
 	__u32 lmac_id;
 	struct iwl_xvt *xvt;
 	struct iwl_tm_mod_tx_request tx_req;
+	struct completion *completion;
 } __packed __aligned(4);
 
 /**
@@ -555,9 +560,10 @@ struct iwl_xvt_mac_addr_info {
 	__u8 mac_addr[ETH_ALEN];
 } __packed __aligned(4);
 
-enum {
+enum iwl_tx_queue_action {
 	TX_QUEUE_CFG_REMOVE,
 	TX_QUEUE_CFG_ADD,
+	TX_QUEUE_CFG_MODIFY,
 };
 
 /**
@@ -624,7 +630,7 @@ struct iwl_xvt_txq_config {
 	u16 flags;
 	u16 reserved2;
 	int queue_size;
-} __packed __aligned(4);
+} __packed;
 
 /**
  * iwl_xvt_txq_config_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
@@ -637,6 +643,39 @@ struct iwl_xvt_txq_config_resp {
 	u8 sta_id;
 	u8 tid;
 	u8 scd_queue;
+	u8 reserved;
+} __packed __aligned(4);
+
+/**
+ * struct iwl_xvt_txq_cfg_mld - add/modify/remove TX queue
+ * @action: see &enum iwl_tx_queue_action
+ * @tid: TID
+ * @sta_mask: (old) station mask (add, modify, remove)
+ * @new_sta_mask: new station mask (modify only)
+ * @flags: flags for the command (add)
+ * @queue_size: queue size, must be a power of two
+ */
+struct iwl_xvt_txq_cfg_mld {
+	u32 action;
+	u32 tid;
+	u32 sta_mask;
+	u32 new_sta_mask;
+	u32 flags;
+	u32 queue_size;
+} __packed;
+
+/**
+ * iwl_xvt_txq_cfg_mld_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
+ * @sta_mask: taken from command
+ * @tid: taken from command
+ * @queue_id: queue number assigned to this RA-TID (add command only,
+ *	otherwise 0xffff is returned)
+ * @reserved: (padding)
+ */
+struct iwl_xvt_txq_cfg_mld_resp {
+	u32 sta_mask;
+	u16 queue_id;
+	u8 tid;
 	u8 reserved;
 } __packed __aligned(4);
 

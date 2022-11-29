@@ -808,9 +808,9 @@ struct lfp_brightness_level {
 	u16 reserved;
 } __packed;
 
-#define EXP_BDB_LFP_BL_DATA_SIZE_REV_234 \
+#define EXP_BDB_LFP_BL_DATA_SIZE_REV_191 \
 	offsetof(struct bdb_lfp_backlight_data, brightness_level)
-#define EXP_BDB_LFP_BL_DATA_SIZE_REV_236 \
+#define EXP_BDB_LFP_BL_DATA_SIZE_REV_234 \
 	offsetof(struct bdb_lfp_backlight_data, brightness_precision_bits)
 
 struct bdb_lfp_backlight_data {

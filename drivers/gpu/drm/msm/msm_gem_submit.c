@@ -45,7 +45,7 @@ static struct msm_gem_submit *submit_create(struct drm_device *dev,
 	if (!submit)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_sched_job_init(&submit->base, &queue->entity, queue);
+	ret = drm_sched_job_init(&submit->base, queue->entity, queue);
 	if (ret) {
 		kfree(submit);
 		return ERR_PTR(ret);
@@ -183,7 +183,8 @@ out:
 static int submit_lookup_cmds(struct msm_gem_submit *submit,
 		struct drm_msm_gem_submit *args, struct drm_file *file)
 {
-	unsigned i, sz;
+	unsigned i;
+	size_t sz;
 	int ret = 0;
 
 	for (i = 0; i < args->nr_cmds; i++) {
@@ -878,10 +879,10 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 	 */
 	mutex_lock(&queue->lock);
 	submit->fence_id = idr_alloc_cyclic(&queue->fence_idr,
-			submit->user_fence, 0, INT_MAX, GFP_KERNEL);
+			submit->user_fence, 1, INT_MAX, GFP_KERNEL);
 	mutex_unlock(&queue->lock);
 	if (submit->fence_id < 0) {
-		ret = submit->fence_id = 0;
+		ret = submit->fence_id;
 		submit->fence_id = 0;
 		goto out;
 	}
@@ -901,9 +902,10 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 	/* The scheduler owns a ref now: */
 	msm_gem_submit_get(submit);
 
-	drm_sched_entity_push_job(&submit->base, &queue->entity);
+	drm_sched_entity_push_job(&submit->base, queue->entity);
 
 	args->fence = submit->fence_id;
+	queue->last_fence = submit->fence_id;
 
 	msm_reset_syncobjs(syncobjs_to_reset, args->nr_in_syncobjs);
 	msm_process_post_deps(post_deps, args->nr_out_syncobjs,

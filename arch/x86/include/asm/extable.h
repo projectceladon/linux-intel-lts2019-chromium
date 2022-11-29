@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_EXTABLE_H
 #define _ASM_X86_EXTABLE_H
+#include <asm/extable_fixup_types.h>
 /*
  * The exception table consists of triples of addresses relative to the
  * exception table entry itself. The first address is of an instruction

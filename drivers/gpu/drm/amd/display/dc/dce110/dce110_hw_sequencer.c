@@ -1183,8 +1183,9 @@ static void build_audio_output(
 		}
 	}
 
-	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT ||
-			pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
+	if (state->clk_mgr &&
+		(pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT ||
+			pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)) {
 		audio_output->pll_info.dp_dto_source_clock_in_khz =
 				state->clk_mgr->funcs->get_dp_ref_clk_frequency(
 						state->clk_mgr);
@@ -2696,6 +2697,17 @@ void dce110_set_cursor_position(struct pipe_ctx *pipe_ctx)
 		.rotation = pipe_ctx->plane_state->rotation,
 		.mirror = pipe_ctx->plane_state->horizontal_mirror
 	};
+
+	/**
+	 * If the cursor's source viewport is clipped then we need to
+	 * translate the cursor to appear in the correct position on
+	 * the screen.
+	 *
+	 * This translation isn't affected by scaling so it needs to be
+	 * done *after* we adjust the position for the scale factor.
+	 */
+	pos_cpy.x += pipe_ctx->plane_state->src_rect.x;
+	pos_cpy.y += pipe_ctx->plane_state->src_rect.y;
 
 	if (pipe_ctx->plane_state->address.type
 			== PLN_ADDR_TYPE_VIDEO_PROGRESSIVE)

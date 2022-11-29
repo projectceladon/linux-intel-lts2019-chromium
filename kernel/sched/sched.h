@@ -582,8 +582,8 @@ struct cfs_rq {
 	s64			runtime_remaining;
 
 	u64			throttled_clock;
-	u64			throttled_clock_task;
-	u64			throttled_clock_task_time;
+	u64			throttled_clock_pelt;
+	u64			throttled_clock_pelt_time;
 	int			throttled;
 	int			throttle_count;
 	struct list_head	throttled_list;
@@ -1115,8 +1115,6 @@ static inline bool sched_core_cookie_match(struct rq *rq, struct task_struct *p)
 	return idle_core || rq->core->core_cookie == p->core_cookie;
 }
 
-extern void queue_core_balance(struct rq *rq);
-
 void sched_core_add(struct rq *rq, struct task_struct *p);
 void sched_core_remove(struct rq *rq, struct task_struct *p);
 
@@ -1130,10 +1128,6 @@ static inline bool sched_core_enabled(struct rq *rq)
 static inline raw_spinlock_t *rq_lockp(struct rq *rq)
 {
 	return &rq->__lock;
-}
-
-static inline void queue_core_balance(struct rq *rq)
-{
 }
 
 #endif /* CONFIG_SCHED_CORE */
@@ -1812,9 +1806,7 @@ static inline int task_on_rq_migrating(struct task_struct *p)
  */
 #define WF_SYNC			0x01		/* Waker goes to sleep after wakeup */
 #define WF_FORK			0x02		/* Child wakeup after fork */
-#define WF_MIGRATED		0x04		/* Internal use, task got migrated */
-#define WF_ON_CPU		0x08		/* Wakee is on_cpu */
-#define WF_CURRENT_CPU		0x10		/* Prefer to move wakee to the current CPU */
+#define WF_MIGRATED		0x4		/* Internal use, task got migrated */
 
 /*
  * To aid in avoiding the subversion of "niceness" due to uneven distribution

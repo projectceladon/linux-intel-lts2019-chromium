@@ -1433,6 +1433,9 @@ void phy_detach(struct phy_device *phydev)
 	    phy_driver_is_genphy_10g(phydev))
 		device_release_driver(&phydev->mdio.dev);
 
+	/* Assert the reset signal */
+	phy_device_reset(phydev, 1);
+
 	/*
 	 * The phydev might go away on the put_device() below, so avoid
 	 * a use-after-free bug by reading the underlying bus first.
@@ -1444,9 +1447,6 @@ void phy_detach(struct phy_device *phydev)
 		ndev_owner = dev->dev.parent->driver->owner;
 	if (ndev_owner != bus->owner)
 		module_put(bus->owner);
-
-	/* Assert the reset signal */
-	phy_device_reset(phydev, 1);
 }
 EXPORT_SYMBOL(phy_detach);
 
@@ -2171,6 +2171,32 @@ bool phy_validate_pause(struct phy_device *phydev,
 	return true;
 }
 EXPORT_SYMBOL(phy_validate_pause);
+
+/**
+ * phy_get_pause - resolve negotiated pause modes
+ * @phydev: phy_device struct
+ * @tx_pause: pointer to bool to indicate whether transmit pause should be
+ * enabled.
+ * @rx_pause: pointer to bool to indicate whether receive pause should be
+ * enabled.
+ *
+ * Resolve and return the flow control modes according to the negotiation
+ * result. This includes checking that we are operating in full duplex mode.
+ * See linkmode_resolve_pause() for further details.
+ */
+void phy_get_pause(struct phy_device *phydev, bool *tx_pause, bool *rx_pause)
+{
+	if (phydev->duplex != DUPLEX_FULL) {
+		*tx_pause = false;
+		*rx_pause = false;
+		return;
+	}
+
+	return linkmode_resolve_pause(phydev->advertising,
+				      phydev->lp_advertising,
+				      tx_pause, rx_pause);
+}
+EXPORT_SYMBOL(phy_get_pause);
 
 static bool phy_drv_supports_irq(struct phy_driver *phydrv)
 {

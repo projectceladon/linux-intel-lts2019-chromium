@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2022 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -14,6 +14,7 @@
 #include "iwl-eeprom-parse.h"
 #include "mvm.h"
 #include "sta.h"
+#include "time-sync.h"
 
 static void
 iwl_mvm_bar_check_trigger(struct iwl_mvm *mvm, const u8 *addr,
@@ -39,11 +40,11 @@ iwl_mvm_bar_check_trigger(struct iwl_mvm *mvm, const u8 *addr,
 #define OPT_HDR(type, skb, off) \
 	(type *)(skb_network_header(skb) + (off))
 
-static u16 iwl_mvm_tx_csum(struct iwl_mvm *mvm, struct sk_buff *skb,
-			   struct ieee80211_hdr *hdr,
-			   struct ieee80211_tx_info *info,
-			   u16 offload_assist)
+static u16 iwl_mvm_tx_csum_pre_bz(struct iwl_mvm *mvm, struct sk_buff *skb,
+				  struct ieee80211_tx_info *info, bool amsdu)
 {
+	struct ieee80211_hdr *hdr = (void *)skb->data;
+	u16 offload_assist = 0;
 #if IS_ENABLED(CONFIG_INET)
 	u16 mh_len = ieee80211_hdrlen(hdr->frame_control);
 	u8 protocol = 0;
@@ -106,8 +107,7 @@ static u16 iwl_mvm_tx_csum(struct iwl_mvm *mvm, struct sk_buff *skb,
 	offload_assist |= (4 << TX_CMD_OFFLD_IP_HDR);
 
 	/* Do IPv4 csum for AMSDU only (no IP csum for Ipv6) */
-	if (skb->protocol == htons(ETH_P_IP) &&
-	    (offload_assist & BIT(TX_CMD_OFFLD_AMSDU))) {
+	if (skb->protocol == htons(ETH_P_IP) && amsdu) {
 		ip_hdr(skb)->check = 0;
 		offload_assist |= BIT(TX_CMD_OFFLD_L3_EN);
 	}
@@ -132,7 +132,64 @@ static u16 iwl_mvm_tx_csum(struct iwl_mvm *mvm, struct sk_buff *skb,
 
 out:
 #endif
+	if (amsdu)
+		offload_assist |= BIT(TX_CMD_OFFLD_AMSDU);
+	else if (ieee80211_hdrlen(hdr->frame_control) % 4)
+		/* padding is inserted later in transport */
+		offload_assist |= BIT(TX_CMD_OFFLD_PAD);
+
 	return offload_assist;
+}
+
+u32 iwl_mvm_tx_csum_bz(struct iwl_mvm *mvm, struct sk_buff *skb, bool amsdu)
+{
+	struct ieee80211_hdr *hdr = (void *)skb->data;
+	u32 offload_assist = IWL_TX_CMD_OFFLD_BZ_PARTIAL_CSUM;
+	unsigned int hdrlen = ieee80211_hdrlen(hdr->frame_control);
+	unsigned int csum_start = skb_checksum_start_offset(skb);
+
+	offload_assist |= u32_encode_bits(hdrlen / 2,
+					  IWL_TX_CMD_OFFLD_BZ_MH_LEN);
+	if (amsdu)
+		offload_assist |= IWL_TX_CMD_OFFLD_BZ_AMSDU;
+	else if (hdrlen % 4)
+		/* padding is inserted later in transport */
+		offload_assist |= IWL_TX_CMD_OFFLD_BZ_MH_PAD;
+
+	if (skb->ip_summed != CHECKSUM_PARTIAL)
+		return offload_assist;
+
+	offload_assist |= IWL_TX_CMD_OFFLD_BZ_ENABLE_CSUM |
+			  IWL_TX_CMD_OFFLD_BZ_ZERO2ONES;
+
+	/*
+	 * mac80211 will always calculate checksum in software for
+	 * non-fast-xmit, and so we can only do offloaded checksum
+	 * for fast-xmit frames. In this case, we always have the
+	 * RFC 1042 header present. skb_checksum_start_offset()
+	 * returns the offset from the beginning, but the hardware
+	 * needs it from after the header & SNAP header.
+	 */
+	csum_start -= hdrlen + 8;
+
+	offload_assist |= u32_encode_bits(csum_start,
+					  IWL_TX_CMD_OFFLD_BZ_START_OFFS);
+	offload_assist |= u32_encode_bits(csum_start + skb->csum_offset,
+					  IWL_TX_CMD_OFFLD_BZ_RESULT_OFFS);
+
+	return offload_assist;
+}
+
+static u32 iwl_mvm_tx_csum(struct iwl_mvm *mvm, struct sk_buff *skb,
+			   struct ieee80211_tx_info *info,
+			   bool amsdu)
+{
+	if (mvm->trans->trans_cfg->device_family < IWL_DEVICE_FAMILY_BZ ||
+	    (mvm->trans->trans_cfg->device_family == IWL_DEVICE_FAMILY_BZ &&
+	     CSR_HW_REV_TYPE(mvm->trans->hw_rev) == IWL_CFG_MAC_TYPE_GL &&
+	     mvm->trans->hw_rev_step == SILICON_A_STEP))
+		return iwl_mvm_tx_csum_pre_bz(mvm, skb, info, amsdu);
+	return iwl_mvm_tx_csum_bz(mvm, skb, amsdu);
 }
 
 /*
@@ -146,7 +203,7 @@ void iwl_mvm_set_tx_cmd(struct iwl_mvm *mvm, struct sk_buff *skb,
 	__le16 fc = hdr->frame_control;
 	u32 tx_flags = le32_to_cpu(tx_cmd->tx_flags);
 	u32 len = skb->len + FCS_LEN;
-	u16 offload_assist = 0;
+	bool amsdu = false;
 	u8 ac;
 
 	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK) ||
@@ -166,8 +223,7 @@ void iwl_mvm_set_tx_cmd(struct iwl_mvm *mvm, struct sk_buff *skb,
 		u8 *qc = ieee80211_get_qos_ctl(hdr);
 		tx_cmd->tid_tspec = qc[0] & 0xf;
 		tx_flags &= ~TX_CMD_FLG_SEQ_CTL;
-		if (*qc & IEEE80211_QOS_CTL_A_MSDU_PRESENT)
-			offload_assist |= BIT(TX_CMD_OFFLD_AMSDU);
+		amsdu = *qc & IEEE80211_QOS_CTL_A_MSDU_PRESENT;
 	} else if (ieee80211_is_back_req(fc)) {
 		struct ieee80211_bar *bar = (void *)skb->data;
 		u16 control = le16_to_cpu(bar->control);
@@ -234,14 +290,8 @@ void iwl_mvm_set_tx_cmd(struct iwl_mvm *mvm, struct sk_buff *skb,
 	tx_cmd->life_time = cpu_to_le32(TX_CMD_LIFE_TIME_INFINITE);
 	tx_cmd->sta_id = sta_id;
 
-	/* padding is inserted later in transport */
-	if (ieee80211_hdrlen(fc) % 4 &&
-	    !(offload_assist & BIT(TX_CMD_OFFLD_AMSDU)))
-		offload_assist |= BIT(TX_CMD_OFFLD_PAD);
-
-	tx_cmd->offload_assist |=
-		cpu_to_le16(iwl_mvm_tx_csum(mvm, skb, hdr, info,
-					    offload_assist));
+	tx_cmd->offload_assist =
+		cpu_to_le16(iwl_mvm_tx_csum_pre_bz(mvm, skb, info, amsdu));
 }
 
 static u32 iwl_mvm_get_tx_ant(struct iwl_mvm *mvm,
@@ -269,7 +319,6 @@ static u32 iwl_mvm_get_tx_rate(struct iwl_mvm *mvm,
 	u8 rate_plcp;
 	u32 rate_flags = 0;
 	bool is_cck;
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
 
 	/* info->control is only relevant for non HW rate control */
 	if (!ieee80211_hw_check(mvm->hw, HAS_RATE_CONTROL)) {
@@ -279,7 +328,8 @@ static u32 iwl_mvm_get_tx_rate(struct iwl_mvm *mvm,
 			  "Got a HT rate (flags:0x%x/mcs:%d/fc:0x%x/state:%d) for a non data frame\n",
 			  info->control.rates[0].flags,
 			  info->control.rates[0].idx,
-			  le16_to_cpu(fc), mvmsta->sta_state);
+			  le16_to_cpu(fc),
+			  sta ? iwl_mvm_sta_from_mac80211(sta)->sta_state : -1);
 
 		rate_idx = info->control.rates[0].idx;
 	}
@@ -304,7 +354,7 @@ static u32 iwl_mvm_get_tx_rate(struct iwl_mvm *mvm,
 	is_cck = (rate_idx >= IWL_FIRST_CCK_RATE) && (rate_idx <= IWL_LAST_CCK_RATE);
 
 	/* Set CCK or OFDM flag */
-	if (iwl_fw_lookup_cmd_ver(mvm->fw, LONG_GROUP, TX_CMD, 0) > 8) {
+	if (iwl_fw_lookup_cmd_ver(mvm->fw, TX_CMD, 0) > 8) {
 		if (!is_cck)
 			rate_flags |= RATE_MCS_LEGACY_OFDM_MSK;
 		else
@@ -462,26 +512,17 @@ iwl_mvm_set_tx_params(struct iwl_mvm *mvm, struct sk_buff *skb,
 	dev_cmd->hdr.cmd = TX_CMD;
 
 	if (iwl_mvm_has_new_tx_api(mvm)) {
-		u16 offload_assist = 0;
 		u32 rate_n_flags = 0;
 		u16 flags = 0;
 		struct iwl_mvm_sta *mvmsta = sta ?
 			iwl_mvm_sta_from_mac80211(sta) : NULL;
+		bool amsdu = false;
 
 		if (ieee80211_is_data_qos(hdr->frame_control)) {
 			u8 *qc = ieee80211_get_qos_ctl(hdr);
 
-			if (*qc & IEEE80211_QOS_CTL_A_MSDU_PRESENT)
-				offload_assist |= BIT(TX_CMD_OFFLD_AMSDU);
+			amsdu = *qc & IEEE80211_QOS_CTL_A_MSDU_PRESENT;
 		}
-
-		offload_assist = iwl_mvm_tx_csum(mvm, skb, hdr, info,
-						 offload_assist);
-
-		/* padding is inserted later in transport */
-		if (ieee80211_hdrlen(hdr->frame_control) % 4 &&
-		    !(offload_assist & BIT(TX_CMD_OFFLD_AMSDU)))
-			offload_assist |= BIT(TX_CMD_OFFLD_PAD);
 
 		if (!info->control.hw_key)
 			flags |= IWL_TX_FLAGS_ENCRYPT_DIS;
@@ -502,8 +543,10 @@ iwl_mvm_set_tx_params(struct iwl_mvm *mvm, struct sk_buff *skb,
 		if (mvm->trans->trans_cfg->device_family >=
 		    IWL_DEVICE_FAMILY_AX210) {
 			struct iwl_tx_cmd_gen3 *cmd = (void *)dev_cmd->payload;
+			u32 offload_assist = iwl_mvm_tx_csum(mvm, skb,
+							     info, amsdu);
 
-			cmd->offload_assist |= cpu_to_le32(offload_assist);
+			cmd->offload_assist = cpu_to_le32(offload_assist);
 
 			/* Total # bytes to be transmitted */
 			cmd->len = cpu_to_le16((u16)skb->len);
@@ -515,8 +558,11 @@ iwl_mvm_set_tx_params(struct iwl_mvm *mvm, struct sk_buff *skb,
 			cmd->rate_n_flags = cpu_to_le32(rate_n_flags);
 		} else {
 			struct iwl_tx_cmd_gen2 *cmd = (void *)dev_cmd->payload;
+			u16 offload_assist = iwl_mvm_tx_csum_pre_bz(mvm, skb,
+								    info,
+								    amsdu);
 
-			cmd->offload_assist |= cpu_to_le16(offload_assist);
+			cmd->offload_assist = cpu_to_le16(offload_assist);
 
 			/* Total # bytes to be transmitted */
 			cmd->len = cpu_to_le16((u16)skb->len);
@@ -611,7 +657,8 @@ static void iwl_mvm_probe_resp_set_noa(struct iwl_mvm *mvm,
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
 	int base_len = (u8 *)mgmt->u.probe_resp.variable - (u8 *)mgmt;
 	struct iwl_probe_resp_data *resp_data;
-	u8 *ie, *pos;
+	const u8 *ie;
+	u8 *pos;
 	u8 match[] = {
 		(WLAN_OUI_WFA >> 16) & 0xff,
 		(WLAN_OUI_WFA >> 8) & 0xff,
@@ -628,10 +675,10 @@ static void iwl_mvm_probe_resp_set_noa(struct iwl_mvm *mvm,
 	if (!resp_data->notif.noa_active)
 		goto out;
 
-	ie = (u8 *)cfg80211_find_ie_match(WLAN_EID_VENDOR_SPECIFIC,
-					  mgmt->u.probe_resp.variable,
-					  skb->len - base_len,
-					  match, 4, 2);
+	ie = cfg80211_find_ie_match(WLAN_EID_VENDOR_SPECIFIC,
+				    mgmt->u.probe_resp.variable,
+				    skb->len - base_len,
+				    match, 4, 2);
 	if (!ie) {
 		IWL_DEBUG_TX(mvm, "probe resp doesn't have P2P IE\n");
 		goto out;
@@ -751,7 +798,7 @@ unsigned int iwl_mvm_max_amsdu_size(struct iwl_mvm *mvm,
 	int lmac = iwl_mvm_get_lmac_id(mvm->fw, band);
 
 	/* For HE redirect to trigger based fifos */
-	if (sta->he_cap.has_he && !WARN_ON(!iwl_mvm_has_new_tx_api(mvm)))
+	if (sta->deflink.he_cap.has_he && !WARN_ON(!iwl_mvm_has_new_tx_api(mvm)))
 		ac += 4;
 
 	txf = iwl_mvm_mac_ac_to_tx_fifo(mvm, ac);
@@ -892,7 +939,7 @@ static int iwl_mvm_tx_tso(struct iwl_mvm *mvm, struct sk_buff *skb,
 	 * section 8.7.3 NOTE 3).
 	 */
 	if (info->flags & IEEE80211_TX_CTL_AMPDU &&
-	    !sta->vht_cap.vht_supported)
+	    !sta->deflink.vht_cap.vht_supported)
 		max_amsdu_len = min_t(unsigned int, max_amsdu_len, 4095);
 
 	/* Sub frame header + SNAP + IP header + TCP header + MSS */
@@ -1040,6 +1087,9 @@ static int iwl_mvm_tx_mpdu(struct iwl_mvm *mvm, struct sk_buff *skb,
 	if (WARN_ON_ONCE(mvmsta->sta_id == IWL_MVM_INVALID_STA))
 		return -1;
 
+	if (unlikely(ieee80211_is_any_nullfunc(fc)) && sta->deflink.he_cap.has_he)
+		return -1;
+
 	if (unlikely(ieee80211_is_probe_resp(fc)))
 		iwl_mvm_probe_resp_set_noa(mvm, skb);
 
@@ -1058,8 +1108,8 @@ static int iwl_mvm_tx_mpdu(struct iwl_mvm *mvm, struct sk_buff *skb,
 	spin_lock(&mvmsta->lock);
 
 	/* nullfunc frames should go to the MGMT queue regardless of QOS,
-	 * the condition of !ieee80211_is_qos_nullfunc(fc) keeps the default
-	 * assignment of MGMT TID
+	 * the conditions of !ieee80211_is_qos_nullfunc(fc) and
+	 * !ieee80211_is_data_qos(fc) keep the default assignment of MGMT TID
 	 */
 	if (ieee80211_is_data_qos(fc) && !ieee80211_is_qos_nullfunc(fc)) {
 		tid = ieee80211_get_tid(hdr);
@@ -1084,7 +1134,8 @@ static int iwl_mvm_tx_mpdu(struct iwl_mvm *mvm, struct sk_buff *skb,
 			/* update the tx_cmd hdr as it was already copied */
 			tx_cmd->hdr->seq_ctrl = hdr->seq_ctrl;
 		}
-	} else if (ieee80211_is_data(fc) && !ieee80211_is_data_qos(fc)) {
+	} else if (ieee80211_is_data(fc) && !ieee80211_is_data_qos(fc) &&
+		   !ieee80211_is_nullfunc(fc)) {
 		tid = IWL_TID_NON_QOS;
 	}
 
@@ -1125,9 +1176,15 @@ static int iwl_mvm_tx_mpdu(struct iwl_mvm *mvm, struct sk_buff *skb,
 	/* From now on, we cannot access info->control */
 	iwl_mvm_skb_prepare_status(skb, dev_cmd);
 
+	/*
+	 * The IV is introduced by the HW for new tx api, and it is not present
+	 * in the skb, hence, don't tell iwl_mvm_mei_tx_copy_to_csme about the
+	 * IV for those devices.
+	 */
 	if (ieee80211_is_data(fc))
 		iwl_mvm_mei_tx_copy_to_csme(mvm, skb,
-					    info->control.hw_key ?
+					    info->control.hw_key &&
+					    !iwl_mvm_has_new_tx_api(mvm) ?
 					    info->control.hw_key->iv_len : 0);
 
 	if (iwl_trans_tx(mvm->trans, skb, dev_cmd, txq_id))
@@ -1293,6 +1350,7 @@ const char *iwl_mvm_get_tx_fail_reason(u32 status)
 #undef TX_STATUS_POSTPONE
 }
 #endif /* CPTCFG_IWLWIFI_DEBUG */
+
 static int iwl_mvm_get_hwrate_chan_width(u32 chan_width)
 {
 	switch (chan_width) {
@@ -1329,8 +1387,7 @@ void iwl_mvm_hwrate_to_tx_rate(u32 rate_n_flags,
 		r->idx = rate;
 	} else if (format ==  RATE_MCS_VHT_MSK) {
 		ieee80211_rate_set_vht(r, rate,
-				       ((rate_n_flags & RATE_MCS_NSS_MSK) >>
-					RATE_MCS_NSS_POS) + 1);
+				       FIELD_GET(RATE_MCS_NSS_MSK, rate_n_flags) + 1);
 		r->flags |= IEEE80211_TX_RC_VHT_MCS;
 	} else if (format == RATE_MCS_HE_MSK) {
 		/* mac80211 cannot do this without ieee80211_tx_status_ext()
@@ -1361,8 +1418,7 @@ void iwl_mvm_hwrate_to_tx_rate_v1(u32 rate_n_flags,
 	} else if (rate_n_flags & RATE_MCS_VHT_MSK_V1) {
 		ieee80211_rate_set_vht(
 			r, rate_n_flags & RATE_VHT_MCS_RATE_CODE_MSK,
-			((rate_n_flags & RATE_VHT_MCS_NSS_MSK) >>
-						RATE_VHT_MCS_NSS_POS) + 1);
+			FIELD_GET(RATE_MCS_NSS_MSK, rate_n_flags) + 1);
 		r->flags |= IEEE80211_TX_RC_VHT_MCS;
 	} else {
 		r->idx = iwl_mvm_legacy_rate_to_mac80211_idx(rate_n_flags,
@@ -1380,7 +1436,7 @@ static void iwl_mvm_hwrate_to_tx_status(const struct iwl_fw *fw,
 	struct ieee80211_tx_rate *r = &info->status.rates[0];
 
 	if (iwl_fw_lookup_notif_ver(fw, LONG_GROUP,
-				    TX_CMD, 0) > 6)
+				    TX_CMD, 0) <= 6)
 		rate_n_flags = iwl_new_rate_from_v1(rate_n_flags);
 
 	info->status.antenna =
@@ -1556,8 +1612,6 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 			seq_ctl = le16_to_cpu(hdr->seq_ctrl);
 
 		if (unlikely(!seq_ctl)) {
-			struct ieee80211_hdr *hdr = (void *)skb->data;
-
 			/*
 			 * If it is an NDP, we can't update next_reclaim since
 			 * its sequence control is 0. Note that for that same
@@ -1586,7 +1640,8 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 						    skb->len, -1);
 #endif /* CPTCFG_IWLMVM_TDLS_PEER_CACHE */
 
-		ieee80211_tx_status(mvm->hw, skb);
+		if (likely(!iwl_mvm_time_sync_frame(mvm, skb, hdr->addr1)))
+			ieee80211_tx_status(mvm->hw, skb);
 	}
 
 	/* This is an aggregation queue or might become one, so we use
@@ -1925,7 +1980,7 @@ static void iwl_mvm_tx_reclaim(struct iwl_mvm *mvm, int sta_id, int tid,
 
 		if (mvmsta->vif)
 			chanctx_conf =
-				rcu_dereference(mvmsta->vif->chanctx_conf);
+				rcu_dereference(mvmsta->vif->bss_conf.chanctx_conf);
 
 		if (WARN_ON_ONCE(!chanctx_conf))
 			goto out;
