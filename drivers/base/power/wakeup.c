@@ -916,6 +916,7 @@ void pm_system_cancel_wakeup(void)
 {
 	atomic_dec_if_positive(&pm_abort_suspend);
 }
+EXPORT_SYMBOL_GPL(pm_system_cancel_wakeup);
 
 void pm_wakeup_clear(unsigned int irq_number)
 {
@@ -949,8 +950,9 @@ void pm_system_irq_wakeup(unsigned int irq_number)
 
 	raw_spin_unlock_irqrestore(&wakeup_irq_lock, flags);
 
-	if (irq_number)
+	if (irq_number) {
 		pm_system_wakeup();
+	}
 }
 
 unsigned int pm_wakeup_irq(void)

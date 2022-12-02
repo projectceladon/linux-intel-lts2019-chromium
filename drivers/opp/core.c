@@ -1126,6 +1126,7 @@ static struct opp_table *_allocate_opp_table(struct device *dev, int index)
 	BLOCKING_INIT_NOTIFIER_HEAD(&opp_table->head);
 	INIT_LIST_HEAD(&opp_table->opp_list);
 	kref_init(&opp_table->kref);
+	kref_init(&opp_table->list_kref);
 
 	return opp_table;
 
@@ -1259,6 +1260,22 @@ static void _opp_table_kref_release(struct kref *kref)
 	mutex_destroy(&opp_table->genpd_virt_dev_lock);
 	mutex_destroy(&opp_table->lock);
 	kfree(opp_table);
+}
+
+
+static void _opp_table_list_kref_release(struct kref *kref)
+{
+	struct opp_table *opp_table = container_of(kref, struct opp_table,
+						   list_kref);
+
+	_opp_remove_all_static(opp_table);
+	mutex_unlock(&opp_table_lock);
+}
+
+void _put_opp_list_kref(struct opp_table *opp_table)
+{
+	kref_put_mutex(&opp_table->list_kref, _opp_table_list_kref_release,
+		       &opp_table_lock);
 }
 
 void dev_pm_opp_put_opp_table(struct opp_table *opp_table)

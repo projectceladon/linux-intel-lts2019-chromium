@@ -178,8 +178,7 @@ static inline int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 static inline int qca_read_soc_version(struct hci_dev *hdev,
 				       struct qca_btsoc_version *ver,
 				       enum qca_btsoc_type)
-{
-	return -EOPNOTSUPP;
+{	return -EOPNOTSUPP;
 }
 
 static inline int qca_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)

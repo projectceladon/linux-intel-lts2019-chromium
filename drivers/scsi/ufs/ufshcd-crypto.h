@@ -36,6 +36,10 @@ static inline bool ufshcd_is_crypto_enabled(struct ufs_hba *hba)
 }
 
 /* Functions implementing UFSHCI v2.1 specification behaviour */
+int ufshcd_crypto_cap_find(struct ufs_hba *hba,
+			   enum blk_crypto_mode_num crypto_mode,
+			   unsigned int data_unit_size);
+
 int ufshcd_prepare_lrbp_crypto_spec(struct ufs_hba *hba,
 				    struct scsi_cmnd *cmd,
 				    struct ufshcd_lrb *lrbp);
@@ -75,6 +79,8 @@ void ufshcd_crypto_destroy_rq_keyslot_manager(struct ufs_hba *hba,
 int ufshcd_prepare_lrbp_crypto(struct ufs_hba *hba,
 			       struct scsi_cmnd *cmd,
 			       struct ufshcd_lrb *lrbp);
+
+int ufshcd_map_sg_crypto(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 
 int ufshcd_complete_lrbp_crypto(struct ufs_hba *hba,
 				struct scsi_cmnd *cmd,
@@ -125,6 +131,12 @@ static inline void ufshcd_crypto_destroy_rq_keyslot_manager(struct ufs_hba *hba,
 static inline int ufshcd_prepare_lrbp_crypto(struct ufs_hba *hba,
 					     struct scsi_cmnd *cmd,
 					     struct ufshcd_lrb *lrbp)
+{
+	return 0;
+}
+
+static inline int ufshcd_map_sg_crypto(struct ufs_hba *hba,
+				       struct ufshcd_lrb *lrbp)
 {
 	return 0;
 }

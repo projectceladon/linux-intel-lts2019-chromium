@@ -37,9 +37,9 @@ static size_t get_keysize_bytes(enum ufs_crypto_key_size size)
 	}
 }
 
-static int ufshcd_crypto_cap_find(struct ufs_hba *hba,
-				  enum blk_crypto_mode_num crypto_mode,
-				  unsigned int data_unit_size)
+int ufshcd_crypto_cap_find(struct ufs_hba *hba,
+			   enum blk_crypto_mode_num crypto_mode,
+			   unsigned int data_unit_size)
 {
 	enum ufs_crypto_alg ufs_alg;
 	u8 data_unit_mask;
@@ -71,6 +71,7 @@ static int ufshcd_crypto_cap_find(struct ufs_hba *hba,
 
 	return -EINVAL;
 }
+EXPORT_SYMBOL_GPL(ufshcd_crypto_cap_find);
 
 /**
  * ufshcd_crypto_cfg_entry_write_key - Write a key into a crypto_cfg_entry
@@ -158,7 +159,7 @@ out:
 
 static void ufshcd_clear_keyslot(struct ufs_hba *hba, int slot)
 {
-	union ufs_crypto_cfg_entry cfg = { 0 };
+	union ufs_crypto_cfg_entry cfg = {};
 	int err;
 
 	err = ufshcd_program_key(hba, &cfg, slot);
@@ -456,6 +457,14 @@ int ufshcd_prepare_lrbp_crypto(struct ufs_hba *hba,
 		return hba->crypto_vops->prepare_lrbp_crypto(hba, cmd, lrbp);
 
 	return ufshcd_prepare_lrbp_crypto_spec(hba, cmd, lrbp);
+}
+
+int ufshcd_map_sg_crypto(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+{
+	if (hba->crypto_vops && hba->crypto_vops->map_sg_crypto)
+		return hba->crypto_vops->map_sg_crypto(hba, lrbp);
+
+	return 0;
 }
 
 int ufshcd_complete_lrbp_crypto(struct ufs_hba *hba,

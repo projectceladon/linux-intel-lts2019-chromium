@@ -388,6 +388,7 @@ EXPORT_SYMBOL(drm_dp_dpcd_read_link_status);
 
 /**
  * drm_dp_dpcd_read_phy_link_status - get the link status information for a DP PHY
+
  * @aux: DisplayPort AUX channel
  * @dp_phy: the DP PHY to get the link status for
  * @link_status: buffer to return the status in

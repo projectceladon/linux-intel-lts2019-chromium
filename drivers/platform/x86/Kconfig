@@ -175,6 +175,7 @@ config DELL_LAPTOP
 	depends on RFKILL || RFKILL = n
 	depends on SERIO_I8042
 	depends on DELL_SMBIOS
+	depends on BROKEN
 	select POWER_SUPPLY
 	select LEDS_CLASS
 	select NEW_LEDS

@@ -33,8 +33,8 @@
 /*
  * Vendor specific pre-defined parameters
  */
-#define UFS_MTK_LIMIT_NUM_LANES_RX  1
-#define UFS_MTK_LIMIT_NUM_LANES_TX  1
+#define UFS_MTK_LIMIT_NUM_LANES_RX  2
+#define UFS_MTK_LIMIT_NUM_LANES_TX  2
 #define UFS_MTK_LIMIT_HSGEAR_RX     UFS_HS_G3
 #define UFS_MTK_LIMIT_HSGEAR_TX     UFS_HS_G3
 #define UFS_MTK_LIMIT_PWMGEAR_RX    UFS_PWM_G4
@@ -54,6 +54,7 @@
 #define VS_UNIPROPOWERDOWNCONTROL   0xD0A8
 
 /*
+
  * SiP commands
  */
 #define MTK_SIP_UFS_CONTROL               MTK_SIP_SMC_CMD(0x276)

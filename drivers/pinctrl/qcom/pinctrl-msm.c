@@ -909,6 +909,9 @@ static void msm_gpio_irq_ack(struct irq_data *d)
 		return;
 	}
 
+	if (test_bit(d->hwirq, pctrl->skip_wake_irqs))
+		return;
+
 	g = &pctrl->soc->groups[d->hwirq];
 
 	raw_spin_lock_irqsave(&pctrl->lock, flags);
@@ -1229,6 +1232,7 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 	pctrl->irq_chip.irq_mask = msm_gpio_irq_mask;
 	pctrl->irq_chip.irq_unmask = msm_gpio_irq_unmask;
 	pctrl->irq_chip.irq_ack = msm_gpio_irq_ack;
+	pctrl->irq_chip.irq_eoi = irq_chip_eoi_parent;
 	pctrl->irq_chip.irq_set_type = msm_gpio_irq_set_type;
 	pctrl->irq_chip.irq_set_wake = msm_gpio_irq_set_wake;
 	pctrl->irq_chip.irq_request_resources = msm_gpio_irq_reqres;
@@ -1252,6 +1256,26 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 		 * Let's skip handling the GPIOs, if the parent irqchip
 		 * is handling the direct connect IRQ of the GPIO.
 		 */
+		skip = irq_domain_qcom_handle_wakeup(chip->irq.parent_domain);
+		for (i = 0; skip && i < pctrl->soc->nwakeirq_map; i++) {
+			gpio = pctrl->soc->wakeirq_map[i].gpio;
+			set_bit(gpio, pctrl->skip_wake_irqs);
+		}
+	}
+
+	dn = of_parse_phandle(pctrl->dev->of_node, "wakeup-parent", 0);
+	if (dn) {
+		int i;
+		bool skip;
+		unsigned int gpio;
+
+		chip->irq.parent_domain = irq_find_matching_host(dn,
+						 DOMAIN_BUS_WAKEUP);
+		of_node_put(dn);
+		if (!chip->irq.parent_domain)
+			return -EPROBE_DEFER;
+		chip->irq.child_to_parent_hwirq = msm_gpio_wakeirq;
+
 		skip = irq_domain_qcom_handle_wakeup(chip->irq.parent_domain);
 		for (i = 0; skip && i < pctrl->soc->nwakeirq_map; i++) {
 			gpio = pctrl->soc->wakeirq_map[i].gpio;
@@ -1297,6 +1321,16 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 			return ret;
 		}
 	}
+
+	/*
+	 * Since we are chained to the GIC using the TLMM summary line
+	 * and in hierarchy with the wakeup parent interrupt controller,
+	 * explicitly set the chained summary line. We need to do this because
+	 * the summary line is not routed to the wakeup parent but directly
+	 * to the GIC.
+	 */
+	gpiochip_set_chained_irqchip(chip, &pctrl->irq_chip, pctrl->irq,
+				     msm_gpio_irq_handler);
 
 	return 0;
 }
@@ -1432,3 +1466,5 @@ int msm_pinctrl_remove(struct platform_device *pdev)
 }
 EXPORT_SYMBOL(msm_pinctrl_remove);
 
+MODULE_DESCRIPTION("Qualcomm Technologies, Inc. pinctrl-msm driver");
+MODULE_LICENSE("GPL v2");

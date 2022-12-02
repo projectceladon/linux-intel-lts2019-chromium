@@ -117,6 +117,7 @@ static bool dma_go_direct(struct device *dev, dma_addr_t mask,
 #endif
 	return false;
 }
+EXPORT_SYMBOL_GPL(dma_common_get_sgtable);
 
 
 /*

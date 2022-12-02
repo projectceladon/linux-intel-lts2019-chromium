@@ -218,7 +218,6 @@ static int sprd_efuse_raw_prog(struct sprd_efuse *efuse, u32 blk, bool doub,
 	 * successful.
 	 */
 	sprd_efuse_set_auto_check(efuse, true);
-
 	writel(*data, efuse->base + SPRD_EFUSE_MEM(blk));
 
 	/* Disable auto-check and data double after programming */
@@ -232,7 +231,7 @@ static int sprd_efuse_raw_prog(struct sprd_efuse *efuse, u32 blk, bool doub,
 	status = readl(efuse->base + SPRD_EFUSE_ERR_FLAG);
 	if (status) {
 		dev_err(efuse->dev,
-			"write error status %d of block %d\n", ret, blk);
+			"write error status %u of block %d\n", status, blk);
 
 		writel(SPRD_EFUSE_ERR_CLR_MASK,
 		       efuse->base + SPRD_EFUSE_ERR_CLR);

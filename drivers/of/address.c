@@ -18,6 +18,8 @@
 
 #include "of_private.h"
 
+#include "of_private.h"
+
 /* Max address size we deal with */
 #define OF_MAX_ADDR_CELLS	4
 #define OF_CHECK_ADDR_COUNT(na)	((na) > 0 && (na) <= OF_MAX_ADDR_CELLS)
@@ -1023,6 +1025,7 @@ out:
 	of_node_put(node);
 	return ret;
 }
+
 #endif /* CONFIG_HAS_DMA */
 
 /**

@@ -27,6 +27,7 @@
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/input.h>
+
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/power_supply.h>
@@ -323,6 +324,7 @@ struct joycon_input_report {
 #define JC_RUMBLE_QUEUE_SIZE	8
 
 static const unsigned short JC_RUMBLE_ZERO_AMP_PKT_CNT = 5;
+
 
 /* Each physical controller is associated with a joycon_ctlr struct */
 struct joycon_ctlr {
@@ -841,7 +843,6 @@ static void joycon_parse_report(struct joycon_ctlr *ctlr,
 	}
 
 	input_sync(dev);
-
 	/*
 	 * Immediately after receiving a report is the most reliable time to
 	 * send a subcommand to the controller. Wake any subcommand senders
@@ -1144,7 +1145,6 @@ static int joycon_input_create(struct joycon_ctlr *ctlr)
 		input_set_abs_params(ctlr->input, ABS_RY,
 				     -JC_MAX_STICK_MAG, JC_MAX_STICK_MAG,
 				     JC_STICK_FUZZ, JC_STICK_FLAT);
-
 		for (i = 0; joycon_button_inputs_r[i] > 0; i++)
 			input_set_capability(ctlr->input, EV_KEY,
 					     joycon_button_inputs_r[i]);
@@ -1298,7 +1298,6 @@ static int joycon_read_info(struct joycon_ctlr *ctlr)
 
 	/* Retrieve the type so we can distinguish for charging grip */
 	ctlr->ctlr_type = report->reply.data[2];
-
 	return 0;
 }
 
@@ -1390,6 +1389,7 @@ static int nintendo_hid_probe(struct hid_device *hdev,
 
 	ctlr->hdev = hdev;
 	ctlr->ctlr_state = JOYCON_CTLR_STATE_INIT;
+
 	ctlr->rumble_queue_head = JC_RUMBLE_QUEUE_SIZE - 1;
 	ctlr->rumble_queue_tail = 0;
 	hid_set_drvdata(hdev, ctlr);

@@ -16,6 +16,7 @@
 #include <linux/spinlock.h>
 #include <linux/seqlock.h>
 #include <linux/atomic.h>
+#include <linux/android_kabi.h>
 
 struct super_block;
 struct vfsmount;
