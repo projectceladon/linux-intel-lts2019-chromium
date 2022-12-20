@@ -322,7 +322,7 @@ static void appleir_remove(struct hid_device *hid)
 {
 	struct appleir *appleir = hid_get_drvdata(hid);
 	hid_hw_stop(hid);
-	del_timer_sync(&appleir->key_up_timer);
+	timer_shutdown_sync(&appleir->key_up_timer);
 	kfree(appleir);
 }
 

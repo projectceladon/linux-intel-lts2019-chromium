@@ -767,7 +767,7 @@ static int __br_mdb_del(struct net_bridge *br, struct br_mdb_entry *entry)
 		__mdb_entry_fill_flags(entry, p->flags);
 		rcu_assign_pointer(*pp, p->next);
 		hlist_del_init(&p->mglist);
-		del_timer(&p->timer);
+		timer_shutdown(&p->timer);
 		kfree_rcu(p, rcu);
 		err = 0;
 

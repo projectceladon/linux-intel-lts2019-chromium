@@ -1202,7 +1202,7 @@ static void hdm_disconnect(struct usb_interface *interface)
 	mdev->usb_device = NULL;
 	mutex_unlock(&mdev->io_mutex);
 
-	del_timer_sync(&mdev->link_stat_timer);
+	timer_shutdown_sync(&mdev->link_stat_timer);
 	cancel_work_sync(&mdev->poll_work_obj);
 
 	device_unregister(&mdev->dci->dev);
