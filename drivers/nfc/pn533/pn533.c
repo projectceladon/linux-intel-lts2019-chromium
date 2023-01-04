@@ -2673,7 +2673,7 @@ void pn533_unregister_device(struct pn533 *priv)
 
 	skb_queue_purge(&priv->resp_q);
 
-	del_timer(&priv->listen_timer);
+	timer_shutdown(&priv->listen_timer);
 
 	list_for_each_entry_safe(cmd, n, &priv->cmd_queue, queue) {
 		list_del(&cmd->queue);
