@@ -1548,7 +1548,7 @@ static void collapse_file(struct mm_struct *mm,
 {
 	struct address_space *mapping = file->f_mapping;
 	gfp_t gfp;
-	struct page *new_page;
+	struct page *new_page, *page, *tmp;
 	struct mem_cgroup *memcg;
 	pgoff_t index, end = start + HPAGE_PMD_NR;
 	LIST_HEAD(pagelist);
@@ -1771,96 +1771,96 @@ xa_locked:
 	xas_unlock_irq(&xas);
 xa_unlocked:
 
-	if (result == SCAN_SUCCEED) {
-		struct page *page, *tmp;
+	if (result != SCAN_SUCCEED)
+		goto rollback;
 
-		/*
-		 * Replacing old pages with new one has succeeded, now we
-		 * need to copy the content and free the old pages.
-		 */
-		index = start;
-		list_for_each_entry_safe(page, tmp, &pagelist, lru) {
-			while (index < page->index) {
-				clear_highpage(new_page + (index % HPAGE_PMD_NR));
-				index++;
-			}
-			copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
-					page);
-			list_del(&page->lru);
-			page->mapping = NULL;
-			page_ref_unfreeze(page, 1);
-			ClearPageActive(page);
-			ClearPageUnevictable(page);
-			unlock_page(page);
-			put_page(page);
-			index++;
-		}
-		while (index < end) {
+	/*
+	 * Replacing old pages with new one has succeeded, now we
+	 * need to copy the content and free the old pages.
+	 */
+	index = start;
+	list_for_each_entry_safe(page, tmp, &pagelist, lru) {
+		while (index < page->index) {
 			clear_highpage(new_page + (index % HPAGE_PMD_NR));
 			index++;
 		}
-
-		SetPageUptodate(new_page);
-		page_ref_add(new_page, HPAGE_PMD_NR - 1);
-		mem_cgroup_commit_charge(new_page, memcg, false, true);
-
-		if (is_shmem) {
-			set_page_dirty(new_page);
-			lru_cache_add_anon(new_page);
-		} else {
-			lru_cache_add_file(new_page);
-		}
-		count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
-
-		/*
-		 * Remove pte page tables, so we can re-fault the page as huge.
-		 */
-		retract_page_tables(mapping, start);
-		*hpage = NULL;
-
-		khugepaged_pages_collapsed++;
-	} else {
-		struct page *page;
-
-		/* Something went wrong: roll back page cache changes */
-		xas_lock_irq(&xas);
-		mapping->nrpages -= nr_none;
-
-		if (is_shmem)
-			shmem_uncharge(mapping->host, nr_none);
-
-		xas_set(&xas, start);
-		xas_for_each(&xas, page, end - 1) {
-			page = list_first_entry_or_null(&pagelist,
-					struct page, lru);
-			if (!page || xas.xa_index < page->index) {
-				if (!nr_none)
-					break;
-				nr_none--;
-				/* Put holes back where they were */
-				xas_store(&xas, NULL);
-				continue;
-			}
-
-			VM_BUG_ON_PAGE(page->index != xas.xa_index, page);
-
-			/* Unfreeze the page. */
-			list_del(&page->lru);
-			page_ref_unfreeze(page, 2);
-			xas_store(&xas, page);
-			xas_pause(&xas);
-			xas_unlock_irq(&xas);
-			unlock_page(page);
-			putback_lru_page(page);
-			xas_lock_irq(&xas);
-		}
-		VM_BUG_ON(nr_none);
-		xas_unlock_irq(&xas);
-
-		mem_cgroup_cancel_charge(new_page, memcg, true);
-		new_page->mapping = NULL;
+		copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
+				page);
+		list_del(&page->lru);
+		page->mapping = NULL;
+		page_ref_unfreeze(page, 1);
+		ClearPageActive(page);
+		ClearPageUnevictable(page);
+		unlock_page(page);
+		put_page(page);
+		index++;
+	}
+	while (index < end) {
+		clear_highpage(new_page + (index % HPAGE_PMD_NR));
+		index++;
 	}
 
+	SetPageUptodate(new_page);
+	page_ref_add(new_page, HPAGE_PMD_NR - 1);
+	mem_cgroup_commit_charge(new_page, memcg, false, true);
+
+	if (is_shmem) {
+		set_page_dirty(new_page);
+		lru_cache_add_anon(new_page);
+	} else {
+		lru_cache_add_file(new_page);
+	}
+	count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
+
+	/*
+	 * Remove pte page tables, so we can re-fault the page as huge.
+	 */
+	retract_page_tables(mapping, start);
+	*hpage = NULL;
+	unlock_page(new_page);
+
+	khugepaged_pages_collapsed++;
+
+	goto out;
+
+rollback:
+	/* Something went wrong: roll back page cache changes */
+	xas_lock_irq(&xas);
+	mapping->nrpages -= nr_none;
+
+	if (is_shmem)
+		shmem_uncharge(mapping->host, nr_none);
+
+	xas_set(&xas, start);
+	xas_for_each(&xas, page, end - 1) {
+		page = list_first_entry_or_null(&pagelist,
+				struct page, lru);
+		if (!page || xas.xa_index < page->index) {
+			if (!nr_none)
+				break;
+			nr_none--;
+			/* Put holes back where they were */
+			xas_store(&xas, NULL);
+			continue;
+		}
+
+		VM_BUG_ON_PAGE(page->index != xas.xa_index, page);
+
+		/* Unfreeze the page. */
+		list_del(&page->lru);
+		page_ref_unfreeze(page, 2);
+		xas_store(&xas, page);
+		xas_pause(&xas);
+		xas_unlock_irq(&xas);
+		unlock_page(page);
+		putback_lru_page(page);
+		xas_lock_irq(&xas);
+	}
+	VM_BUG_ON(nr_none);
+	xas_unlock_irq(&xas);
+
+	mem_cgroup_cancel_charge(new_page, memcg, true);
+	new_page->mapping = NULL;
 	unlock_page(new_page);
 out:
 	VM_BUG_ON(!list_empty(&pagelist));
