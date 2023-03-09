@@ -2218,7 +2218,7 @@ idt77252_init_ubr(struct idt77252_dev *card, struct vc_map *vc,
 	}
 	spin_unlock_irqrestore(&vc->lock, flags);
 	if (est) {
-		del_timer_sync(&est->timer);
+		timer_shutdown_sync(&est->timer);
 		kfree(est);
 	}
 
@@ -2535,7 +2535,7 @@ done:
 		vc->tx_vcc = NULL;
 
 		if (vc->estimator) {
-			del_timer(&vc->estimator->timer);
+			timer_shutdown(&vc->estimator->timer);
 			kfree(vc->estimator);
 			vc->estimator = NULL;
 		}
@@ -3766,7 +3766,7 @@ static void __exit idt77252_exit(void)
 		card = idt77252_chain;
 		dev = card->atmdev;
 		idt77252_chain = card->next;
-		del_timer_sync(&card->tst_timer);
+		timer_shutdown_sync(&card->tst_timer);
 
 		if (dev->phy->stop)
 			dev->phy->stop(dev);

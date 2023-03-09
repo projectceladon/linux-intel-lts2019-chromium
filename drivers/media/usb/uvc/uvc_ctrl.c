@@ -2386,6 +2386,8 @@ static void uvc_ctrl_prune_entity(struct uvc_device *dev,
 		{ { USB_DEVICE(0x04f2, 0xb6d8) }, 21 },
 		/* Chicony Electronics Co., Ltd HD User Facing */
 		{ { USB_DEVICE(0x04f2, 0xb6f2) }, 21 },
+		/* Chicony Electronics Co., Ltd Integrated Camera */
+		{ { USB_DEVICE(0x04f2, 0xb719) }, 21 },
 		/* Chicony Electronics Co., Ltd HP 5M Camera */
 		{ { USB_DEVICE(0x04f2, 0xb75d) }, 21 },
 		/* Quanta Computer, Inc. USB2.0 HD UVC WebCam */

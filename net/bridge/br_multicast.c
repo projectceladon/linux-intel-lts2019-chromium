@@ -182,7 +182,7 @@ static void br_multicast_del_pg(struct net_bridge *br,
 
 		rcu_assign_pointer(*pp, p->next);
 		hlist_del_init(&p->mglist);
-		del_timer(&p->timer);
+		timer_shutdown(&p->timer);
 		br_mdb_notify(br->dev, p->port, &pg->addr, RTM_DELMDB,
 			      p->flags);
 		kfree_rcu(p, rcu);
@@ -1409,7 +1409,7 @@ br_multicast_leave_group(struct net_bridge *br,
 
 			rcu_assign_pointer(*pp, p->next);
 			hlist_del_init(&p->mglist);
-			del_timer(&p->timer);
+			timer_shutdown(&p->timer);
 			kfree_rcu(p, rcu);
 			br_mdb_notify(br->dev, port, group, RTM_DELMDB,
 				      p->flags | MDB_PG_FLAGS_FAST_LEAVE);
@@ -1905,7 +1905,7 @@ void br_multicast_dev_del(struct net_bridge *br)
 
 	spin_lock_bh(&br->multicast_lock);
 	hlist_for_each_entry_safe(mp, tmp, &br->mdb_list, mdb_node) {
-		del_timer(&mp->timer);
+		timer_shutdown(&mp->timer);
 		rhashtable_remove_fast(&br->mdb_hash_tbl, &mp->rhnode,
 				       br_mdb_rht_params);
 		hlist_del_rcu(&mp->mdb_node);
