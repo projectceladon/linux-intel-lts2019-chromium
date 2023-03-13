@@ -274,7 +274,7 @@ void *mtk_drm_gem_prime_vmap(struct drm_gem_object *obj)
 			       pgprot_writecombine(PAGE_KERNEL));
 
 out:
-	kfree((void *)sgt);
+	kfree(sgt);
 
 	return mtk_gem->kvaddr;
 }
@@ -287,8 +287,8 @@ void mtk_drm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr)
 		return;
 
 	vunmap(vaddr);
-	mtk_gem->kvaddr = 0;
-	kfree((void *)mtk_gem->pages);
+	mtk_gem->kvaddr = NULL;
+	kfree(mtk_gem->pages);
 }
 
 int mtk_gem_map_offset_ioctl(struct drm_device *drm, void *data,
