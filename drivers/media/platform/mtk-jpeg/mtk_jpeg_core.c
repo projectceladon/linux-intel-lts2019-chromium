@@ -84,12 +84,8 @@ static inline struct mtk_jpeg_src_buf *mtk_jpeg_vb2_to_srcbuf(
 static int mtk_jpeg_querycap(struct file *file, void *priv,
 			     struct v4l2_capability *cap)
 {
-	struct mtk_jpeg_dev *jpeg = video_drvdata(file);
-
 	strscpy(cap->driver, MTK_JPEG_NAME " decoder", sizeof(cap->driver));
 	strscpy(cap->card, MTK_JPEG_NAME " decoder", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
-		 dev_name(jpeg->dev));
 
 	return 0;
 }

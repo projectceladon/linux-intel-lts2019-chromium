@@ -109,7 +109,7 @@ void cmdq_mbox_destroy(struct cmdq_client *client)
 {
 	if (client->timeout_ms != CMDQ_NO_TIMEOUT) {
 		spin_lock(&client->lock);
-		del_timer_sync(&client->timer);
+		timer_shutdown_sync(&client->timer);
 		spin_unlock(&client->lock);
 	}
 	mbox_free_channel(client->chan);
