@@ -813,14 +813,14 @@ static void create_le_conn_complete(struct hci_dev *hdev, void *data, int err)
 {
 	struct hci_conn *conn = data;
 
+	bt_dev_dbg(hdev, "err %d", err);
+
 	hci_dev_lock(hdev);
 
 	if (!err) {
 		hci_connect_le_scan_cleanup(conn, 0x00);
 		goto done;
 	}
-
-	bt_dev_err(hdev, "request failed to create LE connection: err %d", err);
 
 	/* Check if connection is still pending */
 	if (conn != hci_lookup_le_connect(hdev))
@@ -1601,6 +1601,9 @@ struct hci_chan *hci_chan_lookup_handle(struct hci_dev *hdev, __u16 handle)
 int hci_abort_conn(struct hci_conn *conn, u8 reason)
 {
 	int r = 0;
+
+	if (test_and_set_bit(HCI_CONN_CANCEL, &conn->flags))
+		return 0;
 
 	switch (conn->state) {
 	case BT_CONNECTED:
