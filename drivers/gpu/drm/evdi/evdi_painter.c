@@ -651,15 +651,20 @@ void evdi_painter_mode_changed_notify(struct evdi_device *evdi,
 				      struct drm_display_mode *new_mode)
 {
 	struct evdi_painter *painter = evdi->painter;
-	struct drm_framebuffer *fb = &painter->scanout_fb->base;
+	struct drm_framebuffer *fb;
 	int bits_per_pixel;
 	uint32_t pixel_format;
 
-	if (fb == NULL)
+	painter_lock(painter);
+	fb = &painter->scanout_fb->base;
+	if (fb == NULL) {
+		painter_unlock(painter);
 		return;
+	}
 
 	bits_per_pixel = fb->format->cpp[0];
 	pixel_format = fb->format->format;
+	painter_unlock(painter);
 
 	EVDI_DEBUG("(dev=%d) Notifying mode changed: %dx%d@%d; bpp %d; ",
 		   evdi->dev_index, new_mode->hdisplay, new_mode->vdisplay,
