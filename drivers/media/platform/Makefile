@@ -103,5 +103,3 @@ obj-y					+= meson/
 obj-y					+= cros-ec-cec/
 
 obj-y					+= sunxi/
-
-obj-y					+= camx/
