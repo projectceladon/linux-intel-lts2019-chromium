@@ -86,7 +86,7 @@ EXPORT_SYMBOL_GPL(dm_verity_unregister_error_notifier);
  * Make two different leaf functions to be able to separately query transient
  * and non-transient verity failures in crash analysis tool.
  */
-static noinline
+static
 void verity_transient_error_panic(dev_t devt, blk_status_t status,
 				  u64 block, const char *message)
 {
@@ -95,7 +95,7 @@ void verity_transient_error_panic(dev_t devt, blk_status_t status,
 	      MAJOR(devt), MINOR(devt), status, (u64)block, message);
 }
 
-static noinline
+static
 void verity_integrity_error_panic(dev_t devt, blk_status_t status,
 				  u64 block, const char *message)
 {
