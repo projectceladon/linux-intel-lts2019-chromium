@@ -1987,6 +1987,7 @@ struct rtw_dev {
 	struct rtw_sar sar;
 
 	struct completion fw_scan_density;
+	bool ap_active;
 
 	/* hci related data, must be last */
 	u8 priv[0] __aligned(sizeof(void *));
