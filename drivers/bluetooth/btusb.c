@@ -4571,6 +4571,13 @@ static bool btusb_wakeup(struct hci_dev *hdev)
 	return device_may_wakeup(&data->udev->dev);
 }
 
+static void btusb_do_wakeup(struct hci_dev *hdev)
+{
+	struct btusb_data *data = hci_get_drvdata(hdev);
+
+	pm_wakeup_event(&data->udev->dev, 0);
+}
+
 static int btusb_recv_evt(struct btusb_data *data, struct sk_buff *skb)
 {
 	if (!enable_interval)
@@ -4721,6 +4728,7 @@ static int btusb_probe(struct usb_interface *intf,
 	hdev->send   = btusb_send_frame;
 	hdev->notify = btusb_notify;
 	hdev->wakeup = btusb_wakeup;
+	hdev->do_wakeup = btusb_do_wakeup;
 #ifdef CONFIG_DEV_COREDUMP
 	hdev->dump.enabled = btusb_coredump_enabled;
 #endif

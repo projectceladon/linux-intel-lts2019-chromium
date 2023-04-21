@@ -634,6 +634,7 @@ struct hci_dev {
 	int (*set_quality_report)(struct hci_dev *hdev, bool enable);
 	bool (*is_quality_report_evt)(struct sk_buff *skb);
 	bool (*pull_quality_report_data)(struct sk_buff *skb);
+	void (*do_wakeup)(struct hci_dev *hdev);
 };
 
 #define HCI_PHY_HANDLE(handle)	(handle & 0xff)
