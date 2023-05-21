@@ -278,6 +278,7 @@ static void dp_display_unbind(struct device *dev, struct device *master,
 	struct msm_drm_private *priv = drm->dev_private;
 
 	dp_power_client_deinit(dp->power);
+	dp_unregister_audio_driver(dev, dp->audio);
 	dp_aux_unregister(dp->aux);
 	priv->dp[dp->id] = NULL;
 }
