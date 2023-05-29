@@ -47,6 +47,16 @@ struct rtl_vendor_config {
 	struct rtl_vendor_config_entry entry[];
 } __packed;
 
+struct rtl_dump_info {
+	const char *driver_name;
+	char *controller;
+	u32  fw_version;
+};
+
+struct btrealtek_data {
+	struct rtl_dump_info rtl_dump;
+};
+
 #if IS_ENABLED(CONFIG_BT_RTL)
 
 struct btrtl_device_info *btrtl_initialize(struct hci_dev *hdev,
@@ -64,6 +74,7 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 			    u32 *device_baudrate, bool *flow_control);
 int btrtl_usb_recv_isoc(u16 pos, u8 *data, u8 *buffer, int len,
 			u16 wMaxPacketSize);
+void btrtl_set_driver_name(struct hci_dev *hdev, const char *driver_name);
 
 #else
 
@@ -111,6 +122,10 @@ static inline int btrtl_usb_recv_isoc(u16 pos, u8 *data, u8 *buffer, int len,
 				      u16 wMaxPacketSize)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline void btrtl_set_driver_name(struct hci_dev *hdev, const char *driver_name)
+{
 }
 
 #endif
