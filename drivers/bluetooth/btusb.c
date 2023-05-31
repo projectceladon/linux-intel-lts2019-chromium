@@ -516,6 +516,7 @@ static const struct dmi_system_id btusb_needs_reset_resume_table[] = {
 #define BTUSB_TX_WAIT_VND_EVT	13
 #define BTUSB_WAKEUP_AUTOSUSPEND	14
 #define BTUSB_USE_ALT3_FOR_WBS	15
+#define BTUSB_FIRMWARE_VERIFY_FAILED 16
 
 /* Per core spec 5, vol 4, part B, table 2.1,
  * list the hci packet payload sizes for various ALT settings.
@@ -2362,8 +2363,14 @@ static void btusb_intel_secure_send_result(struct btusb_data *data,
 	if (len != sizeof(*evt))
 		return;
 
-	if (evt->result)
-		set_bit(BTUSB_FIRMWARE_FAILED, &data->flags);
+	if (evt->result) {
+		BT_ERR("Intel Secure Send Results: %u status: %u",
+		       evt->result, evt->status);
+		if (evt->result == 3)
+			set_bit(BTUSB_FIRMWARE_VERIFY_FAILED, &data->flags);
+		else
+			set_bit(BTUSB_FIRMWARE_FAILED, &data->flags);
+	}
 
 	if (test_and_clear_bit(BTUSB_DOWNLOADING, &data->flags) &&
 	    test_bit(BTUSB_FIRMWARE_LOADED, &data->flags))
@@ -2574,6 +2581,11 @@ static int btusb_download_wait(struct hci_dev *hdev, ktime_t calltime, int msec)
 		return -ETIMEDOUT;
 	}
 
+	if (test_bit(BTUSB_FIRMWARE_VERIFY_FAILED, &data->flags)) {
+		bt_dev_err(hdev, "Firmware secure verification failed");
+		return -EAGAIN;
+	}
+
 	if (test_bit(BTUSB_FIRMWARE_FAILED, &data->flags)) {
 		bt_dev_err(hdev, "Firmware loading failed");
 		return -ENOEXEC;
@@ -2686,7 +2698,7 @@ static int btusb_intel_download_firmware_newgen(struct hci_dev *hdev,
 	 * of this device.
 	 */
 	err = btusb_download_wait(hdev, calltime, 5000);
-	if (err == -ETIMEDOUT)
+	if (err == -ETIMEDOUT || err == -EAGAIN)
 		btintel_reset_to_bootloader(hdev);
 
 done:
@@ -2853,7 +2865,7 @@ download:
 	 * of this device.
 	 */
 	err = btusb_download_wait(hdev, calltime, 5000);
-	if (err == -ETIMEDOUT)
+	if (err == -ETIMEDOUT || err == -EAGAIN)
 		btintel_reset_to_bootloader(hdev);
 
 done:
