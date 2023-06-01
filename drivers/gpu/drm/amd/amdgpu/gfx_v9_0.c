@@ -131,16 +131,6 @@ MODULE_FIRMWARE("amdgpu/renoir_rlc.bin");
 #define mmTCP_CHAN_STEER_5_ARCT								0x0b0c
 #define mmTCP_CHAN_STEER_5_ARCT_BASE_IDX							0
 
-#define mmGOLDEN_TSC_COUNT_UPPER_Raven   0x007a
-#define mmGOLDEN_TSC_COUNT_UPPER_Raven_BASE_IDX 0
-#define mmGOLDEN_TSC_COUNT_LOWER_Raven   0x007b
-#define mmGOLDEN_TSC_COUNT_LOWER_Raven_BASE_IDX 0
-
-#define mmGOLDEN_TSC_COUNT_UPPER_Raven2   0x0068
-#define mmGOLDEN_TSC_COUNT_UPPER_Raven2_BASE_IDX 0
-#define mmGOLDEN_TSC_COUNT_LOWER_Raven2   0x0069
-#define mmGOLDEN_TSC_COUNT_LOWER_Raven2_BASE_IDX 0
-
 enum ta_ras_gfx_subblock {
 	/*CPC*/
 	TA_RAS_BLOCK__GFX_CPC_INDEX_START = 0,
@@ -4056,38 +4046,7 @@ static int gfx_v9_0_soft_reset(void *handle)
 
 static uint64_t gfx_v9_0_get_gpu_clock_counter(struct amdgpu_device *adev)
 {
-	uint64_t clock, clock_lo, clock_hi, hi_check;
-
-	if (adev->asic_type == CHIP_RAVEN) {
-		preempt_disable();
-		if (adev->rev_id < 8) {
-			clock_hi = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_UPPER_Raven);
-			clock_lo = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_LOWER_Raven);
-			hi_check = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_UPPER_Raven);
-			/* The PWR TSC clock frequency is 100MHz, which sets 32-bit carry over
-			 * roughly every 42 seconds.
-			 */
-			if (hi_check != clock_hi) {
-				clock_lo = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_LOWER_Raven);
-				clock_hi = hi_check;
-			}
-                } else {
-			clock_hi = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_UPPER_Raven2);
-			clock_lo = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_LOWER_Raven2);
-			hi_check = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_UPPER_Raven2);
-			/* The PWR TSC clock frequency is 100MHz, which sets 32-bit carry over
-			 * roughly every 42 seconds.
-			 */
-			if (hi_check != clock_hi) {
-				clock_lo = RREG32_SOC15_NO_KIQ(PWR, 0, mmGOLDEN_TSC_COUNT_LOWER_Raven2);
-				clock_hi = hi_check;
-			}
-                }
-		preempt_enable();
-		clock = clock_lo | (clock_hi << 32ULL);
-
-		return clock;
-        }
+	uint64_t clock;
 
 	amdgpu_gfx_off_ctrl(adev, false);
 	mutex_lock(&adev->gfx.gpu_clock_mutex);
