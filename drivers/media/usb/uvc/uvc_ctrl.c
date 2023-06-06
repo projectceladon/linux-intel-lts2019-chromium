@@ -2384,7 +2384,7 @@ static void uvc_ctrl_prune_entity(struct uvc_device *dev,
 	};
 	static const struct uvc_ctrl_blacklist camera_blacklist[] = {
 		/* Microdia Integrated_Webcam_HD, Exposure Auto Priority */
-		{ { USB_DEVICE(0x0c45, 0x6a14) }, 3 },
+		{ { USB_DEVICE(0x0c45, 0x6a14) }, 2 },
 		{ { USB_DEVICE(0x06f8, 0x3005) }, 9 }, /* Zoom, Absolute */
 		/* Region of interest(ROI) auto control */
 		/* Chicony Electronics Co., Ltd HD User Facing */
