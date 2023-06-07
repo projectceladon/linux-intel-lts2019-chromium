@@ -1787,6 +1787,7 @@ xa_unlocked:
 		}
 		copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
 				page);
+		index++;
 	}
 	while (index < end) {
 		clear_highpage(new_page + (index % HPAGE_PMD_NR));
@@ -1856,6 +1857,15 @@ immap_locked:
 	page_ref_add(new_page, HPAGE_PMD_NR - 1);
 	mem_cgroup_commit_charge(new_page, memcg, false, true);
 
+	xas_set(&xas, start);
+	for (index = start; index < end; index++) {
+		xas_next(&xas);
+		xas_store(&xas, new_page);
+		BUG_ON(xas_error(&xas));
+	}
+
+	xas_unlock_irq(&xas);
+
 	if (is_shmem) {
 		set_page_dirty(new_page);
 		lru_cache_add_anon(new_page);
@@ -1863,12 +1873,6 @@ immap_locked:
 		lru_cache_add_file(new_page);
 	}
 	count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
-
-	xas_set(&xas, start);
-	for (index = start; index < end; index++) {
-		xas_store(&xas, new_page);
-		BUG_ON(xas_error(&xas));
-	}
 
 	/*
 	 * Remove pte page tables, so we can re-fault the page as huge.
