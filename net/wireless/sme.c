@@ -1317,13 +1317,23 @@ int cfg80211_disconnect(struct cfg80211_registered_device *rdev,
  */
 void cfg80211_autodisconnect_wk(struct work_struct *work)
 {
-	struct wireless_dev *wdev =
-		container_of(work, struct wireless_dev, disconnect_wk);
-	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
+	struct wireless_dev *wdev;
+	struct cfg80211_registered_device *rdev =
+		container_of(work, struct cfg80211_registered_device,
+			     disconnect_wk);
 
-	wdev_lock(wdev);
+	rtnl_lock();
+	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+		wdev_lock(wdev);
 
-	if (wdev->conn_owner_nlportid) {
+		if (!wdev->auto_disconnect)
+			goto next;
+
+		wdev->auto_disconnect = false;
+
+		if (!wdev->conn_owner_nlportid)
+			goto next;
+
 		switch (wdev->iftype) {
 		case NL80211_IFTYPE_ADHOC:
 			__cfg80211_leave_ibss(rdev, wdev->netdev, false);
@@ -1356,7 +1366,9 @@ void cfg80211_autodisconnect_wk(struct work_struct *work)
 		default:
 			break;
 		}
+next:
+		wdev_unlock(wdev);
 	}
 
-	wdev_unlock(wdev);
+	rtnl_unlock();
 }

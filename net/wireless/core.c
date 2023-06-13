@@ -473,6 +473,7 @@ use_default_name:
 		}
 	}
 
+	INIT_WORK(&rdev->disconnect_wk, cfg80211_autodisconnect_wk);
 	INIT_LIST_HEAD(&rdev->wiphy.wdev_list);
 	INIT_LIST_HEAD(&rdev->beacon_registrations);
 	spin_lock_init(&rdev->beacon_registrations_lock);
@@ -1027,6 +1028,7 @@ void wiphy_unregister(struct wiphy *wiphy)
 	flush_work(&rdev->mlme_unreg_wk);
 	flush_work(&rdev->propagate_radar_detect_wk);
 	flush_work(&rdev->propagate_cac_done_wk);
+	cancel_work_sync(&rdev->disconnect_wk);
 
 #ifdef CONFIG_PM
 	if (rdev->wiphy.wowlan_config && rdev->ops->set_wakeup)
@@ -1104,10 +1106,6 @@ static void __cfg80211_unregister_wdev(struct wireless_dev *wdev, bool sync)
 	kzfree(wdev->wext.keys);
 	wdev->wext.keys = NULL;
 #endif
-	/* only initialized if we have a netdev */
-	if (wdev->netdev)
-		flush_work(&wdev->disconnect_wk);
-
 	cfg80211_cqm_config_free(wdev);
 }
 
@@ -1252,8 +1250,6 @@ void cfg80211_init_wdev(struct wireless_dev *wdev)
 	     wdev->iftype == NL80211_IFTYPE_P2P_CLIENT ||
 	     wdev->iftype == NL80211_IFTYPE_ADHOC) && !wdev->use_4addr)
 		wdev->netdev->priv_flags |= IFF_DONT_BRIDGE;
-
-	INIT_WORK(&wdev->disconnect_wk, cfg80211_autodisconnect_wk);
 }
 
 void cfg80211_register_wdev(struct cfg80211_registered_device *rdev,
