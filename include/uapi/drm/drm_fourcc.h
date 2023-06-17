@@ -833,7 +833,7 @@ extern "C" {
 #define DRM_FORMAT_MOD_AMLOGIC_FBC(__layout, __options) \
 	fourcc_mod_code(AMLOGIC, \
 			((__layout) & __fourcc_mod_amlogic_layout_mask) | \
-			((__options) & __fourcc_mod_amlogic_options_mask \
+			(((__options) & __fourcc_mod_amlogic_options_mask) \
 			 << __fourcc_mod_amlogic_options_shift))
 
 /* Amlogic FBC Layouts */
