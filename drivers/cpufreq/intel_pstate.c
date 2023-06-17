@@ -2786,6 +2786,7 @@ static int intel_pstate_update_status(const char *buf, size_t size)
 
 		cpufreq_unregister_driver(intel_pstate_driver);
 		intel_pstate_driver_cleanup();
+		return 0;
 	}
 
 	if (size == 6 && !strncmp(buf, "active", size)) {
