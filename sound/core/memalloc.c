@@ -30,8 +30,14 @@ static void snd_malloc_dev_pages(struct snd_dma_buffer *dmab, size_t size)
 
 	gfp_flags = GFP_KERNEL
 		| __GFP_COMP	/* compound page lets parts be mapped */
-		| __GFP_RETRY_MAYFAIL /* don't trigger OOM-killer */
 		| __GFP_NOWARN; /* no stack trace print - this call is non-critical */
+	/*
+	* Do not trigger the OOM killer.
+	* Higher-order allocations are a convenience rather
+	* than a necessity, hence only try really hard when
+	* falling back to minimum-order allocations.
+	*/
+	gfp_flags |= (PAGE_ALIGN(size) >> PAGE_SHIFT) > 1 ? __GFP_NORETRY : __GFP_RETRY_MAYFAIL;
 	dmab->area = dma_alloc_coherent(dmab->dev.dev, size, &dmab->addr,
 					gfp_flags);
 #ifdef CONFIG_X86
