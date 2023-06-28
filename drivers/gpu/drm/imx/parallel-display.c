@@ -40,11 +40,6 @@ static inline struct imx_parallel_display *con_to_imxpd(struct drm_connector *c)
 	return container_of(c, struct imx_parallel_display, connector);
 }
 
-static inline struct imx_parallel_display *enc_to_imxpd(struct drm_encoder *e)
-{
-	return container_of(e, struct imx_parallel_display, encoder);
-}
-
 static inline struct imx_parallel_display *bridge_to_imxpd(struct drm_bridge *b)
 {
 	return container_of(b, struct imx_parallel_display, bridge);
@@ -226,14 +221,6 @@ static int imx_pd_bridge_atomic_check(struct drm_bridge *bridge,
 	bus_fmt = bridge_state->input_bus_cfg.format;
 	if (!imx_pd_format_supported(bus_fmt))
 		return -EINVAL;
-
-	if (bus_flags &
-	    ~(DRM_BUS_FLAG_DE_LOW | DRM_BUS_FLAG_DE_HIGH |
-	      DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE |
-	      DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE)) {
-		dev_warn(imxpd->dev, "invalid bus_flags (%x)\n", bus_flags);
-		return -EINVAL;
-	}
 
 	bridge_state->output_bus_cfg.flags = bus_flags;
 	bridge_state->input_bus_cfg.flags = bus_flags;

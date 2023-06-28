@@ -1117,7 +1117,7 @@ static struct i915_request *
 __unwind_incomplete_requests(struct intel_engine_cs *engine)
 {
 	struct i915_request *rq, *rn, *active = NULL;
-	struct list_head *uninitialized_var(pl);
+	struct list_head *pl;
 	int prio = I915_PRIORITY_INVALID;
 
 	lockdep_assert_held(&engine->active.lock);
@@ -5778,34 +5778,6 @@ intel_execlists_create_virtual(struct intel_engine_cs **siblings,
 err_put:
 	intel_context_put(&ve->context);
 	return ERR_PTR(err);
-}
-
-struct intel_context *
-intel_execlists_clone_virtual(struct intel_engine_cs *src)
-{
-	struct virtual_engine *se = to_virtual_engine(src);
-	struct intel_context *dst;
-
-	dst = intel_execlists_create_virtual(se->siblings,
-					     se->num_siblings);
-	if (IS_ERR(dst))
-		return dst;
-
-	if (se->num_bonds) {
-		struct virtual_engine *de = to_virtual_engine(dst->engine);
-
-		de->bonds = kmemdup(se->bonds,
-				    sizeof(*se->bonds) * se->num_bonds,
-				    GFP_KERNEL);
-		if (!de->bonds) {
-			intel_context_put(dst);
-			return ERR_PTR(-ENOMEM);
-		}
-
-		de->num_bonds = se->num_bonds;
-	}
-
-	return dst;
 }
 
 int intel_virtual_engine_attach_bond(struct intel_engine_cs *engine,

@@ -878,6 +878,7 @@ struct backing_dev_info *bdi_alloc_node(gfp_t gfp_mask, int node_id)
 		kfree(bdi);
 		return NULL;
 	}
+	timer_setup(&bdi->laptop_mode_wb_timer, laptop_mode_timer_fn, 0);
 	return bdi;
 }
 EXPORT_SYMBOL(bdi_alloc_node);
@@ -1008,6 +1009,8 @@ static void bdi_remove_from_list(struct backing_dev_info *bdi)
 
 void bdi_unregister(struct backing_dev_info *bdi)
 {
+	del_timer_sync(&bdi->laptop_mode_wb_timer);
+
 	/* make sure nobody finds us on the bdi_list anymore */
 	bdi_remove_from_list(bdi);
 	wb_shutdown(&bdi->wb);

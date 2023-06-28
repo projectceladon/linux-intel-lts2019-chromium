@@ -200,10 +200,10 @@ struct edp_panel_entry {
 	/** @panel_id: 32-bit ID for panel, encoded with drm_edid_encode_panel_id(). */
 	u32 panel_id;
 
-	/* @delay: The power sequencing delays needed for this panel. */
+	/** @delay: The power sequencing delays needed for this panel. */
 	const struct panel_delay *delay;
 
-	/* @name: Name of this panel (for printing to logs). */
+	/** @name: Name of this panel (for printing to logs). */
 	const char *name;
 };
 
@@ -723,7 +723,7 @@ static int generic_edp_panel_probe(struct device *dev, struct panel_edp *panel)
 	of_property_read_u32(dev->of_node, "hpd-reliable-delay-ms", &reliable_ms);
 	desc->delay.hpd_reliable = reliable_ms;
 	of_property_read_u32(dev->of_node, "hpd-absent-delay-ms", &absent_ms);
-	desc->delay.hpd_reliable = absent_ms;
+	desc->delay.hpd_absent = absent_ms;
 
 	/* Power the panel on so we can read the EDID */
 	ret = pm_runtime_get_sync(dev);
@@ -1294,7 +1294,8 @@ static const struct panel_desc innolux_n116bca_ea1 = {
 	},
 	.delay = {
 		.hpd_absent = 200,
-		.prepare_to_enable = 80,
+		.enable = 80,
+		.disable = 50,
 		.unprepare = 500,
 	},
 };

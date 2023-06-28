@@ -180,6 +180,8 @@ int vm_swappiness = 60;
  */
 unsigned long vm_total_pages;
 
+struct kernfs_node *lru_gen_admin_node;
+
 static void set_task_reclaim_state(struct task_struct *task,
 				   struct reclaim_state *rs)
 {
@@ -3889,6 +3891,7 @@ static bool walk_mm_list(struct lruvec *lruvec, unsigned long max_seq,
 	VM_BUG_ON(max_seq != READ_ONCE(lrugen->max_seq));
 
 	inc_max_seq(lruvec, max_seq);
+	kernfs_notify(lru_gen_admin_node);
 	/* either we see any waiters or they will see updated max_seq */
 	if (wq_has_sleeper(&mm_list->nodes[nid].wait))
 		wake_up_all(&mm_list->nodes[nid].wait);
@@ -5257,6 +5260,7 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 
 static int __init init_lru_gen(void)
 {
+	struct kernfs_node *tmp;
 	BUILD_BUG_ON(MIN_NR_GENS + 1 >= MAX_NR_GENS);
 	BUILD_BUG_ON(BIT(LRU_GEN_WIDTH) <= MAX_NR_GENS);
 	BUILD_BUG_ON(sizeof(MM_STAT_CODES) != NR_MM_STATS + 1);
@@ -5276,6 +5280,8 @@ static int __init init_lru_gen(void)
 
 	if (sysfs_create_group(mm_kobj, &lru_gen_attr_group))
 		pr_err("lru_gen: failed to create sysfs group\n");
+	tmp = kernfs_find_and_get(mm_kobj->sd, "lru_gen");
+	lru_gen_admin_node = kernfs_find_and_get(tmp, "admin");
 
 	debugfs_create_file("lru_gen", 0644, NULL, NULL, &lru_gen_rw_fops);
 	debugfs_create_file("lru_gen_full", 0444, NULL, NULL, &lru_gen_ro_fops);

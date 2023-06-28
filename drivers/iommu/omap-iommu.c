@@ -1664,7 +1664,7 @@ static struct iommu_device *omap_iommu_probe_device(struct device *dev)
 	num_iommus = of_property_count_elems_of_size(dev->of_node, "iommus",
 						     sizeof(phandle));
 	if (num_iommus < 0)
-		return 0;
+		return ERR_PTR(-ENODEV);
 
 	arch_data = kcalloc(num_iommus + 1, sizeof(*arch_data), GFP_KERNEL);
 	if (!arch_data)
@@ -1725,6 +1725,9 @@ static struct iommu_group *omap_iommu_device_group(struct device *dev)
 {
 	struct omap_iommu_arch_data *arch_data = dev_iommu_priv_get(dev);
 	struct iommu_group *group = ERR_PTR(-EINVAL);
+
+	if (!arch_data)
+		return ERR_PTR(-ENODEV);
 
 	if (arch_data->iommu_dev)
 		group = iommu_group_ref_get(arch_data->iommu_dev->group);

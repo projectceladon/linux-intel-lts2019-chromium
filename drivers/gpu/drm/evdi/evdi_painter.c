@@ -651,15 +651,20 @@ void evdi_painter_mode_changed_notify(struct evdi_device *evdi,
 				      struct drm_display_mode *new_mode)
 {
 	struct evdi_painter *painter = evdi->painter;
-	struct drm_framebuffer *fb = &painter->scanout_fb->base;
+	struct drm_framebuffer *fb;
 	int bits_per_pixel;
 	uint32_t pixel_format;
 
-	if (fb == NULL)
+	painter_lock(painter);
+	fb = &painter->scanout_fb->base;
+	if (fb == NULL) {
+		painter_unlock(painter);
 		return;
+	}
 
 	bits_per_pixel = fb->format->cpp[0];
 	pixel_format = fb->format->format;
+	painter_unlock(painter);
 
 	EVDI_DEBUG("(dev=%d) Notifying mode changed: %dx%d@%d; bpp %d; ",
 		   evdi->dev_index, new_mode->hdisplay, new_mode->vdisplay,
@@ -745,7 +750,8 @@ static void evdi_painter_events_cleanup(struct evdi_painter *painter)
 static int
 evdi_painter_connect(struct evdi_device *evdi,
 		     void const __user *edid_data, unsigned int edid_length,
-		     uint32_t sku_area_limit,
+		     uint32_t pixel_area_limit,
+		     uint32_t pixel_per_second_limit,
 		     struct drm_file *file, int dev_index)
 {
 	struct evdi_painter *painter = evdi->painter;
@@ -790,7 +796,8 @@ evdi_painter_connect(struct evdi_device *evdi,
 	painter_lock(painter);
 
 	evdi->dev_index = dev_index;
-	evdi->sku_area_limit = sku_area_limit;
+	evdi->pixel_area_limit = pixel_area_limit;
+	evdi->pixel_per_second_limit = pixel_per_second_limit;
 	painter->drm_filp = file;
 	kfree(painter->edid);
 	painter->edid_length = edid_length;
@@ -890,7 +897,8 @@ int evdi_painter_connect_ioctl(struct drm_device *drm_dev, void *data,
 			ret = evdi_painter_connect(evdi,
 					     cmd->edid,
 					     cmd->edid_length,
-					     cmd->sku_area_limit,
+					     cmd->pixel_area_limit,
+					     cmd->pixel_per_second_limit,
 					     file,
 					     cmd->dev_index);
 		else
