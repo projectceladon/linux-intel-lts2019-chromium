@@ -1602,9 +1602,11 @@ static void collapse_file(struct mm_struct *mm,
 	new_page->index = start;
 	new_page->mapping = mapping;
 
-	xas_set(&xas, start);
 	for (index = start; index < end; index++) {
-		struct page *page = xas_next(&xas);
+		struct page *page;
+
+		xas_set(&xas, index);
+		page = xas_load(&xas);
 
 		VM_BUG_ON(index != xas.xa_index);
 		if (is_shmem) {
@@ -1619,7 +1621,6 @@ static void collapse_file(struct mm_struct *mm,
 						result = SCAN_TRUNCATED;
 						goto xa_locked;
 					}
-					xas_set(&xas, index + 1);
 				}
 				if (!shmem_charge(mapping->host, 1)) {
 					result = SCAN_FAIL;
@@ -1721,7 +1722,7 @@ static void collapse_file(struct mm_struct *mm,
 
 		xas_lock_irq(&xas);
 
-		VM_BUG_ON_PAGE(page != xas_load(&xas), page);
+		VM_BUG_ON_PAGE(page != xa_load(xas.xa, index), page);
 		VM_BUG_ON_PAGE(page_mapped(page), page);
 
 		/*
