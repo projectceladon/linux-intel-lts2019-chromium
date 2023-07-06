@@ -116,7 +116,7 @@ ENTRY(__vmx_vcpu_run)
 	_ASM_EXTABLE(.Lvmresume, .Lfixup)
 	_ASM_EXTABLE(.Lvmlaunch, .Lfixup)
 
-SYM_INNER_LABEL(vmx_vmexit, SYM_L_GLOBAL)
+SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
 
 	/* Temporarily save guest's RAX. */
 	push %_ASM_AX
