@@ -2056,20 +2056,6 @@ enum nl80211_eht_gi {
 #define NL80211_RRF_NO_320MHZ 0
 #endif /* CFG80211_VERSION < KERNEL_VERSION(5,18,0) */
 
-#if LINUX_VERSION_IS_LESS(5,15,0)
-/**
- * eth_hw_addr_set - Assign Ethernet address to a net_device
- * @dev: pointer to net_device structure
- * @addr: address to assign
- *
- * Assign given address to the net_device, addr_assign_type is not changed.
- */
-static inline void eth_hw_addr_set(struct net_device *dev, const u8 *addr)
-{
-	ether_addr_copy(dev->dev_addr, addr);
-}
-#endif /* LINUX_VERSION_IS_LESS(5,15,0) */
-
 #if LINUX_VERSION_IS_LESS(5,16,0)
 #define skb_ext_reset LINUX_BACKPORT(skb_get_dsfield)
 static inline int skb_get_dsfield(struct sk_buff *skb)
