@@ -2426,16 +2426,7 @@ enum nl80211_commands {
  * @NL80211_ATTR_VLAN_ID: VLAN ID (1..4094) for the station and VLAN group key
  *	(u16).
  *
- * @NL80211_ATTR_SAR_SPEC: SAR power limitation specification when
- *	used with %NL80211_CMD_SET_SAR_SPECS. The message contains fields
- *	of %nl80211_sar_attrs which specifies the sar type and related
- *	sar specs. Sar specs contains array of %nl80211_sar_specs_attrs.
- *
  * @NL80211_ATTR_HE_BSS_COLOR: nested attribute for BSS Color Settings.
- *
- * @NL80211_ATTR_RECONNECT_REQUESTED: flag attribute, used with deauth and
- *	disassoc events to indicate that an immediate reconnect to the AP
- *	is desired.
  *
  * @NL80211_ATTR_IFTYPE_AKM_SUITES: nested array attribute, with each entry
  *	using attributes from &enum nl80211_iftype_akm_attributes. This
@@ -2448,6 +2439,15 @@ enum nl80211_commands {
  *	nested attribute with &enum nl80211_tid_config_attr sub-attributes;
  *	on output (in wiphy attributes) it contains only the feature sub-
  *	attributes.
+ *
+ * @NL80211_ATTR_SAR_SPEC: SAR power limitation specification when
+ *	used with %NL80211_CMD_SET_SAR_SPECS. The message contains fields
+ *	of %nl80211_sar_attrs which specifies the sar type and related
+ *	sar specs. Sar specs contains array of %nl80211_sar_specs_attrs.
+ *
+ * @NL80211_ATTR_RECONNECT_REQUESTED: flag attribute, used with deauth and
+ *	disassoc events to indicate that an immediate reconnect to the AP
+ *	is desired.
  *
  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
  * @NL80211_ATTR_MAX: highest attribute number currently defined
@@ -2913,15 +2913,15 @@ enum nl80211_attrs {
 
 	NL80211_ATTR_VLAN_ID,
 
-	NL80211_ATTR_SAR_SPEC = 300,
-
 	NL80211_ATTR_HE_BSS_COLOR,
-
-	NL80211_ATTR_RECONNECT_REQUESTED,
 
 	NL80211_ATTR_IFTYPE_AKM_SUITES,
 
 	NL80211_ATTR_TID_CONFIG,
+
+	NL80211_ATTR_RECONNECT_REQUESTED = 299,
+
+	NL80211_ATTR_SAR_SPEC = 300,
 
 	/* add attributes here, update the policy in nl80211.c */
 
