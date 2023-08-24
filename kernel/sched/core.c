@@ -1884,6 +1884,21 @@ static inline void uclamp_post_fork(struct task_struct *p) { }
 static inline void init_uclamp(void) { }
 #endif /* CONFIG_UCLAMP_TASK */
 
+#ifdef CONFIG_SMP
+static void __setscheduler_task_util(struct task_struct *p,
+				  const struct sched_attr *attr)
+{
+
+	if (likely(!(attr->sched_flags & SCHED_FLAG_UTIL_GUEST)))
+		return;
+
+	p->se.avg.util_guest = attr->sched_util_min;
+}
+#else
+static inline void __setscheduler_task_util(struct task_struct *p,
+					    const struct sched_attr *attr) { }
+#endif
+
 static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (!(flags & ENQUEUE_NOCLOCK))
@@ -5978,7 +5993,8 @@ recheck:
 			return -EINVAL;
 	}
 
-	if (attr->sched_flags & ~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV))
+	if (attr->sched_flags &
+	    ~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV | SCHED_FLAG_UTIL_GUEST))
 		return -EINVAL;
 
 	/*
@@ -6048,13 +6064,17 @@ recheck:
 		if (attr->sched_flags & SCHED_FLAG_SUGOV)
 			return -EINVAL;
 
+		if (attr->sched_flags & SCHED_FLAG_UTIL_GUEST)
+			return -EINVAL;
+
 		retval = security_task_setscheduler(p);
 		if (retval)
 			return retval;
 	}
 
 	/* Update task specific "requested" clamps */
-	if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP) {
+	if (attr->sched_flags &
+	    (SCHED_FLAG_UTIL_CLAMP | SCHED_FLAG_UTIL_GUEST)) {
 		retval = uclamp_validate(p, attr);
 		if (retval)
 			return retval;
@@ -6093,6 +6113,8 @@ recheck:
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
 		if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP)
+			goto change;
+		if (attr->sched_flags & SCHED_FLAG_UTIL_GUEST)
 			goto change;
 
 		p->sched_reset_on_fork = reset_on_fork;
@@ -6179,6 +6201,7 @@ change:
 
 	__setscheduler(rq, p, attr, pi);
 	__setscheduler_uclamp(p, attr);
+	__setscheduler_task_util(p, attr);
 
 	if (queued) {
 		/*
