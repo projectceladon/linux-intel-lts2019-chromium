@@ -21,6 +21,20 @@ static void kvm_sched_get_cur_cpufreq(struct kvm_vcpu *vcpu, long *val)
 	*(unsigned long *)val = ret_freq;
 }
 
+static void kvm_sched_set_util(struct kvm_vcpu *vcpu, long *val)
+{
+	struct sched_attr attr = {
+		.sched_flags = SCHED_FLAG_UTIL_GUEST,
+	};
+	int ret;
+
+	attr.sched_util_min = smccc_get_arg1(vcpu);
+
+	ret = sched_setattr_nocheck(current, &attr);
+
+	*val = (long)ret;
+}
+
 int kvm_hvc_call_handler(struct kvm_vcpu *vcpu)
 {
 	u32 func_id = smccc_get_function(vcpu);
@@ -88,10 +102,14 @@ int kvm_hvc_call_handler(struct kvm_vcpu *vcpu)
 		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_FEATURES_FUNC_ID:
 		val = BIT(ARM_SMCCC_KVM_FUNC_FEATURES);
-		val2 |= BIT(ARM_SMCCC_KVM_FUNC_GET_CUR_CPUFREQ % 32);
+		val2 |= BIT(ARM_SMCCC_KVM_FUNC_GET_CUR_CPUFREQ % 32) |
+			BIT(ARM_SMCCC_KVM_FUNC_UTIL_HINT % 32);
 		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_GET_CUR_CPUFREQ_FUNC_ID:
 		kvm_sched_get_cur_cpufreq(vcpu, &val);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_UTIL_HINT_FUNC_ID:
+		kvm_sched_set_util(vcpu, &val);
 		break;
 	default:
 		return kvm_psci_call(vcpu);
