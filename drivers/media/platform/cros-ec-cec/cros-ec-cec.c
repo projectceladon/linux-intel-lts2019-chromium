@@ -294,17 +294,17 @@ struct cec_dmi_match {
 	const char *const *conns;
 };
 
-static const char *const fizz_conns[] = { "Port B", NULL };
-static const char *const dibbi_conns[] = { "Port D", "Port B", NULL };
-static const char *const boxy_conns[] = { "Port D", NULL };
+static const char *const port_b_conns[] = { "Port B", NULL };
+static const char *const port_db_conns[] = { "Port D", "Port B", NULL };
+static const char *const port_d_conns[] = { "Port D", NULL };
 
 static const struct cec_dmi_match cec_dmi_match_table[] = {
 	/* Google Fizz */
-	{ "Google", "Fizz", "0000:00:02.0", fizz_conns },
+	{ "Google", "Fizz", "0000:00:02.0", port_b_conns },
 	/* Google Dibbi */
-	{ "Google", "Dibbi", "0000:00:02.0", dibbi_conns },
+	{ "Google", "Dibbi", "0000:00:02.0", port_db_conns },
 	/* Google Boxy */
-	{ "Google", "Boxy", "0000:00:02.0", boxy_conns },
+	{ "Google", "Boxy", "0000:00:02.0", port_d_conns },
 };
 
 static struct device *cros_ec_cec_find_hdmi_dev(struct device *dev,
