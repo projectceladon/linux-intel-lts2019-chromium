@@ -23,6 +23,7 @@
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/delay.h>
+#include <linux/bitfield.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/pm.h>
@@ -555,8 +556,7 @@ static int amd_select_drive_strength(struct mmc_card *card,
 	 * of A. This matches the previously hard coded value.
 	 */
 	preset = sdhci_readw(host, SDHCI_PRESET_FOR_SDR104);
-	preset_driver_strength =
-		(preset & SDHCI_PRESET_DRV_MASK) >> SDHCI_PRESET_DRV_SHIFT;
+	preset_driver_strength = FIELD_GET(SDHCI_PRESET_DRV_MASK, preset);
 
 	/*
 	 * We want the controller driver strength to match the card's driver
@@ -869,7 +869,7 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 	host->ops	= &sdhci_acpi_ops_dflt;
 	host->irq	= platform_get_irq(pdev, 0);
 	if (host->irq < 0) {
-		err = -EINVAL;
+		err = host->irq;
 		goto err_free;
 	}
 

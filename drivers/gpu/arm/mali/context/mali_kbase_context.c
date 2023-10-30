@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 /*
  *
- * (C) COPYRIGHT 2019-2021 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2019-2023 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -129,16 +129,21 @@ int kbase_context_common_init(struct kbase_context *kctx)
 	/* creating a context is considered a disjoint event */
 	kbase_disjoint_event(kctx->kbdev);
 
-	kctx->as_nr = KBASEP_AS_NR_INVALID;
-
-	atomic_set(&kctx->refcount, 0);
-
-	spin_lock_init(&kctx->mm_update_lock);
 	kctx->process_mm = NULL;
 	atomic_set(&kctx->nonmapped_pages, 0);
 	atomic_set(&kctx->permanent_mapped_pages, 0);
 	kctx->tgid = current->tgid;
 	kctx->pid = current->pid;
+
+	/* Check if this is a Userspace created context */
+	if (likely(kctx->filp)) {
+		/* This merely takes a reference on the mm_struct and not on the
+		 * address space and so won't block the freeing of address space
+		 * on process exit.
+		 */
+		mmgrab(current->mm);
+		kctx->process_mm = current->mm;
+	}
 
 	atomic_set(&kctx->used_pages, 0);
 
@@ -152,6 +157,7 @@ int kbase_context_common_init(struct kbase_context *kctx)
 
 	init_waitqueue_head(&kctx->event_queue);
 	atomic_set(&kctx->event_count, 0);
+
 #if !MALI_USE_CSF
 	atomic_set(&kctx->event_closed, false);
 #if IS_ENABLED(CONFIG_GPU_TRACEPOINTS)
@@ -159,18 +165,25 @@ int kbase_context_common_init(struct kbase_context *kctx)
 #endif
 #endif
 
+#if MALI_USE_CSF
+	atomic64_set(&kctx->num_fixable_allocs, 0);
+	atomic64_set(&kctx->num_fixed_allocs, 0);
+#endif
+
+	kbase_gpu_vm_lock(kctx);
 	bitmap_copy(kctx->cookies, &cookies_mask, BITS_PER_LONG);
+	kbase_gpu_vm_unlock(kctx);
 
 	kctx->id = atomic_add_return(1, &(kctx->kbdev->ctx_num)) - 1;
-
-	mutex_init(&kctx->legacy_hwcnt_lock);
 
 	mutex_lock(&kctx->kbdev->kctx_list_lock);
 
 	err = kbase_insert_kctx_to_process(kctx);
-	if (err)
-		dev_err(kctx->kbdev->dev,
-		"(err:%d) failed to insert kctx to kbase_process\n", err);
+	if (err) {
+		dev_err(kctx->kbdev->dev, "(err:%d) failed to insert kctx to kbase_process", err);
+		if (likely(kctx->filp))
+			mmdrop(kctx->process_mm);
+	}
 
 	mutex_unlock(&kctx->kbdev->kctx_list_lock);
 
@@ -235,7 +248,9 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 		/* Add checks, so that the terminating process Should not
 		 * hold any gpu_memory.
 		 */
+		spin_lock(&kctx->kbdev->gpu_mem_usage_lock);
 		WARN_ON(kprcs->total_gpu_pages);
+		spin_unlock(&kctx->kbdev->gpu_mem_usage_lock);
 		WARN_ON(!RB_EMPTY_ROOT(&kprcs->dma_buf_root));
 		kfree(kprcs);
 	}
@@ -243,14 +258,7 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 
 void kbase_context_common_term(struct kbase_context *kctx)
 {
-	unsigned long flags;
 	int pages;
-
-	mutex_lock(&kctx->kbdev->mmu_hw_mutex);
-	spin_lock_irqsave(&kctx->kbdev->hwaccess_lock, flags);
-	kbase_ctx_sched_remove_ctx(kctx);
-	spin_unlock_irqrestore(&kctx->kbdev->hwaccess_lock, flags);
-	mutex_unlock(&kctx->kbdev->mmu_hw_mutex);
 
 	pages = atomic_read(&kctx->used_pages);
 	if (pages != 0)
@@ -262,6 +270,9 @@ void kbase_context_common_term(struct kbase_context *kctx)
 	mutex_lock(&kctx->kbdev->kctx_list_lock);
 	kbase_remove_kctx_from_process(kctx);
 	mutex_unlock(&kctx->kbdev->kctx_list_lock);
+
+	if (likely(kctx->filp))
+		mmdrop(kctx->process_mm);
 
 	KBASE_KTRACE_ADD(kctx->kbdev, CORE_CTX_DESTROY, kctx, 0u);
 }
@@ -283,7 +294,7 @@ int kbase_context_mmu_init(struct kbase_context *kctx)
 {
 	return kbase_mmu_init(
 		kctx->kbdev, &kctx->mmu, kctx,
-		base_context_mmu_group_id_get(kctx->create_flags));
+		kbase_context_mmu_group_id_get(kctx->create_flags));
 }
 
 void kbase_context_mmu_term(struct kbase_context *kctx)

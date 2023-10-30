@@ -55,7 +55,8 @@ struct drm_evdi_connect {
 	int32_t dev_index;
 	const unsigned char * __user edid;
 	uint32_t edid_length;
-	uint32_t sku_area_limit;
+	uint32_t pixel_area_limit;
+	uint32_t pixel_per_second_limit;
 };
 
 struct drm_evdi_request_update {
@@ -137,4 +138,3 @@ struct drm_evdi_event_ddcci_data {
 	DRM_EVDI_ENABLE_CURSOR_EVENTS, struct drm_evdi_enable_cursor_events)
 
 #endif /* __EVDI_UAPI_DRM_H__ */
-

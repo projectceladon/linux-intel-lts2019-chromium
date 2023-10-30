@@ -390,7 +390,7 @@ static ssize_t rtw_debugfs_set_h2c(struct file *filp,
 		     &param[0], &param[1], &param[2], &param[3],
 		     &param[4], &param[5], &param[6], &param[7]);
 	if (num != 8) {
-		rtw_info(rtwdev, "invalid H2C command format for debug\n");
+		rtw_warn(rtwdev, "invalid H2C command format for debug\n");
 		return -EINVAL;
 	}
 
@@ -636,8 +636,8 @@ static int rtw_debugfs_get_tx_pwr_tbl(struct seq_file *m, void *v)
 	regd = rtw_regd_get(rtwdev);
 
 	seq_printf(m, "regulatory: %s\n", rtw_get_regd_string(regd));
-	seq_printf(m, "%-4s %-10s %-3s%6s %-4s %4s (%-4s %-4s %-4s) %-4s\n",
-		   "path", "rate", "pwr", "", "base", "", "byr", "lmt", "sar", "rem");
+	seq_printf(m, "%-4s %-10s %-9s %-9s (%-4s %-4s %-4s) %-4s\n",
+		   "path", "rate", "pwr", "base", "byr", "lmt", "sar", "rem");
 
 	mutex_lock(&hal->tx_power_mutex);
 	for (path = RF_PATH_A; path <= RF_PATH_B; path++) {
@@ -667,7 +667,8 @@ static int rtw_debugfs_get_tx_pwr_tbl(struct seq_file *m, void *v)
 					pwr_param.pwr_limit,
 					pwr_param.pwr_sar),
 				   pwr_param.pwr_offset, pwr_param.pwr_limit,
-				   pwr_param.pwr_sar, pwr_param.pwr_remnant);
+				   pwr_param.pwr_sar,
+				   pwr_param.pwr_remnant);
 		}
 	}
 

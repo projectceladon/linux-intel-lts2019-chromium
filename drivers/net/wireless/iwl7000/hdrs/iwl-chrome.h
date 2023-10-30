@@ -4,7 +4,7 @@
  *
  * ChromeOS backport definitions
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2022 Intel Corporation
+ * Copyright (C) 2018-2023 Intel Corporation
  */
 
 #include <linux/version.h>
@@ -84,6 +84,50 @@ static inline struct net *get_net_ns_by_fd(int fd)
 #define DECLARE_FLEX_ARRAY(TYPE, NAME) \
 	__DECLARE_FLEX_ARRAY(TYPE, NAME)
 #endif
+
+#ifndef __struct_group
+
+/**
+ * __struct_group() - Create a mirrored named and anonyomous struct
+ *
+ * @TAG: The tag name for the named sub-struct (usually empty)
+ * @NAME: The identifier name of the mirrored sub-struct
+ * @ATTRS: Any struct attributes (usually empty)
+ * @MEMBERS: The member declarations for the mirrored structs
+ *
+ * Used to create an anonymous union of two structs with identical layout
+ * and size: one anonymous and one named. The former's members can be used
+ * normally without sub-struct naming, and the latter can be used to
+ * reason about the start, end, and size of the group of struct members.
+ * The named struct can also be explicitly tagged for layer reuse, as well
+ * as both having struct attributes appended.
+ */
+#define __struct_group(TAG, NAME, ATTRS, MEMBERS...) \
+	union { \
+		struct { MEMBERS } ATTRS; \
+		struct TAG { MEMBERS } ATTRS NAME; \
+	}
+
+#endif /* __struct_group */
+
+#ifndef struct_group
+
+/**
+ * struct_group() - Wrap a set of declarations in a mirrored struct
+ *
+ * @NAME: The identifier name of the mirrored sub-struct
+ * @MEMBERS: The member declarations for the mirrored structs
+ *
+ * Used to create an anonymous union of two structs with identical
+ * layout and size: one anonymous and one named. The former can be
+ * used normally without sub-struct naming, and the latter can be
+ * used to reason about the start, end, and size of the group of
+ * struct members.
+ */
+#define struct_group(NAME, MEMBERS...)	\
+	__struct_group(/* no tag */, NAME, /* no attrs */, MEMBERS)
+
+#endif /* struct_group */
 
 /*
  * Need to include these here, otherwise we get the regular kernel ones
@@ -376,9 +420,11 @@ static inline void *kvcalloc(size_t n, size_t size, gfp_t flags)
 #endif /* LINUX_VERSION_IS_LESS(4,14,0) */
 
 /* avoid conflicts with other headers */
+#if LINUX_VERSION_IS_LESS(6,1,0)
 #ifdef is_signed_type
 #undef is_signed_type
 #endif
+#endif /* LINUX_VERSION_IS_LESS(6,1,0) */
 
 #ifndef offsetofend
 /**
@@ -544,6 +590,10 @@ LINUX_BACKPORT(acpi_evaluate_dsm)(acpi_handle handle, const guid_t *guid,
 		pos = list_entry_rcu(pos->member.next, typeof(*pos), member))
 #endif /* < 5.4 */
 
+#if LINUX_VERSION_IS_LESS(5,7,0)
+#define efi_rt_services_supported(...) efi_enabled(EFI_RUNTIME_SERVICES)
+#endif
+
 #if LINUX_VERSION_IS_LESS(5,11,0)
 
 enum rfkill_hard_block_reasons {
@@ -579,3 +629,18 @@ kthread_complete_and_exit(struct completion *c, long ret)
 	complete_and_exit(c, ret);
 }
 #endif /* <v5.17 */
+
+#if LINUX_VERSION_IS_LESS(6,1,0)
+static inline u32 get_random_u32_below(u32 ceil)
+{
+	return prandom_u32_max(ceil);
+}
+
+static inline u32 get_random_u32_inclusive(u32 floor, u32 ceil)
+{
+	BUILD_BUG_ON_MSG(__builtin_constant_p(floor) && __builtin_constant_p(ceil) &&
+			 (floor > ceil || ceil - floor == U32_MAX),
+			 "get_random_u32_inclusive() must take floor <= ceil");
+	return floor + get_random_u32_below(ceil - floor + 1);
+}
+#endif

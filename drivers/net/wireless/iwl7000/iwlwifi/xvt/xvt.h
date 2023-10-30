@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2005-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2023 Intel Corporation
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
  */
 #ifndef __iwl_xvt_h__
@@ -36,7 +36,7 @@ enum iwl_xvt_state {
 #define IWL_XVT_INVALID_STA 0xFF
 
 /**
- * tx_meta_data - Holds data and member needed for tx
+ * struct tx_meta_data - Holds data and member needed for tx
  * @tx_mod_thread: thread dedicated for tx traffic
  * @tx_mod_thread_completion: thread completion
  * @mod_tx_wq: send packets queue
@@ -47,6 +47,7 @@ enum iwl_xvt_state {
  * @mod_tx_done_wq: queue to wait on until all packets are sent and received
  * @txq_full: set to true when mod_tx_wq is full
  * @seq_num: sequence number of qos frames (per-tid)
+ * @sta_msk: station id mask
  */
 struct tx_meta_data {
 	struct task_struct *tx_mod_thread;
@@ -59,6 +60,7 @@ struct tx_meta_data {
 	wait_queue_head_t mod_tx_done_wq;
 	bool txq_full;
 	u16 seq_num[IWL_MAX_TID_COUNT];
+	u32 sta_msk;
 };
 
 /*
@@ -111,7 +113,7 @@ struct iwl_xvt_reorder_buffer {
 };
 
 /**
- * tx_queue_data - Holds tx data per tx queue
+ * struct tx_queue_data - Holds tx data per tx queue
  * @tx_wq: TX sw queue
  * @tx_counter: Number of packets that were sent from this queue. Counts TX_RSP
  * @txq_full: Set to true when tx_wq is full
@@ -129,7 +131,7 @@ struct tx_queue_data {
 };
 
 /**
- * tx_payload - Holds tx payload
+ * struct tx_payload - Holds tx payload
  * @length: Payload length in bytes
  * @payload: Payload buffer
  */
@@ -139,8 +141,10 @@ struct tx_payload {
 };
 
 /**
- * iwl_sw_stack_config - Holds active SW stack config as set from user space
+ * struct iwl_sw_stack_config - Holds active SW stack config as set from user space
  * @load_mask: Which FW are to be loaded during SW stack up
+ * @calib_override_mask: calibrations override mask
+ * @fw_dbg_flags: fw debug flags
  * @fw_calib_cmd_cfg: Which calibrations should be done
  */
 struct iwl_sw_stack_config {
@@ -244,14 +248,6 @@ struct iwl_xvt_skb_info {
 	void *trans[2];
 };
 
-/**
- * struct iwl_xvt - the xvt op_mode
- *
- * @trans: pointer to the transport layer
- * @cfg: pointer to the driver's configuration
- * @fw: a pointer to the fw object
- * @dev: pointer to struct device for printing purposes
- */
 struct iwl_xvt {
 	struct iwl_trans *trans;
 	const struct iwl_cfg *cfg;
@@ -409,3 +405,4 @@ int iwl_xvt_init_sar_tables(struct iwl_xvt *xvt);
 int iwl_xvt_sar_select_profile(struct iwl_xvt *xvt, int prof_a, int prof_b);
 int iwl_xvt_init_ppag_tables(struct iwl_xvt *xvt);
 void iwl_xvt_txpath_flush_send_cmd(struct iwl_xvt *xvt, u32 sta_id, u16 tfd_msk);
+void iwl_xvt_lari_cfg(struct iwl_xvt *xvt);

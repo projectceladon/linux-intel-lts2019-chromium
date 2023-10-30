@@ -176,6 +176,7 @@ struct rtw_rsvd_page {
 	struct sk_buff *skb;
 	enum rtw_rsvd_packet_type type;
 	u8 page;
+	u16 tim_offset;
 	bool add_txdesc;
 	struct cfg80211_ssid *ssid;
 	u16 probe_req_size;
@@ -815,6 +816,7 @@ void rtw_add_rsvd_page_pno(struct rtw_dev *rtwdev,
 void rtw_add_rsvd_page_sta(struct rtw_dev *rtwdev,
 			   struct rtw_vif *rtwvif);
 int rtw_fw_download_rsvd_page(struct rtw_dev *rtwdev);
+void rtw_fw_update_beacon_work(struct work_struct *work);
 void rtw_send_rsvd_page_h2c(struct rtw_dev *rtwdev);
 int rtw_dump_drv_rsvd_page(struct rtw_dev *rtwdev,
 			   u32 offset, u32 size, u32 *buf);
@@ -846,5 +848,5 @@ int rtw_hw_scan_offload(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 			bool enable);
 void rtw_hw_scan_status_report(struct rtw_dev *rtwdev, struct sk_buff *skb);
 void rtw_hw_scan_chan_switch(struct rtw_dev *rtwdev, struct sk_buff *skb);
-void rtw_hw_scan_abort(struct rtw_dev *rtwdev, struct ieee80211_vif *vif);
+void rtw_hw_scan_abort(struct rtw_dev *rtwdev);
 #endif

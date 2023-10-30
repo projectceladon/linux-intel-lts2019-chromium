@@ -16,11 +16,11 @@
 static int ieee80211_set_ringparam(struct net_device *dev,
 				   struct ethtool_ringparam *rp
 #if LINUX_VERSION_IS_GEQ(5,17,0)
-,
+				   ,
 				   struct kernel_ethtool_ringparam *kernel_rp,
 				   struct netlink_ext_ack *extack
 #endif
-)
+				   )
 {
 	struct ieee80211_local *local = wiphy_priv(dev->ieee80211_ptr->wiphy);
 
@@ -33,11 +33,11 @@ static int ieee80211_set_ringparam(struct net_device *dev,
 static void ieee80211_get_ringparam(struct net_device *dev,
 				    struct ethtool_ringparam *rp
 #if LINUX_VERSION_IS_GEQ(5,17,0)
-,
+				    ,
 				    struct kernel_ethtool_ringparam *kernel_rp,
 				    struct netlink_ext_ack *extack
 #endif
-)
+				    )
 {
 	struct ieee80211_local *local = wiphy_priv(dev->ieee80211_ptr->wiphy);
 
@@ -91,17 +91,17 @@ static void ieee80211_get_stats(struct net_device *dev,
 
 #define ADD_STA_STATS(sta)					\
 	do {							\
-		data[i++] += sta->rx_stats.packets;		\
-		data[i++] += sta->rx_stats.bytes;		\
-		data[i++] += sta->rx_stats.num_duplicates;	\
-		data[i++] += sta->rx_stats.fragments;		\
-		data[i++] += sta->rx_stats.dropped;		\
+		data[i++] += sinfo.rx_packets;			\
+		data[i++] += sinfo.rx_bytes;			\
+		data[i++] += (sta)->rx_stats.num_duplicates;	\
+		data[i++] += (sta)->rx_stats.fragments;		\
+		data[i++] += sinfo.rx_dropped_misc;		\
 								\
 		data[i++] += sinfo.tx_packets;			\
 		data[i++] += sinfo.tx_bytes;			\
-		data[i++] += sta->status_stats.filtered;	\
-		data[i++] += sta->status_stats.retry_failed;	\
-		data[i++] += sta->status_stats.retry_count;	\
+		data[i++] += (sta)->status_stats.filtered;	\
+		data[i++] += sinfo.tx_failed;			\
+		data[i++] += sinfo.tx_retries;			\
 	} while (0)
 
 	/* For Managed stations, find the single station based on BSSID
@@ -122,7 +122,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 		sta_set_sinfo(sta, &sinfo, false);
 
 		i = 0;
-		ADD_STA_STATS(sta->link[0]);
+		ADD_STA_STATS(&sta->deflink);
 
 		data[i++] = sta->sta_state;
 
@@ -148,7 +148,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 			memset(&sinfo, 0, sizeof(sinfo));
 			sta_set_sinfo(sta, &sinfo, false);
 			i = 0;
-			ADD_STA_STATS(sta->link[0]);
+			ADD_STA_STATS(&sta->deflink);
 		}
 	}
 

@@ -1921,21 +1921,6 @@ void __hci_req_update_scan(struct hci_request *req)
 	hci_req_add(req, HCI_OP_WRITE_SCAN_ENABLE, 1, &scan);
 }
 
-static int update_scan(struct hci_request *req, unsigned long opt)
-{
-	hci_dev_lock(req->hdev);
-	__hci_req_update_scan(req);
-	hci_dev_unlock(req->hdev);
-	return 0;
-}
-
-static void scan_update_work(struct work_struct *work)
-{
-	struct hci_dev *hdev = container_of(work, struct hci_dev, scan_update);
-
-	hci_req_sync(hdev, update_scan, 0, HCI_CMD_TIMEOUT, NULL);
-}
-
 static u8 get_service_classes(struct hci_dev *hdev)
 {
 	struct bt_uuid *uuid;
@@ -2035,99 +2020,6 @@ static int discoverable_update(struct hci_request *req, unsigned long opt)
 	}
 
 	hci_dev_unlock(hdev);
-
-	return 0;
-}
-
-void __hci_abort_conn(struct hci_request *req, struct hci_conn *conn,
-		      u8 reason)
-{
-	switch (conn->state) {
-	case BT_CONNECTED:
-	case BT_CONFIG:
-		if (conn->type == AMP_LINK) {
-			struct hci_cp_disconn_phy_link cp;
-
-			cp.phy_handle = HCI_PHY_HANDLE(conn->handle);
-			cp.reason = reason;
-			hci_req_add(req, HCI_OP_DISCONN_PHY_LINK, sizeof(cp),
-				    &cp);
-		} else {
-			struct hci_cp_disconnect dc;
-
-			dc.handle = cpu_to_le16(conn->handle);
-			dc.reason = reason;
-			hci_req_add(req, HCI_OP_DISCONNECT, sizeof(dc), &dc);
-		}
-
-		conn->state = BT_DISCONN;
-
-		break;
-	case BT_CONNECT:
-		if (conn->type == LE_LINK) {
-			if (test_bit(HCI_CONN_SCANNING, &conn->flags))
-				break;
-			hci_req_add(req, HCI_OP_LE_CREATE_CONN_CANCEL,
-				    0, NULL);
-		} else if (conn->type == ACL_LINK) {
-			if (req->hdev->hci_ver < BLUETOOTH_VER_1_2)
-				break;
-			hci_req_add(req, HCI_OP_CREATE_CONN_CANCEL,
-				    6, &conn->dst);
-		}
-		break;
-	case BT_CONNECT2:
-		if (conn->type == ACL_LINK) {
-			struct hci_cp_reject_conn_req rej;
-
-			bacpy(&rej.bdaddr, &conn->dst);
-			rej.reason = reason;
-
-			hci_req_add(req, HCI_OP_REJECT_CONN_REQ,
-				    sizeof(rej), &rej);
-		} else if (conn->type == SCO_LINK || conn->type == ESCO_LINK) {
-			struct hci_cp_reject_sync_conn_req rej;
-
-			bacpy(&rej.bdaddr, &conn->dst);
-
-			/* SCO rejection has its own limited set of
-			 * allowed error values (0x0D-0x0F) which isn't
-			 * compatible with most values passed to this
-			 * function. To be safe hard-code one of the
-			 * values that's suitable for SCO.
-			 */
-			rej.reason = HCI_ERROR_REJ_LIMITED_RESOURCES;
-
-			hci_req_add(req, HCI_OP_REJECT_SYNC_CONN_REQ,
-				    sizeof(rej), &rej);
-		}
-		break;
-	default:
-		conn->state = BT_CLOSED;
-		break;
-	}
-}
-
-static void abort_conn_complete(struct hci_dev *hdev, u8 status, u16 opcode)
-{
-	if (status)
-		bt_dev_dbg(hdev, "Failed to abort connection: status 0x%2.2x", status);
-}
-
-int hci_abort_conn(struct hci_conn *conn, u8 reason)
-{
-	struct hci_request req;
-	int err;
-
-	hci_req_init(&req, conn->hdev);
-
-	__hci_abort_conn(&req, conn, reason);
-
-	err = hci_req_run(&req, abort_conn_complete);
-	if (err && err != -ENODATA) {
-		bt_dev_err(conn->hdev, "failed to run HCI request: err %d", err);
-		return err;
-	}
 
 	return 0;
 }
@@ -2695,7 +2587,6 @@ void hci_request_setup(struct hci_dev *hdev)
 {
 	INIT_WORK(&hdev->start_discov_update, start_discov_update);
 	INIT_WORK(&hdev->stop_discov_update, stop_discov_update);
-	INIT_WORK(&hdev->scan_update, scan_update_work);
 	INIT_DELAYED_WORK(&hdev->discov_off, discov_off);
 	INIT_DELAYED_WORK(&hdev->le_scan_disable, le_scan_disable_work);
 	INIT_DELAYED_WORK(&hdev->le_scan_restart, le_scan_restart_work);
@@ -2709,7 +2600,6 @@ void hci_request_cancel_all(struct hci_dev *hdev)
 
 	cancel_work_sync(&hdev->start_discov_update);
 	cancel_work_sync(&hdev->stop_discov_update);
-	cancel_work_sync(&hdev->scan_update);
 	cancel_delayed_work_sync(&hdev->discov_off);
 	cancel_delayed_work_sync(&hdev->le_scan_disable);
 	cancel_delayed_work_sync(&hdev->le_scan_restart);

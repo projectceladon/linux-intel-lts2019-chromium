@@ -30,6 +30,8 @@ struct cfg80211_registered_device {
 	struct rfkill *rfkill;
 	struct work_struct rfkill_block;
 
+	struct work_struct disconnect_wk;
+
 	/* ISO / IEC 3166 alpha2 for which this device is receiving
 	 * country IEs on, this can help disregard country IEs from APs
 	 * on the same alpha2 quickly. The alpha2 may differ from

@@ -5,7 +5,7 @@
  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright (C) 2017     Intel Deutschland GmbH
- * Copyright (C) 2018-2022 Intel Corporation
+ * Copyright (C) 2018-2023 Intel Corporation
  */
 
 #include <net/mac80211.h>
@@ -178,7 +178,8 @@ int ieee80211_hw_config(struct ieee80211_local *local, u32 changed)
 		changed |= ieee80211_hw_conf_chan(local);
 	else
 		changed &= ~(IEEE80211_CONF_CHANGE_CHANNEL |
-			     IEEE80211_CONF_CHANGE_POWER);
+			     IEEE80211_CONF_CHANGE_POWER |
+			     IEEE80211_CONF_CHANGE_SMPS);
 
 	if (changed && local->open_count) {
 		ret = drv_config(local, changed);
@@ -204,6 +205,7 @@ int ieee80211_hw_config(struct ieee80211_local *local, u32 changed)
 
 #define BSS_CHANGED_VIF_CFG_FLAGS (BSS_CHANGED_ASSOC |\
 				   BSS_CHANGED_IDLE |\
+				   BSS_CHANGED_PS |\
 				   BSS_CHANGED_IBSS |\
 				   BSS_CHANGED_ARP_FILTER |\
 				   BSS_CHANGED_SSID)
@@ -237,17 +239,22 @@ void ieee80211_bss_info_change_notify(struct ieee80211_sub_if_data *sdata,
 		return;
 
 	if (changed & BSS_CHANGED_VIF_CFG_FLAGS) {
+		u64 ch = changed & BSS_CHANGED_VIF_CFG_FLAGS;
+
 		trace_drv_vif_cfg_changed(local, sdata, changed);
 		if (local->ops->vif_cfg_changed)
-			local->ops->vif_cfg_changed(&local->hw, &sdata->vif, changed);
+			local->ops->vif_cfg_changed(&local->hw, &sdata->vif, ch);
 	}
 
 	if (changed & ~BSS_CHANGED_VIF_CFG_FLAGS) {
+		u64 ch = changed & ~BSS_CHANGED_VIF_CFG_FLAGS;
+
 		/* FIXME: should be for each link */
-		trace_drv_link_info_changed(local, sdata, 0, changed);
+		trace_drv_link_info_changed(local, sdata, &sdata->vif.bss_conf,
+					    changed);
 		if (local->ops->link_info_changed)
 			local->ops->link_info_changed(&local->hw, &sdata->vif,
-						      0, changed);
+						      &sdata->vif.bss_conf, ch);
 	}
 
 	if (local->ops->bss_info_changed)
@@ -270,7 +277,8 @@ void ieee80211_vif_cfg_change_notify(struct ieee80211_sub_if_data *sdata,
 }
 
 void ieee80211_link_info_change_notify(struct ieee80211_sub_if_data *sdata,
-				       int link_id, u64 changed)
+				       struct ieee80211_link_data *link,
+				       u64 changed)
 {
 	struct ieee80211_local *local = sdata->local;
 
@@ -279,10 +287,13 @@ void ieee80211_link_info_change_notify(struct ieee80211_sub_if_data *sdata,
 	if (!changed || sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
 		return;
 
-	drv_link_info_changed(local, sdata, link_id, changed);
+	if (!check_sdata_in_driver(sdata))
+		return;
+
+	drv_link_info_changed(local, sdata, link->conf, link->link_id, changed);
 }
 
-u32 ieee80211_reset_erp_info(struct ieee80211_sub_if_data *sdata)
+u64 ieee80211_reset_erp_info(struct ieee80211_sub_if_data *sdata)
 {
 	sdata->vif.bss_conf.use_cts_prot = false;
 	sdata->vif.bss_conf.use_short_preamble = false;
@@ -626,7 +637,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 
 	if (WARN_ON(!ops->tx || !ops->start || !ops->stop || !ops->config ||
 		    !ops->add_interface || !ops->remove_interface ||
-		    !ops->configure_filter))
+		    !ops->configure_filter || !ops->wake_tx_queue))
 		return NULL;
 
 	if (WARN_ON(ops->sta_state && (ops->sta_add || ops->sta_remove)))
@@ -695,6 +706,8 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 			      NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211_TX_STATUS);
 	wiphy_ext_feature_set(wiphy,
 			      NL80211_EXT_FEATURE_SCAN_FREQ_KHZ);
+	wiphy_ext_feature_set(wiphy,
+			      NL80211_EXT_FEATURE_POWERED_ADDR_CHANGE);
 
 	if (!ops->hw_scan) {
 		wiphy->features |= NL80211_FEATURE_LOW_PRIORITY_SCAN |
@@ -713,9 +726,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 	if (!ops->set_key)
 		wiphy->flags |= WIPHY_FLAG_IBSS_RSN;
 
-	if (ops->wake_tx_queue)
-		wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_TXQS);
-
+	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_TXQS);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_RRM);
 
 	wiphy->bss_priv_size = sizeof(struct ieee80211_bss);
@@ -786,14 +797,12 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 	spin_lock_init(&local->queue_stop_reason_lock);
 
 	for (i = 0; i < IEEE80211_NUM_ACS; i++) {
-		struct airtime_sched_info *air_sched = &local->airtime[i];
-
-		air_sched->active_txqs = RB_ROOT_CACHED;
-		INIT_LIST_HEAD(&air_sched->active_list);
-		spin_lock_init(&air_sched->lock);
-		air_sched->aql_txq_limit_low = IEEE80211_DEFAULT_AQL_TXQ_LIMIT_L;
-		air_sched->aql_txq_limit_high =
+		INIT_LIST_HEAD(&local->active_txqs[i]);
+		spin_lock_init(&local->active_txq_lock[i]);
+		local->aql_txq_limit_low[i] = IEEE80211_DEFAULT_AQL_TXQ_LIMIT_L;
+		local->aql_txq_limit_high[i] =
 			IEEE80211_DEFAULT_AQL_TXQ_LIMIT_H;
+		atomic_set(&local->aql_ac_pending_airtime[i], 0);
 	}
 
 	local->airtime_flags = AIRTIME_USE_TX | AIRTIME_USE_RX;
@@ -830,10 +839,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 		atomic_set(&local->agg_queue_stop[i], 0);
 	}
 	tasklet_setup(&local->tx_pending_tasklet, ieee80211_tx_pending);
-
-	if (ops->wake_tx_queue)
-		tasklet_setup(&local->wake_txqs_tasklet, ieee80211_wake_txqs);
-
+	tasklet_setup(&local->wake_txqs_tasklet, ieee80211_wake_txqs);
 	tasklet_setup(&local->tasklet, ieee80211_tasklet_handler);
 
 	skb_queue_head_init(&local->skb_queue);
@@ -985,7 +991,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			return -EINVAL;
 
 		if (WARN_ON(ieee80211_hw_check(hw, SUPPORTS_PS) &&
-			    !ieee80211_hw_check(hw, SUPPORTS_DYNAMIC_PS)))
+			    (!ieee80211_hw_check(hw, SUPPORTS_DYNAMIC_PS) ||
+			     ieee80211_hw_check(hw, PS_NULLFUNC_STACK))))
 			return -EINVAL;
 
 		if (WARN_ON(!ieee80211_hw_check(hw, MFP_CAPABLE)))
@@ -1001,6 +1008,9 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			return -EINVAL;
 
 		if (WARN_ON(!ieee80211_hw_check(hw, AP_LINK_PS)))
+			return -EINVAL;
+
+		if (WARN_ON(ieee80211_hw_check(hw, DEAUTH_NEED_MGD_TX_PREP)))
 			return -EINVAL;
 	}
 
@@ -1052,6 +1062,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	supp_he = false;
 	supp_eht = false;
 	for (band = 0; band < NUM_NL80211_BANDS; band++) {
+		const struct ieee80211_sband_iftype_data *iftd;
 		struct ieee80211_supported_band *sband;
 
 		sband = local->hw.wiphy->bands[band];
@@ -1083,17 +1094,22 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 
 		channels += sband->n_channels;
 
+		/*
+		 * Due to the way the aggregation code handles this and it
+		 * being an HT capability, we can't really support delayed
+		 * BA in MLO (yet).
+		 */
+		if (WARN_ON(sband->ht_cap.ht_supported &&
+			    (sband->ht_cap.cap & IEEE80211_HT_CAP_DELAY_BA) &&
+			    hw->wiphy->flags & WIPHY_FLAG_SUPPORTS_MLO))
+			return -EINVAL;
+
 		if (max_bitrates < sband->n_bitrates)
 			max_bitrates = sband->n_bitrates;
 		supp_ht = supp_ht || sband->ht_cap.ht_supported;
 		supp_vht = supp_vht || sband->vht_cap.vht_supported;
 
-		for (i = 0; i < ieee80211_sband_get_num_iftypes_data(sband); i++) {
-			const struct ieee80211_sband_iftype_data *iftd;
-
-			iftd = ieee80211_sband_get_iftypes_data_entry(sband,
-								      i);
-
+		for_each_sband_iftype_data(sband, i, iftd) {
 			supp_he = supp_he || iftd->he_cap.has_he;
 			supp_eht = supp_eht || cfg_eht_cap_has_eht(iftd);
 		}
@@ -1151,6 +1167,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 				      sizeof(void *) * channels, GFP_KERNEL);
 	if (!local->int_scan_req)
 		return -ENOMEM;
+
+	eth_broadcast_addr(local->int_scan_req->bssid);
 
 	for (band = 0; band < NUM_NL80211_BANDS; band++) {
 		if (!local->hw.wiphy->bands[band])
@@ -1447,8 +1465,10 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	ieee80211_led_exit(local);
 	destroy_workqueue(local->workqueue);
  fail_workqueue:
-	if (local->wiphy_ciphers_allocated)
+	if (local->wiphy_ciphers_allocated) {
 		kfree(local->hw.wiphy->cipher_suites);
+		local->wiphy_ciphers_allocated = false;
+	}
 	kfree(local->int_scan_req);
 	return result;
 }
@@ -1516,8 +1536,10 @@ void ieee80211_free_hw(struct ieee80211_hw *hw)
 	mutex_destroy(&local->iflist_mtx);
 	mutex_destroy(&local->mtx);
 
-	if (local->wiphy_ciphers_allocated)
+	if (local->wiphy_ciphers_allocated) {
 		kfree(local->hw.wiphy->cipher_suites);
+		local->wiphy_ciphers_allocated = false;
+	}
 
 	idr_for_each(&local->ack_status_frames,
 		     ieee80211_free_ack_frame, NULL);

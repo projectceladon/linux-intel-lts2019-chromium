@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2019-2021 Intel Corporation
+ * Copyright (C) 2012-2014, 2019-2022 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2016 Intel Deutschland GmbH
  */
@@ -146,13 +146,8 @@ void iwl_mvm_temp_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
 	if (mvm->tz_device.tzone) {
 		struct iwl_mvm_thermal_device *tz_dev = &mvm->tz_device;
 
-#if LINUX_VERSION_IS_GEQ(4,10,0)
 		thermal_zone_device_update(tz_dev->tzone,
 					   THERMAL_TRIP_VIOLATED);
-#else
-		thermal_notify_framework(tz_dev->tzone,
-					 tz_dev->fw_trips_index[ths_crossed]);
-#endif
 	}
 #endif /* CONFIG_THERMAL */
 }
@@ -339,7 +334,7 @@ static void iwl_mvm_tt_smps_iterator(void *_data, u8 *mac,
 	if (vif->type != NL80211_IFTYPE_STATION)
 		return;
 
-	iwl_mvm_update_smps(mvm, vif, IWL_MVM_SMPS_REQ_TT, smps_mode);
+	iwl_mvm_update_smps(mvm, vif, IWL_MVM_SMPS_REQ_TT, smps_mode, 0);
 }
 
 static void iwl_mvm_tt_tx_protection(struct iwl_mvm *mvm, bool enable)

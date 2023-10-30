@@ -625,7 +625,7 @@ static void synaptics_set_rate(struct psmouse *psmouse, unsigned int rate)
  ****************************************************************************/
 static int synaptics_pt_write(struct serio *serio, u8 c)
 {
-	struct psmouse *parent = serio_get_drvdata(serio->parent);
+	struct psmouse *parent = psmouse_from_serio(serio->parent);
 	u8 rate_param = SYN_PS_CLIENT_CMD; /* indicates that we want pass-through port */
 	int error;
 
@@ -642,7 +642,7 @@ static int synaptics_pt_write(struct serio *serio, u8 c)
 
 static int synaptics_pt_start(struct serio *serio)
 {
-	struct psmouse *parent = serio_get_drvdata(serio->parent);
+	struct psmouse *parent = psmouse_from_serio(serio->parent);
 	struct synaptics_data *priv = parent->private;
 
 	serio_pause_rx(parent->ps2dev.serio);
@@ -654,7 +654,7 @@ static int synaptics_pt_start(struct serio *serio)
 
 static void synaptics_pt_stop(struct serio *serio)
 {
-	struct psmouse *parent = serio_get_drvdata(serio->parent);
+	struct psmouse *parent = psmouse_from_serio(serio->parent);
 	struct synaptics_data *priv = parent->private;
 
 	serio_pause_rx(parent->ps2dev.serio);
@@ -669,7 +669,7 @@ static int synaptics_is_pt_packet(u8 *buf)
 
 static void synaptics_pass_pt_packet(struct serio *ptport, u8 *packet)
 {
-	struct psmouse *child = serio_get_drvdata(ptport);
+	struct psmouse *child = psmouse_from_serio(ptport);
 
 	if (child && child->state == PSMOUSE_ACTIVATED) {
 		serio_interrupt(ptport, packet[1], 0);
@@ -685,7 +685,7 @@ static void synaptics_pass_pt_packet(struct serio *ptport, u8 *packet)
 static void synaptics_pt_activate(struct psmouse *psmouse)
 {
 	struct synaptics_data *priv = psmouse->private;
-	struct psmouse *child = serio_get_drvdata(priv->pt_port);
+	struct psmouse *child = psmouse_from_serio(priv->pt_port);
 
 	/* adjust the touchpad to child's choice of protocol */
 	if (child) {
@@ -1617,6 +1617,7 @@ static int synaptics_init_ps2(struct psmouse *psmouse,
 	psmouse->set_rate = synaptics_set_rate;
 	psmouse->disconnect = synaptics_disconnect;
 	psmouse->reconnect = synaptics_reconnect;
+	psmouse->fast_reconnect = NULL;
 	psmouse->cleanup = synaptics_reset;
 	/* Synaptics can usually stay in sync without extra help */
 	psmouse->resync_time = 0;

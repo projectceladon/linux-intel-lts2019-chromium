@@ -1894,6 +1894,21 @@ static inline void uclamp_post_fork(struct task_struct *p) { }
 static inline void init_uclamp(void) { }
 #endif /* CONFIG_UCLAMP_TASK */
 
+#ifdef CONFIG_SMP
+static void __setscheduler_task_util(struct task_struct *p,
+				  const struct sched_attr *attr)
+{
+
+	if (likely(!(attr->sched_flags & SCHED_FLAG_UTIL_GUEST)))
+		return;
+
+	p->se.avg.util_guest = attr->sched_util_min;
+}
+#else
+static inline void __setscheduler_task_util(struct task_struct *p,
+					    const struct sched_attr *attr) { }
+#endif
+
 static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (!(flags & ENQUEUE_NOCLOCK))
@@ -1932,6 +1947,9 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
+	if (task_on_rq_migrating(p))
+		flags |= ENQUEUE_MIGRATED;
+
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible--;
 
@@ -4535,7 +4553,10 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		print_ip_sym(preempt_disable_ip);
 		pr_cont("\n");
 	}
-	BUG();
+	check_panic_on_warn("scheduling while atomic");
+
+	dump_stack();
+	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 
 /*
@@ -5995,7 +6016,8 @@ recheck:
 			return -EINVAL;
 	}
 
-	if (attr->sched_flags & ~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV))
+	if (attr->sched_flags &
+	    ~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV | SCHED_FLAG_UTIL_GUEST))
 		return -EINVAL;
 
 	/*
@@ -6065,13 +6087,17 @@ recheck:
 		if (attr->sched_flags & SCHED_FLAG_SUGOV)
 			return -EINVAL;
 
+		if (attr->sched_flags & SCHED_FLAG_UTIL_GUEST)
+			return -EINVAL;
+
 		retval = security_task_setscheduler(p);
 		if (retval)
 			return retval;
 	}
 
 	/* Update task specific "requested" clamps */
-	if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP) {
+	if (attr->sched_flags &
+	    (SCHED_FLAG_UTIL_CLAMP | SCHED_FLAG_UTIL_GUEST)) {
 		retval = uclamp_validate(p, attr);
 		if (retval)
 			return retval;
@@ -6107,6 +6133,8 @@ recheck:
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
 		if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP)
+			goto change;
+		if (attr->sched_flags & SCHED_FLAG_UTIL_GUEST)
 			goto change;
 
 		p->sched_reset_on_fork = reset_on_fork;
@@ -6191,6 +6219,7 @@ change:
 
 	__setscheduler(rq, p, attr, pi);
 	__setscheduler_uclamp(p, attr);
+	__setscheduler_task_util(p, attr);
 
 	if (queued) {
 		/*
@@ -6812,14 +6841,14 @@ SYSCALL_DEFINE3(sched_getaffinity, pid_t, pid, unsigned int, len,
 	if (len & (sizeof(unsigned long)-1))
 		return -EINVAL;
 
-	if (!alloc_cpumask_var(&mask, GFP_KERNEL))
+	if (!zalloc_cpumask_var(&mask, GFP_KERNEL))
 		return -ENOMEM;
 
 	ret = sched_getaffinity(pid, mask);
 	if (ret == 0) {
 		unsigned int retlen = min(len, cpumask_size());
 
-		if (copy_to_user(user_mask_ptr, mask, retlen))
+		if (copy_to_user(user_mask_ptr, cpumask_bits(mask), retlen))
 			ret = -EFAULT;
 		else
 			ret = retlen;

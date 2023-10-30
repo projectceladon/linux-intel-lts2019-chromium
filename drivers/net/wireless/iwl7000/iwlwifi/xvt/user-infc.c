@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2005-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2023 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
  */
@@ -464,6 +464,8 @@ static int iwl_xvt_continue_init_unified(struct iwl_xvt *xvt)
 		goto init_error;
 	}
 
+	iwl_xvt_lari_cfg(xvt);
+
 	return err;
 init_error:
 	xvt->state = IWL_XVT_STATE_UNINITIALIZED;
@@ -592,10 +594,52 @@ static int iwl_xvt_start_op_mode(struct iwl_xvt *xvt)
 	return err;
 }
 
-static void iwl_xvt_stop_op_mode(struct iwl_xvt *xvt)
+static int iwl_xvt_stop_tx(struct iwl_xvt *xvt)
 {
+	int err = 0;
+
+	if (xvt->tx_task && xvt->is_enhanced_tx) {
+		err = kthread_stop(xvt->tx_task);
+		wake_up_interruptible(&xvt->tx_done_wq);
+		xvt->tx_task = NULL;
+		wait_for_completion(&xvt->tx_task_completion);
+	}
+
+	return err;
+}
+
+static int _iwl_xvt_modulated_tx_infinite_stop(struct tx_meta_data *xvt_tx)
+{
+	int err = 0;
+
+	if (xvt_tx->tx_mod_thread && xvt_tx->tx_task_operating) {
+		err = kthread_stop(xvt_tx->tx_mod_thread);
+		xvt_tx->tx_mod_thread = NULL;
+		wait_for_completion(&xvt_tx->tx_mod_thread_completion);
+	}
+
+	return err;
+}
+
+void iwl_xvt_stop_op_mode(struct iwl_xvt *xvt)
+{
+	int i, r;
+
 	if (xvt->state == IWL_XVT_STATE_UNINITIALIZED)
 		return;
+
+	/* Ensure all TX kthreads are shut down */
+	if (xvt->tx_task)
+		IWL_WARN(xvt, "Forced stop of TX: %d\n",
+			 iwl_xvt_stop_tx(xvt));
+	for (i = 0; i < ARRAY_SIZE(xvt->tx_meta_data); i++) {
+		if (xvt->tx_meta_data[i].tx_mod_thread) {
+			r = _iwl_xvt_modulated_tx_infinite_stop(&xvt->tx_meta_data[i]);
+			IWL_WARN(xvt,
+				 "Forced stop of modulated TX (lmac: %d): %d\n",
+				 i, r);
+		}
+	}
 
 	if (xvt->fw_running) {
 		iwl_xvt_txq_disable(xvt);
@@ -754,6 +798,8 @@ static u16 iwl_xvt_get_offload_assist(struct ieee80211_hdr *hdr)
 	*/
 	if (hdrlen % 4 && !amsdu)
 		offload_assist |= BIT(TX_CMD_OFFLD_PAD);
+
+	offload_assist |= (hdrlen / 2) << TX_CMD_OFFLD_MH_SIZE;
 
 	return offload_assist;
 }
@@ -1312,7 +1358,6 @@ static int iwl_xvt_start_tx_handler(void *data)
 			if (xvt->fw_error) {
 				IWL_ERR(xvt, "FW Error during TX\n");
 				status = XVT_TX_DRIVER_ABORTED;
-				err = -ENODEV;
 				goto on_exit;
 			}
 
@@ -1329,7 +1374,6 @@ static int iwl_xvt_start_tx_handler(void *data)
 				if (!skb) {
 					IWL_ERR(xvt, "skb is NULL\n");
 					status = XVT_TX_DRIVER_ABORTED;
-					err = -ENOMEM;
 					goto on_exit;
 				}
 				err = iwl_xvt_transmit_packet(xvt,
@@ -1348,6 +1392,9 @@ static int iwl_xvt_start_tx_handler(void *data)
 				++frag_idx;
 
 				if (kthread_should_stop()) {
+				/* Flushing the queues here as FW may send response for
+				 * already sent TX_CMD after terminating tx handler
+				 */
 					iwl_xvt_flush_sta_tids(xvt);
 					goto on_exit;
 				}
@@ -1362,6 +1409,7 @@ on_exit:
 					kthread_should_stop(),
 					5 * HZ * CPTCFG_IWL_TIMEOUT_FACTOR);
 		if (time_remain <= 0) {
+			iwl_xvt_flush_sta_tids(xvt);
 			IWL_ERR(xvt, "err %d: Not all Tx messages were sent\n",
 				time_remain);
 			if (status == 0)
@@ -1390,6 +1438,7 @@ static int iwl_xvt_modulated_tx_handler(void *data)
 	struct iwl_xvt_tx_mod_task_data *task_data =
 		(struct iwl_xvt_tx_mod_task_data *)data;
 	struct tx_meta_data *xvt_tx;
+	struct completion *completion = task_data->completion;
 
 	xvt = task_data->xvt;
 	xvt_tx = &xvt->tx_meta_data[task_data->lmac_id];
@@ -1443,23 +1492,15 @@ static int iwl_xvt_modulated_tx_handler(void *data)
 
 	xvt_tx->tx_task_operating = false;
 	kfree(data);
-	kthread_complete_and_exit(task_data->completion, err);
+	kthread_complete_and_exit(completion, err);
 }
 
 static int iwl_xvt_modulated_tx_infinite_stop(struct iwl_xvt *xvt,
 					      struct iwl_tm_data *data_in)
 {
-	int err = 0;
 	u32 lmac_id = ((struct iwl_xvt_tx_mod_stop *)data_in->data)->lmac_id;
-	struct tx_meta_data *xvt_tx = &xvt->tx_meta_data[lmac_id];
 
-	if (xvt_tx->tx_mod_thread && xvt_tx->tx_task_operating) {
-		err = kthread_stop(xvt_tx->tx_mod_thread);
-		xvt_tx->tx_mod_thread = NULL;
-		wait_for_completion(&xvt_tx->tx_mod_thread_completion);
-	}
-
-	return err;
+	return _iwl_xvt_modulated_tx_infinite_stop(&xvt->tx_meta_data[lmac_id]);
 }
 
 static inline int map_sta_to_lmac(struct iwl_xvt *xvt, u8 sta_id)
@@ -1527,26 +1568,12 @@ static int iwl_xvt_start_tx(struct iwl_xvt *xvt,
 	xvt->tx_task = kthread_run(iwl_xvt_start_tx_handler,
 				   task_data, "start enhanced tx command");
 	if (!xvt->tx_task) {
-		xvt->is_enhanced_tx = true;
+		xvt->is_enhanced_tx = false;
 		kfree(task_data);
 		return -ENOMEM;
 	}
 
 	return 0;
-}
-
-static int iwl_xvt_stop_tx(struct iwl_xvt *xvt)
-{
-	int err = 0;
-
-	if (xvt->tx_task && xvt->is_enhanced_tx) {
-		err = kthread_stop(xvt->tx_task);
-		wake_up_interruptible(&xvt->tx_done_wq);
-		xvt->tx_task = NULL;
-		wait_for_completion(&xvt->tx_task_completion);
-	}
-
-	return err;
 }
 
 static int iwl_xvt_set_tx_payload(struct iwl_xvt *xvt,

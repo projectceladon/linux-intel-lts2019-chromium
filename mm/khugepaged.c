@@ -49,6 +49,8 @@ enum scan_result {
 	SCAN_EXCEED_SWAP_PTE,
 	SCAN_TRUNCATED,
 	SCAN_PAGE_HAS_PRIVATE,
+	SCAN_STORE_FAILED,
+	SCAN_PAGE_FILLED,
 };
 
 #define CREATE_TRACE_POINTS
@@ -1063,6 +1065,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	_pmd = pmdp_collapse_flush(vma, address, pmd);
 	spin_unlock(pmd_ptl);
 	mmu_notifier_invalidate_range_end(&range);
+	tlb_remove_table_sync_one();
 
 	spin_lock(pte_ptl);
 	isolated = __collapse_huge_page_isolate(vma, address, pte);
@@ -1317,6 +1320,7 @@ void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr)
 	spinlock_t *ptl;
 	int count = 0;
 	int i;
+	struct mmu_notifier_range range;
 
 	if (!vma || !vma->vm_file ||
 	    vma->vm_start > haddr || vma->vm_end < haddr + HPAGE_PMD_SIZE)
@@ -1343,6 +1347,19 @@ void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr)
 	if (!pmd)
 		goto drop_hpage;
 
+	/*
+	 * We need to lock the mapping so that from here on, only GUP-fast and
+	 * hardware page walks can access the parts of the page tables that
+	 * we're operating on.
+	 */
+	i_mmap_lock_write(vma->vm_file->f_mapping);
+
+	/*
+	 * This spinlock should be unnecessary: Nobody else should be accessing
+	 * the page tables under spinlock protection here, only
+	 * lockless_pages_from_mm() and the hardware page walker can access page
+	 * tables while all the high-level locks are held in write mode.
+	 */
 	start_pte = pte_offset_map_lock(mm, pmd, haddr, &ptl);
 
 	/* step 1: check all mapped PTEs are to the right huge page */
@@ -1389,11 +1406,22 @@ void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr)
 	}
 
 	/* step 4: collapse pmd */
-	ptl = pmd_lock(vma->vm_mm, pmd);
+	/* we make no change to anon, but protect concurrent anon page lookup */
+	if (vma->anon_vma)
+		anon_vma_lock_write(vma->anon_vma);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, NULL, mm, haddr,
+				haddr + HPAGE_PMD_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
 	_pmd = pmdp_collapse_flush(vma, haddr, pmd);
-	spin_unlock(ptl);
 	mm_dec_nr_ptes(mm);
+	tlb_remove_table_sync_one();
+	mmu_notifier_invalidate_range_end(&range);
 	pte_free(mm, pmd_pgtable(_pmd));
+
+	if (vma->anon_vma)
+		anon_vma_unlock_write(vma->anon_vma);
+	i_mmap_unlock_write(vma->vm_file->f_mapping);
 
 drop_hpage:
 	unlock_page(hpage);
@@ -1402,6 +1430,7 @@ drop_hpage:
 
 abort:
 	pte_unmap_unlock(start_pte, ptl);
+	i_mmap_unlock_write(vma->vm_file->f_mapping);
 	goto drop_hpage;
 }
 
@@ -1451,7 +1480,8 @@ static void retract_page_tables(struct address_space *mapping, pgoff_t pgoff)
 		 * An alternative would be drop the check, but check that page
 		 * table is clear before calling pmdp_collapse_flush() under
 		 * ptl. It has higher chance to recover THP for the VMA, but
-		 * has higher cost too.
+		 * has higher cost too. It would also probably require locking
+		 * the anon_vma.
 		 */
 		if (vma->anon_vma)
 			continue;
@@ -1473,12 +1503,19 @@ static void retract_page_tables(struct address_space *mapping, pgoff_t pgoff)
 		 */
 		if (down_write_trylock(&mm->mmap_sem)) {
 			if (!khugepaged_test_exit(mm)) {
-				spinlock_t *ptl = pmd_lock(mm, pmd);
+				struct mmu_notifier_range range;
+
+				mmu_notifier_range_init(&range,
+							MMU_NOTIFY_CLEAR, 0,
+							NULL, mm, addr,
+							addr + HPAGE_PMD_SIZE);
+				mmu_notifier_invalidate_range_start(&range);
 				/* assume page table is clear */
 				_pmd = pmdp_collapse_flush(vma, addr, pmd);
-				spin_unlock(ptl);
 				mm_dec_nr_ptes(mm);
+				tlb_remove_table_sync_one();
 				pte_free(mm, pmd_pgtable(_pmd));
+				mmu_notifier_invalidate_range_end(&range);
 			}
 			up_write(&mm->mmap_sem);
 		} else {
@@ -1492,19 +1529,26 @@ static void retract_page_tables(struct address_space *mapping, pgoff_t pgoff)
 /**
  * collapse_file - collapse filemap/tmpfs/shmem pages into huge one.
  *
+ * @mm: process address space where collapse happens
+ * @addr: virtual collapse start address
+ * @file: file that collapse on
+ * @start: collapse start address
+ * @cc: collapse context and scratchpad
+ *
  * Basic scheme is simple, details are more complex:
  *  - allocate and lock a new huge page;
- *  - scan page cache replacing old pages with the new one
+ *  - scan page cache, locking old pages
  *    + swap/gup in pages if necessary;
- *    + fill in gaps;
- *    + keep old pages around in case rollback is required;
+ *  - copy data to new page
+ *  - handle shmem holes
+ *    + re-validate that holes weren't filled by someone else
+ *    + check for userfaultfd
+ *  - finalize updates to the page cache;
  *  - if replacing succeeds:
- *    + copy data over;
- *    + free old pages;
  *    + unlock huge page;
+ *    + free old pages;
  *  - if replacing failed;
- *    + put all pages back and unfreeze them;
- *    + restore gaps in the page cache;
+ *    + unlock old pages
  *    + unlock and free huge page;
  */
 static void collapse_file(struct mm_struct *mm,
@@ -1513,7 +1557,7 @@ static void collapse_file(struct mm_struct *mm,
 {
 	struct address_space *mapping = file->f_mapping;
 	gfp_t gfp;
-	struct page *new_page;
+	struct page *new_page, *page, *tmp;
 	struct mem_cgroup *memcg;
 	pgoff_t index, end = start + HPAGE_PMD_NR;
 	LIST_HEAD(pagelist);
@@ -1558,15 +1602,11 @@ static void collapse_file(struct mm_struct *mm,
 	new_page->index = start;
 	new_page->mapping = mapping;
 
-	/*
-	 * At this point the new_page is locked and not up-to-date.
-	 * It's safe to insert it into the page cache, because nobody would
-	 * be able to map it or use it in another way until we unlock it.
-	 */
-
-	xas_set(&xas, start);
 	for (index = start; index < end; index++) {
-		struct page *page = xas_next(&xas);
+		struct page *page;
+
+		xas_set(&xas, index);
+		page = xas_load(&xas);
 
 		VM_BUG_ON(index != xas.xa_index);
 		if (is_shmem) {
@@ -1581,13 +1621,11 @@ static void collapse_file(struct mm_struct *mm,
 						result = SCAN_TRUNCATED;
 						goto xa_locked;
 					}
-					xas_set(&xas, index);
 				}
 				if (!shmem_charge(mapping->host, 1)) {
 					result = SCAN_FAIL;
 					goto xa_locked;
 				}
-				xas_store(&xas, new_page);
 				nr_none++;
 				continue;
 			}
@@ -1600,6 +1638,8 @@ static void collapse_file(struct mm_struct *mm,
 					result = SCAN_FAIL;
 					goto xa_unlocked;
 				}
+				/* drain pagevecs to help isolate_lru_page() */
+				lru_add_drain();
 			} else if (trylock_page(page)) {
 				get_page(page);
 				xas_unlock_irq(&xas);
@@ -1681,18 +1721,21 @@ static void collapse_file(struct mm_struct *mm,
 			unmap_mapping_pages(mapping, index, 1, false);
 
 		xas_lock_irq(&xas);
-		xas_set(&xas, index);
 
-		VM_BUG_ON_PAGE(page != xas_load(&xas), page);
+		VM_BUG_ON_PAGE(page != xa_load(xas.xa, index), page);
 		VM_BUG_ON_PAGE(page_mapped(page), page);
 
 		/*
-		 * The page is expected to have page_count() == 3:
+		 * We control three references to the page:
 		 *  - we hold a pin on it;
 		 *  - one reference from page cache;
 		 *  - one from isolate_lru_page;
+		 * If those are the only references, then any new usage of the
+		 * page will have to fetch it from the page cache. That requires
+		 * locking the page to handle truncate, so any new usage will be
+		 * blocked until we unlock page after collapse/during rollback.
 		 */
-		if (!page_ref_freeze(page, 3)) {
+		if (page_count(page) != 3) {
 			result = SCAN_PAGE_COUNT;
 			xas_unlock_irq(&xas);
 			putback_lru_page(page);
@@ -1700,13 +1743,9 @@ static void collapse_file(struct mm_struct *mm,
 		}
 
 		/*
-		 * Add the page to the list to be able to undo the collapse if
-		 * something go wrong.
+		 * Accumulate the pages that are being collapsed.
 		 */
 		list_add_tail(&page->lru, &pagelist);
-
-		/* Finally, replace with the new page. */
-		xas_store(&xas, new_page);
 		continue;
 out_unlock:
 		unlock_page(page);
@@ -1734,96 +1773,147 @@ xa_locked:
 	xas_unlock_irq(&xas);
 xa_unlocked:
 
-	if (result == SCAN_SUCCEED) {
-		struct page *page, *tmp;
+	if (result != SCAN_SUCCEED)
+		goto rollback;
 
-		/*
-		 * Replacing old pages with new one has succeeded, now we
-		 * need to copy the content and free the old pages.
-		 */
-		index = start;
-		list_for_each_entry_safe(page, tmp, &pagelist, lru) {
-			while (index < page->index) {
-				clear_highpage(new_page + (index % HPAGE_PMD_NR));
-				index++;
-			}
-			copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
-					page);
-			list_del(&page->lru);
-			page->mapping = NULL;
-			page_ref_unfreeze(page, 1);
-			ClearPageActive(page);
-			ClearPageUnevictable(page);
-			unlock_page(page);
-			put_page(page);
-			index++;
-		}
-		while (index < end) {
+	/*
+	 * The old pages are locked, so they won't change anymore.
+	 */
+	index = start;
+	list_for_each_entry_safe(page, tmp, &pagelist, lru) {
+		while (index < page->index) {
 			clear_highpage(new_page + (index % HPAGE_PMD_NR));
 			index++;
 		}
-
-		SetPageUptodate(new_page);
-		page_ref_add(new_page, HPAGE_PMD_NR - 1);
-		mem_cgroup_commit_charge(new_page, memcg, false, true);
-
-		if (is_shmem) {
-			set_page_dirty(new_page);
-			lru_cache_add_anon(new_page);
-		} else {
-			lru_cache_add_file(new_page);
-		}
-		count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
-
-		/*
-		 * Remove pte page tables, so we can re-fault the page as huge.
-		 */
-		retract_page_tables(mapping, start);
-		*hpage = NULL;
-
-		khugepaged_pages_collapsed++;
-	} else {
-		struct page *page;
-
-		/* Something went wrong: roll back page cache changes */
-		xas_lock_irq(&xas);
-		mapping->nrpages -= nr_none;
-
-		if (is_shmem)
-			shmem_uncharge(mapping->host, nr_none);
-
-		xas_set(&xas, start);
-		xas_for_each(&xas, page, end - 1) {
-			page = list_first_entry_or_null(&pagelist,
-					struct page, lru);
-			if (!page || xas.xa_index < page->index) {
-				if (!nr_none)
-					break;
-				nr_none--;
-				/* Put holes back where they were */
-				xas_store(&xas, NULL);
-				continue;
-			}
-
-			VM_BUG_ON_PAGE(page->index != xas.xa_index, page);
-
-			/* Unfreeze the page. */
-			list_del(&page->lru);
-			page_ref_unfreeze(page, 2);
-			xas_store(&xas, page);
-			xas_pause(&xas);
-			xas_unlock_irq(&xas);
-			unlock_page(page);
-			putback_lru_page(page);
-			xas_lock_irq(&xas);
-		}
-		VM_BUG_ON(nr_none);
-		xas_unlock_irq(&xas);
-
-		mem_cgroup_cancel_charge(new_page, memcg, true);
-		new_page->mapping = NULL;
+		copy_highpage(new_page + (page->index % HPAGE_PMD_NR),
+				page);
+		index++;
+	}
+	while (index < end) {
+		clear_highpage(new_page + (index % HPAGE_PMD_NR));
+		index++;
 	}
 
+	if (nr_none) {
+		struct vm_area_struct *vma;
+		int nr_none_check = 0;
+
+		i_mmap_lock_read(mapping);
+		xas_lock_irq(&xas);
+
+		xas_set(&xas, start);
+		for (index = start; index < end; index++) {
+			if (!xas_next(&xas)) {
+				xas_store(&xas, XA_RETRY_ENTRY);
+				if (xas_error(&xas)) {
+					result = SCAN_STORE_FAILED;
+					goto immap_locked;
+				}
+				nr_none_check++;
+			}
+		}
+
+		if (nr_none != nr_none_check) {
+			result = SCAN_PAGE_FILLED;
+			goto immap_locked;
+		}
+
+		/*
+		 * If userspace observed a missing page in a VMA with a MODE_MISSING
+		 * userfaultfd, then it might expect a UFFD_EVENT_PAGEFAULT for that
+		 * page. If so, we need to roll back to avoid suppressing such an
+		 * event. Since wp/minor userfaultfds don't give userspace any
+		 * guarantees that the kernel won't fill a missing page with a zero
+		 * page, so they don't matter here.
+		 *
+		 * Any userfaultfds registered after this point will not be able to
+		 * observe any missing pages due to the previously inserted retry
+		 * entries.
+		 */
+		vma_interval_tree_foreach(vma, &mapping->i_mmap, start, end) {
+			if (userfaultfd_missing(vma)) {
+				result = SCAN_EXCEED_NONE_PTE;
+				goto immap_locked;
+			}
+		}
+
+immap_locked:
+		i_mmap_unlock_read(mapping);
+		if (result != SCAN_SUCCEED) {
+			xas_set(&xas, start);
+			for (index = start; index < end; index++) {
+				if (xas_next(&xas) == XA_RETRY_ENTRY)
+					xas_store(&xas, NULL);
+			}
+
+			xas_unlock_irq(&xas);
+			goto rollback;
+		}
+	} else {
+		xas_lock_irq(&xas);
+	}
+
+	SetPageUptodate(new_page);
+	page_ref_add(new_page, HPAGE_PMD_NR - 1);
+	mem_cgroup_commit_charge(new_page, memcg, false, true);
+
+	xas_set(&xas, start);
+	for (index = start; index < end; index++) {
+		xas_next(&xas);
+		xas_store(&xas, new_page);
+		BUG_ON(xas_error(&xas));
+	}
+
+	xas_unlock_irq(&xas);
+
+	if (is_shmem) {
+		set_page_dirty(new_page);
+		lru_cache_add_anon(new_page);
+	} else {
+		lru_cache_add_file(new_page);
+	}
+	count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
+
+	/*
+	 * Remove pte page tables, so we can re-fault the page as huge.
+	 */
+	retract_page_tables(mapping, start);
+	*hpage = NULL;
+	unlock_page(new_page);
+
+	khugepaged_pages_collapsed++;
+
+	list_for_each_entry_safe(page, tmp, &pagelist, lru) {
+		list_del(&page->lru);
+		page->mapping = NULL;
+		ClearPageActive(page);
+		ClearPageUnevictable(page);
+		unlock_page(page);
+		put_page(page); /* page cache ref */
+		put_page(page); /* isolate_lru_page ref */
+		put_page(page); /* our ref */
+	}
+
+	goto out;
+
+rollback:
+	/* Something went wrong: roll back page cache changes */
+	if (nr_none) {
+		xas_lock_irq(&xas);
+		mapping->nrpages -= nr_none;
+		shmem_uncharge(mapping->host, nr_none);
+		xas_unlock_irq(&xas);
+	}
+
+	list_for_each_entry_safe(page, tmp, &pagelist, lru) {
+		list_del(&page->lru);
+		unlock_page(page);
+		putback_lru_page(page);
+		put_page(page);
+	}
+
+	mem_cgroup_cancel_charge(new_page, memcg, true);
+	new_page->mapping = NULL;
 	unlock_page(new_page);
 out:
 	VM_BUG_ON(!list_empty(&pagelist));

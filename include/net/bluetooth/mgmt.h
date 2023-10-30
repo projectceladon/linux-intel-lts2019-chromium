@@ -839,7 +839,11 @@ struct mgmt_cp_add_adv_patterns_monitor_rssi {
 } __packed;
 #define MGMT_ADD_ADV_PATTERNS_MONITOR_RSSI_SIZE	8
 
-#define MGMT_OP_GET_SCO_CODEC_CAPABILITIES	0x0057
+
+/*
+ * Floss MGMT Opcodes start here.
+ */
+#define MGMT_OP_GET_SCO_CODEC_CAPABILITIES	0x0100
 #define MGMT_SCO_CODEC_CVSD			0x1
 #define MGMT_SCO_CODEC_MSBC_TRANSPARENT		0x2
 #define MGMT_SCO_CODEC_MSBC			0x3
@@ -866,7 +870,7 @@ struct mgmt_rp_get_codec_capabilities {
 	struct mgmt_bt_codec	codecs[];
 } __packed;
 
-#define MGMT_OP_NOTIFY_SCO_CONNECTION_CHANGE	0x0058
+#define MGMT_OP_NOTIFY_SCO_CONNECTION_CHANGE	0x0101
 struct mgmt_cp_notify_sco_connection_change {
 	__u16 hci_id;
 	struct mgmt_addr_info	addr;
@@ -874,6 +878,27 @@ struct mgmt_cp_notify_sco_connection_change {
 	__u8			codec;
 } __packed;
 #define MGMT_NOTIFY_SCO_CONNECTION_CHANGE_SIZE	0xB
+
+#define MGMT_OP_GET_VS_OPCODE			0x0102
+#define MGMT_VS_OPCODE_MSFT			0x0001
+
+struct mgmt_cp_get_vs_opcode {
+	__u16	hci_id;
+	__u16	vendor_specification;
+} __packed;
+#define MGMT_GET_VS_OPCODE_SIZE			0x4
+
+struct mgmt_rp_get_vs_opcode {
+	__u16	hci_id;
+	__u16	opcode;
+} __packed;
+
+#define MGMT_OP_NOTIFY_SUSPEND_STATE	0x0103
+struct mgmt_cp_notify_suspend_state {
+	__u16 hci_id;
+	__u8 suspended;
+} __packed;
+#define MGMT_NOTIFY_SUSPEND_STATE_SIZE	0x3
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
@@ -1157,9 +1182,13 @@ struct mgmt_ev_adv_monitor_device_lost {
 	__le16 monitor_handle;
 	struct mgmt_addr_info addr;
 } __packed;
-#define MGMT_EV_QUALITY_REPORT			0x0031
+
+
+/* CHROMIUM Only Events Start */
+#define MGMT_EV_QUALITY_REPORT			0x0070
 struct mgmt_ev_quality_report {
 	__u8 quality_spec;
 	__u8 data_len;
 	__u8 data[0];
 } __packed;
+/* CHROMIUM Only Events End */

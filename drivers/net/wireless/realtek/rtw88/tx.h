@@ -33,6 +33,10 @@
 	le32p_replace_bits((__le32 *)(txdesc) + 0x05, value, GENMASK(6, 5))
 #define SET_TX_DESC_SW_SEQ(txdesc, value)                                      \
 	le32p_replace_bits((__le32 *)(txdesc) + 0x09, value, GENMASK(23, 12))
+#define SET_TX_DESC_TIM_EN(txdesc, value)                                      \
+	le32p_replace_bits((__le32 *)(txdesc) + 0x09, value, BIT(7))
+#define SET_TX_DESC_TIM_OFFSET(txdesc, value)                                  \
+	le32p_replace_bits((__le32 *)(txdesc) + 0x09, value, GENMASK(6, 0))
 #define SET_TX_DESC_MAX_AGG_NUM(txdesc, value)                                 \
 	le32p_replace_bits((__le32 *)(txdesc) + 0x03, value, GENMASK(21, 17))
 #define SET_TX_DESC_USE_RTS(tx_desc, value)                                    \
@@ -99,6 +103,7 @@ void rtw_tx(struct rtw_dev *rtwdev,
 void rtw_txq_init(struct rtw_dev *rtwdev, struct ieee80211_txq *txq);
 void rtw_txq_cleanup(struct rtw_dev *rtwdev, struct ieee80211_txq *txq);
 void rtw_tx_work(struct work_struct *w);
+void __rtw_tx_work(struct rtw_dev *rtwdev);
 void rtw_tx_pkt_info_update(struct rtw_dev *rtwdev,
 			    struct rtw_tx_pkt_info *pkt_info,
 			    struct ieee80211_sta *sta,

@@ -791,8 +791,10 @@ void virtio_transport_release(struct vsock_sock *vsk)
 		virtio_transport_free_pkt(pkt);
 	}
 
-	if (remove_sock)
+	if (remove_sock) {
+		sock_set_flag(sk, SOCK_DONE);
 		vsock_remove_sock(vsk);
+	}
 }
 EXPORT_SYMBOL_GPL(virtio_transport_release);
 
@@ -1079,6 +1081,14 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 	vsk = vsock_sk(sk);
 
 	lock_sock(sk);
+
+	/* Check if sk has been closed before lock_sock */
+	if (sock_flag(sk, SOCK_DONE)) {
+		(void)virtio_transport_reset_no_sock(t, pkt);
+		release_sock(sk);
+		sock_put(sk);
+		goto free_pkt;
+	}
 
 	space_available = virtio_transport_space_update(sk, pkt);
 

@@ -135,21 +135,26 @@ static int cros_typec_get_switch_handles(struct cros_typec_port *port,
 					 struct fwnode_handle *fwnode,
 					 struct device *dev)
 {
+	int ret = 0;
+
 	port->mux = fwnode_typec_mux_get(fwnode, NULL);
 	if (IS_ERR(port->mux)) {
-		dev_dbg(dev, "Mux handle not found.\n");
+		ret = PTR_ERR(port->mux);
+		dev_dbg(dev, "Mux handle not found: %d.\n", ret);
 		goto mux_err;
 	}
 
 	port->ori_sw = fwnode_typec_switch_get(fwnode);
 	if (IS_ERR(port->ori_sw)) {
-		dev_dbg(dev, "Orientation switch handle not found.\n");
+		ret = PTR_ERR(port->ori_sw);
+		dev_dbg(dev, "Orientation switch handle not found: %d\n", ret);
 		goto ori_sw_err;
 	}
 
 	port->role_sw = fwnode_usb_role_switch_get(fwnode);
 	if (IS_ERR(port->role_sw)) {
-		dev_dbg(dev, "USB role switch handle not found.\n");
+		ret = PTR_ERR(port->role_sw);
+		dev_dbg(dev, "USB role switch handle not found: %d\n", ret);
 		goto role_sw_err;
 	}
 
@@ -162,7 +167,7 @@ ori_sw_err:
 mux_err:
 	typec_mux_put(port->mux);
 
-	return -ENODEV;
+	return ret;
 }
 
 static int cros_typec_add_partner(struct cros_typec_data *typec, int port_num,
@@ -356,9 +361,11 @@ static int cros_typec_init_ports(struct cros_typec_data *typec)
 		}
 
 		ret = cros_typec_get_switch_handles(cros_port, fwnode, dev);
-		if (ret)
-			dev_dbg(dev, "No switch control for port %d\n",
-				port_num);
+		if (ret) {
+			dev_dbg(dev, "No switch control for port %d, err: %d\n", port_num, ret);
+			if (ret == -EPROBE_DEFER)
+				goto unregister_ports;
+		}
 
 		cros_typec_register_port_altmodes(typec, port_num);
 
@@ -565,8 +572,8 @@ mux_ack:
 	/* Sending Acknowledgment to EC */
 	mux_ack.port = port_num;
 
-	if (cros_ec_command(typec->ec, 0, EC_CMD_USB_PD_MUX_ACK, &mux_ack,
-			    sizeof(mux_ack), NULL, 0) < 0)
+	if (cros_ec_cmd(typec->ec, 0, EC_CMD_USB_PD_MUX_ACK, &mux_ack,
+			sizeof(mux_ack), NULL, 0) < 0)
 		dev_warn(typec->dev,
 			 "Failed to send Mux ACK to EC for port: %d\n",
 			 port_num);
@@ -637,8 +644,8 @@ static int cros_typec_get_mux_info(struct cros_typec_data *typec, int port_num,
 		.port = port_num,
 	};
 
-	return cros_ec_command(typec->ec, 0, EC_CMD_USB_PD_MUX_INFO, &req,
-			       sizeof(req), resp, sizeof(*resp));
+	return cros_ec_cmd(typec->ec, 0, EC_CMD_USB_PD_MUX_INFO, &req,
+			   sizeof(req), resp, sizeof(*resp));
 }
 
 /*
@@ -745,8 +752,8 @@ static int cros_typec_handle_sop_prime_disc(struct cros_typec_data *typec, int p
 	int ret = 0;
 
 	memset(disc, 0, EC_PROTO2_MAX_RESPONSE_SIZE);
-	ret = cros_ec_command(typec->ec, 0, EC_CMD_TYPEC_DISCOVERY, &req, sizeof(req),
-			      disc, EC_PROTO2_MAX_RESPONSE_SIZE);
+	ret = cros_ec_cmd(typec->ec, 0, EC_CMD_TYPEC_DISCOVERY, &req, sizeof(req),
+			  disc, EC_PROTO2_MAX_RESPONSE_SIZE);
 	if (ret < 0) {
 		dev_err(typec->dev, "Failed to get SOP' discovery data for port: %d\n", port_num);
 		goto sop_prime_disc_exit;
@@ -828,8 +835,8 @@ static int cros_typec_handle_sop_disc(struct cros_typec_data *typec, int port_nu
 	typec_partner_set_pd_revision(port->partner, pd_revision);
 
 	memset(sop_disc, 0, EC_PROTO2_MAX_RESPONSE_SIZE);
-	ret = cros_ec_command(typec->ec, 0, EC_CMD_TYPEC_DISCOVERY, &req, sizeof(req),
-			      sop_disc, EC_PROTO2_MAX_RESPONSE_SIZE);
+	ret = cros_ec_cmd(typec->ec, 0, EC_CMD_TYPEC_DISCOVERY, &req, sizeof(req),
+			  sop_disc, EC_PROTO2_MAX_RESPONSE_SIZE);
 	if (ret < 0) {
 		dev_err(typec->dev, "Failed to get SOP discovery data for port: %d\n", port_num);
 		goto disc_exit;
@@ -861,8 +868,8 @@ static int cros_typec_send_clear_event(struct cros_typec_data *typec, int port_n
 		.clear_events_mask = events_mask,
 	};
 
-	return cros_ec_command(typec->ec, 0, EC_CMD_TYPEC_CONTROL, &req,
-			       sizeof(req), NULL, 0);
+	return cros_ec_cmd(typec->ec, 0, EC_CMD_TYPEC_CONTROL, &req,
+			   sizeof(req), NULL, 0);
 }
 
 static void cros_typec_handle_status(struct cros_typec_data *typec, int port_num)
@@ -873,8 +880,8 @@ static void cros_typec_handle_status(struct cros_typec_data *typec, int port_num
 	};
 	int ret;
 
-	ret = cros_ec_command(typec->ec, 0, EC_CMD_TYPEC_STATUS, &req, sizeof(req),
-			      &resp, sizeof(resp));
+	ret = cros_ec_cmd(typec->ec, 0, EC_CMD_TYPEC_STATUS, &req, sizeof(req),
+			  &resp, sizeof(resp));
 	if (ret < 0) {
 		dev_warn(typec->dev, "EC_CMD_TYPEC_STATUS failed for port: %d\n", port_num);
 		return;
@@ -952,9 +959,9 @@ static int cros_typec_port_update(struct cros_typec_data *typec, int port_num)
 	req.mux = USB_PD_CTRL_MUX_NO_CHANGE;
 	req.swap = USB_PD_CTRL_SWAP_NONE;
 
-	ret = cros_ec_command(typec->ec, typec->pd_ctrl_ver,
-			      EC_CMD_USB_PD_CONTROL, &req, sizeof(req),
-			      &resp, sizeof(resp));
+	ret = cros_ec_cmd(typec->ec, typec->pd_ctrl_ver,
+			  EC_CMD_USB_PD_CONTROL, &req, sizeof(req),
+			  &resp, sizeof(resp));
 	if (ret < 0)
 		return ret;
 
@@ -1004,9 +1011,8 @@ static int cros_typec_get_cmd_version(struct cros_typec_data *typec)
 
 	/* We're interested in the PD control command version. */
 	req_v1.cmd = EC_CMD_USB_PD_CONTROL;
-	ret = cros_ec_command(typec->ec, 1, EC_CMD_GET_CMD_VERSIONS,
-			      &req_v1, sizeof(req_v1), &resp,
-				    sizeof(resp));
+	ret = cros_ec_cmd(typec->ec, 1, EC_CMD_GET_CMD_VERSIONS,
+			  &req_v1, sizeof(req_v1), &resp, sizeof(resp));
 	if (ret < 0)
 		return ret;
 
@@ -1017,8 +1023,8 @@ static int cros_typec_get_cmd_version(struct cros_typec_data *typec)
 	else
 		typec->pd_ctrl_ver = 0;
 
-	dev_dbg(typec->dev, "PD Control has version mask 0x%hhx\n",
-		typec->pd_ctrl_ver);
+	dev_dbg(typec->dev, "PD Control has version mask 0x%02x\n",
+		typec->pd_ctrl_ver & 0xff);
 
 	return 0;
 }
@@ -1094,8 +1100,8 @@ static int cros_typec_probe(struct platform_device *pdev)
 	typec->typec_cmd_supported = cros_ec_check_features(ec_dev, EC_FEATURE_TYPEC_CMD);
 	typec->needs_mux_ack = cros_ec_check_features(ec_dev, EC_FEATURE_TYPEC_MUX_REQUIRE_AP_ACK);
 
-	ret = cros_ec_command(typec->ec, 0, EC_CMD_USB_PD_PORTS, NULL, 0,
-			      &resp, sizeof(resp));
+	ret = cros_ec_cmd(typec->ec, 0, EC_CMD_USB_PD_PORTS, NULL, 0,
+			  &resp, sizeof(resp));
 	if (ret < 0)
 		return ret;
 

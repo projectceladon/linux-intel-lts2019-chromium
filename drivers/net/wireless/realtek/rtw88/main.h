@@ -356,7 +356,7 @@ enum rtw_flags {
 	RTW_FLAG_RUNNING,
 	RTW_FLAG_FW_RUNNING,
 	RTW_FLAG_SCANNING,
-	RTW_FLAG_INACTIVE_PS,
+	RTW_FLAG_POWERON,
 	RTW_FLAG_LEISURE_PS,
 	RTW_FLAG_LEISURE_PS_DEEP,
 	RTW_FLAG_DIG_DISABLE,
@@ -395,6 +395,15 @@ enum rtw_snr {
 	RTW_SNR_NUM
 };
 
+enum rtw_port {
+	RTW_PORT_0 = 0,
+	RTW_PORT_1 = 1,
+	RTW_PORT_2 = 2,
+	RTW_PORT_3 = 3,
+	RTW_PORT_4 = 4,
+	RTW_PORT_NUM
+};
+
 enum rtw_wow_flags {
 	RTW_WOW_FLAG_EN_MAGIC_PKT,
 	RTW_WOW_FLAG_EN_REKEY_PKT,
@@ -402,13 +411,6 @@ enum rtw_wow_flags {
 
 	/* keep it last */
 	RTW_WOW_FLAG_MAX,
-};
-
-enum rtw_sar_sources {
-	RTW_SAR_SOURCE_NONE,
-	RTW_SAR_SOURCE_VNDCMD,
-	RTW_SAR_SOURCE_ACPI_STATIC,
-	RTW_SAR_SOURCE_ACPI_DYNAMIC,
 };
 
 /* the power index is represented by differences, which cck-1s & ht40-1s are
@@ -582,6 +584,7 @@ struct rtw_tx_pkt_info {
 	u32 tx_pkt_size;
 	u8 offset;
 	u8 pkt_offset;
+	u8 tim_offset;
 	u8 mac_id;
 	u8 rate_id;
 	u8 rate;
@@ -1162,6 +1165,7 @@ struct rtw_chip_info {
 	u32 txff_size;
 	u32 rxff_size;
 	u32 fw_rxff_size;
+	u16 rsvd_drv_pg_num;
 	u8 band;
 	u8 page_size;
 	u8 csi_buf_pg_num;
@@ -1804,8 +1808,31 @@ struct rtw_fw_state {
 	u32 feature_ext;
 };
 
+enum rtw_sar_sources {
+	RTW_SAR_SOURCE_NONE,
+	RTW_SAR_SOURCE_COMMON,
+};
+
+enum rtw_sar_bands {
+	RTW_SAR_BAND_0,
+	RTW_SAR_BAND_1,
+	/* RTW_SAR_BAND_2, not used now */
+	RTW_SAR_BAND_3,
+	RTW_SAR_BAND_4,
+
+	RTW_SAR_BAND_NR,
+};
+
+/* the union is reserved for other knids of SAR sources
+ * which might not re-use same format with array common.
+ */
+union rtw_sar_cfg {
+	s8 common[RTW_SAR_BAND_NR];
+};
+
 struct rtw_sar {
-	enum rtw_sar_sources source;
+	enum rtw_sar_sources src;
+	union rtw_sar_cfg cfg[RTW_RF_PATH_MAX][RTW_RATE_SECTION_MAX];
 };
 
 struct rtw_hal {
@@ -1855,12 +1882,11 @@ struct rtw_hal {
 			  [RTW_CHANNEL_WIDTH_MAX]
 			  [RTW_RATE_SECTION_MAX]
 			  [RTW_MAX_CHANNEL_NUM_5G];
-	s8 tx_pwr_sar_2g[RTW_REGD_MAX][RTW_RF_PATH_MAX][RTW_RATE_SECTION_MAX]
-			[RTW_MAX_CHANNEL_NUM_2G];
-	s8 tx_pwr_sar_5g[RTW_REGD_MAX][RTW_RF_PATH_MAX][RTW_RATE_SECTION_MAX]
-			[RTW_MAX_CHANNEL_NUM_5G];
 	s8 tx_pwr_tbl[RTW_RF_PATH_MAX]
 		     [DESC_RATE_MAX];
+
+	enum rtw_sar_bands sar_band;
+	struct rtw_sar sar;
 };
 
 struct rtw_path_div {
@@ -1933,6 +1959,7 @@ struct rtw_dev {
 	struct work_struct c2h_work;
 	struct work_struct ips_work;
 	struct work_struct fw_recovery_work;
+	struct work_struct update_beacon_work;
 
 	/* used to protect txqs list */
 	spinlock_t txq_lock;
@@ -1962,6 +1989,7 @@ struct rtw_dev {
 	u8 sta_cnt;
 	u32 rts_threshold;
 
+	DECLARE_BITMAP(hw_port, RTW_PORT_NUM);
 	DECLARE_BITMAP(mac_id_map, RTW_MAX_MAC_ID_NUM);
 	DECLARE_BITMAP(flags, NUM_OF_RTW_FLAGS);
 
@@ -1971,9 +1999,8 @@ struct rtw_dev {
 	struct rtw_fw_state wow_fw;
 	struct rtw_wow_param wow;
 
-	struct rtw_sar sar;
-
 	struct completion fw_scan_density;
+	bool ap_active;
 
 	/* hci related data, must be last */
 	u8 priv[0] __aligned(sizeof(void *));
@@ -2072,6 +2099,7 @@ enum nl80211_band rtw_hw_to_nl80211_band(enum rtw_supported_band hw_band)
 }
 
 void rtw_set_rx_freq_band(struct rtw_rx_pkt_stat *pkt_stat, u8 channel);
+void rtw_set_dtim_period(struct rtw_dev *rtwdev, int dtim_period);
 void rtw_get_channel_params(struct cfg80211_chan_def *chandef,
 			    struct rtw_channel_params *ch_param);
 bool check_hw_ready(struct rtw_dev *rtwdev, u32 addr, u32 mask, u32 target);
@@ -2111,4 +2139,7 @@ int rtw_dump_reg(struct rtw_dev *rtwdev, const u32 addr, const u32 size);
 void rtw_update_channel(struct rtw_dev *rtwdev, u8 center_channel,
 			u8 primary_channel, enum rtw_supported_band band,
 			enum rtw_bandwidth bandwidth);
+void rtw_core_port_switch(struct rtw_dev *rtwdev, struct ieee80211_vif *vif);
+bool rtw_core_check_sta_active(struct rtw_dev *rtwdev);
+void rtw_core_enable_beacon(struct rtw_dev *rtwdev, bool enable);
 #endif

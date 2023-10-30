@@ -249,6 +249,22 @@
  */
 
 /**
+ * DOC: VLAN offload support for setting group keys and binding STAs to VLANs
+ *
+ * By setting @NL80211_EXT_FEATURE_VLAN_OFFLOAD flag drivers can indicate they
+ * support offloading VLAN functionality in a manner where the driver exposes a
+ * single netdev that uses VLAN tagged frames and separate VLAN-specific netdevs
+ * can then be added using RTM_NEWLINK/IFLA_VLAN_ID similarly to the Ethernet
+ * case. Frames received from stations that are not assigned to any VLAN are
+ * delivered on the main netdev and frames to such stations can be sent through
+ * that main netdev.
+ *
+ * %NL80211_CMD_NEW_KEY (for group keys), %NL80211_CMD_NEW_STATION, and
+ * %NL80211_CMD_SET_STATION will optionally specify vlan_id using
+ * %NL80211_ATTR_VLAN_ID.
+ */
+
+/**
  * DOC: TID configuration
  *
  * TID config support can be checked in the %NL80211_ATTR_TID_CONFIG
@@ -2408,16 +2424,10 @@ enum nl80211_commands {
  *	the allowed channel bandwidth configurations. (u8 attribute)
  *	Defined by IEEE P802.11ay/D4.0 section 9.4.2.251, Table 13.
  *
- * @NL80211_ATTR_SAR_SPEC: SAR power limitation specification when
- *	used with %NL80211_CMD_SET_SAR_SPECS. The message contains fields
- *	of %nl80211_sar_attrs which specifies the sar type and related
- *	sar specs. Sar specs contains array of %nl80211_sar_specs_attrs.
+ * @NL80211_ATTR_VLAN_ID: VLAN ID (1..4094) for the station and VLAN group key
+ *	(u16).
  *
  * @NL80211_ATTR_HE_BSS_COLOR: nested attribute for BSS Color Settings.
- *
- * @NL80211_ATTR_RECONNECT_REQUESTED: flag attribute, used with deauth and
- *	disassoc events to indicate that an immediate reconnect to the AP
- *	is desired.
  *
  * @NL80211_ATTR_IFTYPE_AKM_SUITES: nested array attribute, with each entry
  *	using attributes from &enum nl80211_iftype_akm_attributes. This
@@ -2431,35 +2441,19 @@ enum nl80211_commands {
  *	on output (in wiphy attributes) it contains only the feature sub-
  *	attributes.
  *
- * @NL80211_ATTR_CONTROL_PORT_NO_PREAUTH: disable preauth frame rx on control
- *	port in order to forward/receive them as ordinary data frames.
+ * @NL80211_ATTR_SAR_SPEC: SAR power limitation specification when
+ *	used with %NL80211_CMD_SET_SAR_SPECS. The message contains fields
+ *	of %nl80211_sar_attrs which specifies the sar type and related
+ *	sar specs. Sar specs contains array of %nl80211_sar_specs_attrs.
  *
- * @NL80211_ATTR_PMK_LIFETIME: Maximum lifetime for PMKSA in seconds (u32,
- *	dot11RSNAConfigPMKReauthThreshold; 0 is not a valid value).
- *	An optional parameter configured through %NL80211_CMD_SET_PMKSA.
- *	Drivers that trigger roaming need to know the lifetime of the
- *	configured PMKSA for triggering the full vs. PMKSA caching based
- *	authentication. This timeout helps authentication methods like SAE,
- *	where PMK gets updated only by going through a full (new SAE)
- *	authentication instead of getting updated during an association for EAP
- *	authentication. No new full authentication within the PMK expiry shall
- *	result in a disassociation at the end of the lifetime.
+ * @NL80211_ATTR_RECONNECT_REQUESTED: flag attribute, used with deauth and
+ *	disassoc events to indicate that an immediate reconnect to the AP
+ *	is desired.
  *
- * @NL80211_ATTR_PMK_REAUTH_THRESHOLD: Reauthentication threshold time, in
- *	terms of percentage of %NL80211_ATTR_PMK_LIFETIME
- *	(u8, dot11RSNAConfigPMKReauthThreshold, 1..100). This is an optional
- *	parameter configured through %NL80211_CMD_SET_PMKSA. Requests the
- *	driver to trigger a full authentication roam (without PMKSA caching)
- *	after the reauthentication threshold time, but before the PMK lifetime
- *	has expired.
- *
- *	Authentication methods like SAE need to be able to generate a new PMKSA
- *	entry without having to force a disconnection after the PMK timeout. If
- *	no roaming occurs between the reauth threshold and PMK expiration,
- *	disassociation is still forced.
- *
- * @NL80211_ATTR_HE_6GHZ_CAPABILITY: HE 6 GHz Band Capability element (from
- *	association request when used with NL80211_CMD_NEW_STATION).
+ * @NL80211_ATTR_SAE_PWE: Indicates the mechanism(s) allowed for SAE PWE
+ *	derivation in WPA3-Personal networks which are using SAE authentication.
+ *	This is a u8 attribute that encapsulates one of the values from
+ *	&enum nl80211_sae_pwe_mechanism.
  *
  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
  * @NL80211_ATTR_MAX: highest attribute number currently defined
@@ -2923,13 +2917,9 @@ enum nl80211_attrs {
 	NL80211_ATTR_WIPHY_EDMG_CHANNELS,
 	NL80211_ATTR_WIPHY_EDMG_BW_CONFIG,
 
-	NL80211_ATTR_SAR_SPEC = 300,
-
 	NL80211_ATTR_VLAN_ID,
 
 	NL80211_ATTR_HE_BSS_COLOR,
-
-	NL80211_ATTR_RECONNECT_REQUESTED,
 
 	NL80211_ATTR_IFTYPE_AKM_SUITES,
 
@@ -2941,6 +2931,11 @@ enum nl80211_attrs {
 	NL80211_ATTR_PMK_REAUTH_THRESHOLD,
 
 	NL80211_ATTR_HE_6GHZ_CAPABILITY,
+	NL80211_ATTR_SAE_PWE = 298,
+
+	NL80211_ATTR_RECONNECT_REQUESTED = 299,
+
+	NL80211_ATTR_SAR_SPEC = 300,
 
 	/* add attributes here, update the policy in nl80211.c */
 
@@ -5719,12 +5714,9 @@ enum nl80211_feature_flags {
  *	with VLAN tagged frames and separate VLAN-specific netdevs added using
  *	vconfig similarly to the Ethernet case.
  *
- * @NL80211_EXT_FEATURE_BEACON_PROTECTION: The driver supports Beacon protection
- *	and can receive key configuration for BIGTK using key indexes 6 and 7.
- *
- * @NL80211_EXT_FEATURE_CONTROL_PORT_NO_PREAUTH: The driver can disable the
- *	forwarding of preauth frames over the control port. They are then
- *	handled as ordinary data frames.
+ * @NL80211_EXT_FEATURE_AQL: The driver supports the Airtime Queue Limit (AQL)
+ *	feature, which prevents bufferbloat by using the expected transmission
+ *	time to limit the amount of data buffered in the hardware.
  *
  * @NUM_NL80211_EXT_FEATURES: number of extended features.
  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
@@ -6932,4 +6924,22 @@ enum nl80211_iftype_akm_attributes {
 	NL80211_IFTYPE_AKM_ATTR_MAX = __NL80211_IFTYPE_AKM_ATTR_LAST - 1,
 };
 
+/**
+ * enum nl80211_sae_pwe_mechanism - The mechanism(s) allowed for SAE PWE
+ *	derivation. Applicable only when WPA3-Personal SAE authentication is
+ *	used.
+ *
+ * @NL80211_SAE_PWE_UNSPECIFIED: not specified, used internally to indicate that
+ *	attribute is not present from userspace.
+ * @NL80211_SAE_PWE_HUNT_AND_PECK: hunting-and-pecking loop only
+ * @NL80211_SAE_PWE_HASH_TO_ELEMENT: hash-to-element only
+ * @NL80211_SAE_PWE_BOTH: both hunting-and-pecking loop and hash-to-element
+ *	can be used.
+ */
+enum nl80211_sae_pwe_mechanism {
+	NL80211_SAE_PWE_UNSPECIFIED,
+	NL80211_SAE_PWE_HUNT_AND_PECK,
+	NL80211_SAE_PWE_HASH_TO_ELEMENT,
+	NL80211_SAE_PWE_BOTH,
+};
 #endif /* __LINUX_NL80211_H */

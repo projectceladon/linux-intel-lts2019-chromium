@@ -3,7 +3,7 @@
  *
  * Copyright 2007-2009	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
- * Copyright (C) 2018-2020, 2022 Intel Corporation
+ * Copyright (C) 2018-2020, 2022-2023 Intel Corporation
  */
 #include <linux/export.h>
 #include <net/cfg80211.h>
@@ -115,4 +115,95 @@ int ieee80211_get_vht_max_nss(struct ieee80211_vht_cap *cap,
 	return max_vht_nss;
 }
 EXPORT_SYMBOL(ieee80211_get_vht_max_nss);
+#endif
+
+#if CFG80211_VERSION < KERNEL_VERSION(6,4,0)
+ssize_t cfg80211_defragment_element(const struct element *elem, const u8 *ies,
+				    size_t ieslen, u8 *data, size_t data_len,
+				    u8 frag_id)
+{
+	const struct element *next;
+	ssize_t copied;
+	u8 elem_datalen;
+
+	if (!elem)
+		return -EINVAL;
+
+	/* elem might be invalid after the memmove */
+	next = (void *)(elem->data + elem->datalen);
+
+	elem_datalen = elem->datalen;
+	if (elem->id == WLAN_EID_EXTENSION) {
+		copied = elem->datalen - 1;
+		if (copied > data_len)
+			return -ENOSPC;
+
+		memmove(data, elem->data + 1, copied);
+	} else {
+		copied = elem->datalen;
+		if (copied > data_len)
+			return -ENOSPC;
+
+		memmove(data, elem->data, copied);
+	}
+
+	/* Fragmented elements must have 255 bytes */
+	if (elem_datalen < 255)
+		return copied;
+
+	for (elem = next;
+	     elem->data < ies + ieslen &&
+		elem->data + elem->datalen < ies + ieslen;
+	     elem = next) {
+		/* elem might be invalid after the memmove */
+		next = (void *)(elem->data + elem->datalen);
+
+		if (elem->id != frag_id)
+			break;
+
+		elem_datalen = elem->datalen;
+
+		if (copied + elem_datalen > data_len)
+			return -ENOSPC;
+
+		memmove(data + copied, elem->data, elem_datalen);
+		copied += elem_datalen;
+
+		/* Only the last fragment may be short */
+		if (elem_datalen != 255)
+			break;
+	}
+
+	return copied;
+}
+EXPORT_SYMBOL(cfg80211_defragment_element);
+
+void ieee80211_fragment_element(struct sk_buff *skb, u8 *len_pos, u8 frag_id)
+{
+	unsigned int elem_len;
+
+	if (!len_pos)
+		return;
+
+	elem_len = skb->data + skb->len - len_pos - 1;
+
+	while (elem_len > 255) {
+		/* this one is 255 */
+		*len_pos = 255;
+		/* remaining data gets smaller */
+		elem_len -= 255;
+		/* make space for the fragment ID/len in SKB */
+		skb_put(skb, 2);
+		/* shift back the remaining data to place fragment ID/len */
+		memmove(len_pos + 255 + 3, len_pos + 255 + 1, elem_len);
+		/* place the fragment ID */
+		len_pos += 255 + 1;
+		*len_pos = frag_id;
+		/* and point to fragment length to update later */
+		len_pos++;
+	}
+
+	*len_pos = elem_len;
+}
+EXPORT_SYMBOL(ieee80211_fragment_element);
 #endif

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2023 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -15,6 +15,7 @@
 #include "iwl-io.h"
 #include "debugfs.h"
 #include "iwl-modparams.h"
+#include "iwl-drv.h"
 #include "fw/error-dump.h"
 #include "fw/api/phy-ctxt.h"
 
@@ -414,6 +415,26 @@ static ssize_t iwl_dbgfs_sar_geo_profile_read(struct file *file,
 
 	return simple_read_from_buffer(user_buf, count, ppos, buf, pos);
 }
+
+static ssize_t iwl_dbgfs_wifi_6e_enable_read(struct file *file,
+					     char __user *user_buf,
+					     size_t count, loff_t *ppos)
+{
+	struct iwl_mvm *mvm = file->private_data;
+	int err, pos;
+	char buf[12];
+	u32 value;
+
+	err = iwl_acpi_get_dsm_u32(mvm->fwrt.dev, 0,
+				   DSM_FUNC_ENABLE_6E,
+				   &iwl_guid, &value);
+	if (err)
+		return err;
+
+	pos = sprintf(buf, "0x%08x\n", value);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, pos);
+}
 #endif
 
 static ssize_t iwl_dbgfs_stations_read(struct file *file, char __user *user_buf,
@@ -445,13 +466,14 @@ static ssize_t iwl_dbgfs_stations_read(struct file *file, char __user *user_buf,
 	return simple_read_from_buffer(user_buf, count, ppos, buf, pos);
 }
 
-static ssize_t iwl_dbgfs_rs_data_read(struct file *file, char __user *user_buf,
+static ssize_t iwl_dbgfs_rs_data_read(struct ieee80211_link_sta *link_sta,
+				      struct iwl_mvm_sta *mvmsta,
+				      struct iwl_mvm *mvm,
+				      struct iwl_mvm_link_sta *mvm_link_sta,
+				      char __user *user_buf,
 				      size_t count, loff_t *ppos)
 {
-	struct ieee80211_sta *sta = file->private_data;
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	struct iwl_lq_sta_rs_fw *lq_sta = &mvmsta->lq_sta.rs_fw;
-	struct iwl_mvm *mvm = lq_sta->pers.drv;
+	struct iwl_lq_sta_rs_fw *lq_sta = &mvm_link_sta->lq_sta.rs_fw;
 	static const size_t bufsz = 2048;
 	char *buff;
 	int desc = 0;
@@ -460,8 +482,6 @@ static ssize_t iwl_dbgfs_rs_data_read(struct file *file, char __user *user_buf,
 	buff = kmalloc(bufsz, GFP_KERNEL);
 	if (!buff)
 		return -ENOMEM;
-
-	mutex_lock(&mvm->mutex);
 
 	desc += scnprintf(buff + desc, bufsz - desc, "sta_id %d\n",
 			  lq_sta->pers.sta_id);
@@ -483,48 +503,56 @@ static ssize_t iwl_dbgfs_rs_data_read(struct file *file, char __user *user_buf,
 				     lq_sta->last_rate_n_flags);
 	if (desc < bufsz - 1)
 		buff[desc++] = '\n';
-	mutex_unlock(&mvm->mutex);
 
 	ret = simple_read_from_buffer(user_buf, count, ppos, buff, desc);
 	kfree(buff);
 	return ret;
 }
 
-static void iwl_rs_set_fixed_rate(struct iwl_mvm *mvm,
-				  struct iwl_lq_sta_rs_fw *lq_sta)
+static int iwl_rs_set_fixed_rate(struct iwl_mvm *mvm,
+				 struct iwl_lq_sta_rs_fw *lq_sta,
+				 bool partial)
 {
-	int ret = iwl_rs_send_dhc(mvm, lq_sta->pers.sta_id,
-				  IWL_TLC_DEBUG_FIXED_RATE,
+	u32 type = partial ? IWL_TLC_DEBUG_PARTIAL_FIXED_RATE :
+			     IWL_TLC_DEBUG_FIXED_RATE;
+	int ret = iwl_rs_send_dhc(mvm, lq_sta->pers.sta_id, type,
 				  lq_sta->pers.dbg_fixed_rate);
 
 	char pretty_rate[100];
 
+	rs_pretty_print_rate(pretty_rate, sizeof(pretty_rate),
+			     lq_sta->pers.dbg_fixed_rate);
+
+	IWL_DEBUG_RATE(mvm, "sta_id %d rate %s partial: %d, ret:%d\n",
+		       lq_sta->pers.sta_id, pretty_rate, partial, ret);
+
 	if (ret) {
 		lq_sta->pers.dbg_fixed_rate = 0;
-		return;
+		return -EINVAL;
 	}
 
-	rs_pretty_print_rate_v1(pretty_rate, sizeof(pretty_rate),
-				lq_sta->pers.dbg_fixed_rate);
-	IWL_DEBUG_RATE(mvm, "sta_id %d rate %s\n",
-		       lq_sta->pers.sta_id, pretty_rate);
+	return 0;
 }
 
-static ssize_t iwl_dbgfs_fixed_rate_write(struct ieee80211_sta *sta,
+static ssize_t iwl_dbgfs_fixed_rate_write(struct ieee80211_link_sta *link_sta,
+					  struct iwl_mvm_sta *mvmsta,
+					  struct iwl_mvm *mvm,
+					  struct iwl_mvm_link_sta *mvm_link_sta,
 					  char *buf, size_t count,
 					  loff_t *ppos)
 {
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	struct iwl_lq_sta_rs_fw *lq_sta = &mvmsta->lq_sta.rs_fw;
-	struct iwl_mvm *mvm = lq_sta->pers.drv;
+	struct iwl_lq_sta_rs_fw *lq_sta = &mvm_link_sta->lq_sta.rs_fw;
 	u32 parsed_rate;
+	u32 partial = false;
 
-	if (kstrtou32(buf, 0, &parsed_rate))
+	if (sscanf(buf, "%i %i", &parsed_rate, &partial) == 0)
 		lq_sta->pers.dbg_fixed_rate = 0;
 	else
 		lq_sta->pers.dbg_fixed_rate = parsed_rate;
 
-	iwl_rs_set_fixed_rate(mvm, lq_sta);
+	if (iwl_rs_set_fixed_rate(mvm, lq_sta, !!partial))
+		return -EINVAL;
+
 	return count;
 }
 
@@ -541,14 +569,15 @@ static void iwl_rs_disable_rts(struct iwl_mvm *mvm,
 		       sta_id, rts_disable);
 }
 
-static ssize_t iwl_dbgfs_disable_rts_write(struct ieee80211_sta *sta,
+static ssize_t iwl_dbgfs_disable_rts_write(struct ieee80211_link_sta *link_sta,
+					   struct iwl_mvm_sta *mvmsta,
+					   struct iwl_mvm *mvm,
+					   struct iwl_mvm_link_sta *mvm_link_sta,
 					   char *buf, size_t count,
 					   loff_t *ppos)
 {
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	struct iwl_lq_sta_rs_fw *lq_sta = &mvmsta->lq_sta.rs_fw;
+	struct iwl_lq_sta_rs_fw *lq_sta = &mvm_link_sta->lq_sta.rs_fw;
 	u32 sta_id = lq_sta->pers.sta_id;
-	struct iwl_mvm *mvm = lq_sta->pers.drv;
 	bool disable_rts;
 
 	if (kstrtobool(buf, &disable_rts))
@@ -558,16 +587,16 @@ static ssize_t iwl_dbgfs_disable_rts_write(struct ieee80211_sta *sta,
 	return count;
 }
 
-static ssize_t iwl_dbgfs_tlc_dhc_write(struct ieee80211_sta *sta,
+static ssize_t iwl_dbgfs_tlc_dhc_write(struct ieee80211_link_sta *link_sta,
+				       struct iwl_mvm_sta *mvmsta,
+				       struct iwl_mvm *mvm,
+				       struct iwl_mvm_link_sta *mvm_link_sta,
 				       char *buf, size_t count,
 				       loff_t *ppos)
 {
+	struct iwl_lq_sta_rs_fw *lq_sta = &mvm_link_sta->lq_sta.rs_fw;
 	u32 type, value;
 	int ret;
-
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	struct iwl_lq_sta_rs_fw *lq_sta = &mvmsta->lq_sta.rs_fw;
-	struct iwl_mvm *mvm = lq_sta->pers.drv;
 
 	if (sscanf(buf, "%i %i", &type, &value) != 2) {
 		IWL_DEBUG_RATE(mvm, "usage <type> <value>\n");
@@ -601,7 +630,10 @@ static ssize_t iwl_dbgfs_iwl_tlc_dhc_write(struct iwl_mvm *mvm, char *buf,
 	return count;
 }
 
-static ssize_t iwl_dbgfs_ampdu_size_write(struct ieee80211_sta *sta,
+static ssize_t iwl_dbgfs_ampdu_size_write(struct ieee80211_link_sta *link_sta,
+					  struct iwl_mvm_sta *mvmsta,
+					  struct iwl_mvm *mvm,
+					  struct iwl_mvm_link_sta *mvm_link_sta,
 					  char *buf, size_t count,
 					  loff_t *ppos)
 {
@@ -612,15 +644,17 @@ static ssize_t iwl_dbgfs_ampdu_size_write(struct ieee80211_sta *sta,
 	if (err)
 		return err;
 
-	iwl_rs_dhc_set_ampdu_size(sta, ampdu_size);
+	iwl_rs_dhc_set_ampdu_size(link_sta->sta, link_sta, ampdu_size);
 	return count;
 }
 
-static ssize_t iwl_dbgfs_amsdu_len_write(struct ieee80211_sta *sta,
+static ssize_t iwl_dbgfs_amsdu_len_write(struct ieee80211_link_sta *link_sta,
+					 struct iwl_mvm_sta *mvmsta,
+					 struct iwl_mvm *mvm,
+					 struct iwl_mvm_link_sta *mvm_link_sta,
 					 char *buf, size_t count,
 					 loff_t *ppos)
 {
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
 	int i;
 	u16 amsdu_len;
 
@@ -628,34 +662,38 @@ static ssize_t iwl_dbgfs_amsdu_len_write(struct ieee80211_sta *sta,
 		return -EINVAL;
 
 	/* only change from debug set <-> debug unset */
-	if (amsdu_len && mvmsta->orig_amsdu_len)
+	if (amsdu_len && mvm_link_sta->orig_amsdu_len)
 		return -EBUSY;
 
 	if (amsdu_len) {
-		mvmsta->orig_amsdu_len = sta->max_amsdu_len;
-		sta->max_amsdu_len = amsdu_len;
-		for (i = 0; i < ARRAY_SIZE(sta->max_tid_amsdu_len); i++)
-			sta->max_tid_amsdu_len[i] = amsdu_len;
+		mvm_link_sta->orig_amsdu_len = link_sta->agg.max_amsdu_len;
+		link_sta->agg.max_amsdu_len = amsdu_len;
+		link_sta->agg.max_amsdu_len = amsdu_len;
+		for (i = 0; i < ARRAY_SIZE(link_sta->agg.max_tid_amsdu_len); i++)
+			link_sta->agg.max_tid_amsdu_len[i] = amsdu_len;
 	} else {
-		sta->max_amsdu_len = mvmsta->orig_amsdu_len;
-		mvmsta->orig_amsdu_len = 0;
+		link_sta->agg.max_amsdu_len = mvm_link_sta->orig_amsdu_len;
+		mvm_link_sta->orig_amsdu_len = 0;
 	}
+
+	ieee80211_sta_recalc_aggregates(link_sta->sta);
+
 	return count;
 }
 
-static ssize_t iwl_dbgfs_amsdu_len_read(struct file *file,
+static ssize_t iwl_dbgfs_amsdu_len_read(struct ieee80211_link_sta *link_sta,
+					struct iwl_mvm_sta *mvmsta,
+					struct iwl_mvm *mvm,
+					struct iwl_mvm_link_sta *mvm_link_sta,
 					char __user *user_buf,
 					size_t count, loff_t *ppos)
 {
-	struct ieee80211_sta *sta = file->private_data;
-	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
-
 	char buf[32];
 	int pos;
 
-	pos = scnprintf(buf, sizeof(buf), "current %d ", sta->max_amsdu_len);
+	pos = scnprintf(buf, sizeof(buf), "current %d ", link_sta->agg.max_amsdu_len);
 	pos += scnprintf(buf + pos, sizeof(buf) - pos, "stored %d\n",
-			 mvmsta->orig_amsdu_len);
+			 mvm_link_sta->orig_amsdu_len);
 
 	return simple_read_from_buffer(user_buf, count, ppos, buf, pos);
 }
@@ -890,6 +928,7 @@ static ssize_t iwl_dbgfs_fw_ver_read(struct file *file, char __user *user_buf,
 	struct iwl_mvm *mvm = file->private_data;
 	char *buff, *pos, *endpos;
 	static const size_t bufsz = 1024;
+	char _fw_name_pre[FW_NAME_PRE_BUFSIZE];
 	int ret;
 
 	buff = kmalloc(bufsz, GFP_KERNEL);
@@ -900,7 +939,7 @@ static ssize_t iwl_dbgfs_fw_ver_read(struct file *file, char __user *user_buf,
 	endpos = pos + bufsz;
 
 	pos += scnprintf(pos, endpos - pos, "FW prefix: %s\n",
-			 mvm->trans->cfg->fw_name_pre);
+			 iwl_drv_get_fwname_pre(mvm->trans, _fw_name_pre));
 	pos += scnprintf(pos, endpos - pos, "FW: %s\n",
 			 mvm->fwrt.fw->human_readable);
 	pos += scnprintf(pos, endpos - pos, "Device: %s\n",
@@ -923,11 +962,10 @@ static ssize_t iwl_dbgfs_tas_get_status_read(struct file *file,
 	struct iwl_mvm_tas_status_resp *rsp = &tas_rsp;
 	static const size_t bufsz = 1024;
 	char *buff, *pos, *endpos;
-	char tas_approved_list[256];
 	const char * const tas_dis_reason[TAS_DISABLED_REASON_MAX] = {
 		[TAS_DISABLED_DUE_TO_BIOS] = "Due To BIOS",
 		[TAS_DISABLED_DUE_TO_SAR_6DBM] = "Due To SAR Limit Less Than 6 dBm",
-		[TAS_DISABLED_REASON_INVALID] = "INVALID",
+		[TAS_DISABLED_REASON_INVALID] = "N/A",
 	};
 	const char * const tas_current_status[TAS_DYNA_STATUS_MAX] = {
 		[TAS_DYNA_INACTIVE] = "INACTIVE",
@@ -944,6 +982,7 @@ static ssize_t iwl_dbgfs_tas_get_status_read(struct file *file,
 		.data = { NULL, },
 	};
 	int ret, i, tmp;
+	bool tas_enabled = false;
 	unsigned long dyn_status;
 
 	if (!iwl_mvm_firmware_running(mvm))
@@ -962,6 +1001,36 @@ static ssize_t iwl_dbgfs_tas_get_status_read(struct file *file,
 	endpos = pos + bufsz;
 
 	rsp = (void *)hcmd.resp_pkt->data;
+
+	pos += scnprintf(pos, endpos - pos, "TAS Conclusion:\n");
+	for (i = 0; i < rsp->in_dual_radio + 1; i++) {
+		if (rsp->tas_status_mac[i].band != TAS_LMAC_BAND_INVALID &&
+		    rsp->tas_status_mac[i].dynamic_status & BIT(TAS_DYNA_ACTIVE)) {
+			pos += scnprintf(pos, endpos - pos, "\tON for ");
+			switch (rsp->tas_status_mac[i].band) {
+			case TAS_LMAC_BAND_HB:
+				pos += scnprintf(pos, endpos - pos, "HB\n");
+				break;
+			case TAS_LMAC_BAND_LB:
+				pos += scnprintf(pos, endpos - pos, "LB\n");
+				break;
+			case TAS_LMAC_BAND_UHB:
+				pos += scnprintf(pos, endpos - pos, "UHB\n");
+				break;
+			case TAS_LMAC_BAND_INVALID:
+				pos += scnprintf(pos, endpos - pos, "INVALID BAND\n");
+				break;
+			default:
+				pos += scnprintf(pos, endpos - pos, "Unsupported band (%d)\n",
+						 rsp->tas_status_mac[i].band);
+				goto out;
+			}
+			tas_enabled = true;
+		}
+	}
+	if (!tas_enabled)
+		pos += scnprintf(pos, endpos - pos, "\tOFF\n");
+
 	pos += scnprintf(pos, endpos - pos, "TAS Report\n");
 	pos += scnprintf(pos, endpos - pos, "\tTAS FW version: %d\n", rsp->tas_fw_version);
 	pos += scnprintf(pos, endpos - pos, "\tIs UHB Enabled For USA?: %s\n",
@@ -975,9 +1044,8 @@ static ssize_t iwl_dbgfs_tas_get_status_read(struct file *file,
 
 	pos += scnprintf(pos, endpos - pos, "\n\tVendor: %s\n",
 			 dmi_get_system_info(DMI_SYS_VENDOR));
-	iwl_mvm_get_tas_approved_list(tas_approved_list, ARRAY_SIZE(tas_approved_list));
-	pos += scnprintf(pos, endpos - pos, "\tVendor Approved List: %s\n",
-			 tas_approved_list);
+	pos += scnprintf(pos, endpos - pos, "\tVendor In Approved List: %s\n",
+			 iwl_mvm_is_vendor_in_approved_list() ? "YES" : "NO");
 	pos += scnprintf(pos, endpos - pos, "\tDo TAS Support Dual Radio?: %s\n",
 			 rsp->in_dual_radio ? "TRUE" : "FALSE");
 
@@ -1004,15 +1072,14 @@ static ssize_t iwl_dbgfs_tas_get_status_read(struct file *file,
 			pos += scnprintf(pos, endpos - pos, "INVALID BAND\n");
 			break;
 		default:
-			IWL_ERR(mvm, "Unsupported band (%d)\n", rsp->tas_status_mac[i].band);
-			ret = -EIO;
+			pos += scnprintf(pos, endpos - pos, "Unsupported band (%d)\n",
+					 rsp->tas_status_mac[i].band);
 			goto out;
 		}
 		pos += scnprintf(pos, endpos - pos, "\tStatic Status: %sabled\n",
 				 rsp->tas_status_mac[i].static_status ? "En" : "Dis");
 		pos += scnprintf(pos, endpos - pos, "\tStatic Disabled Reason: ");
-		if (rsp->tas_status_mac[i].static_dis_reason >= 0 &&
-		    rsp->tas_status_mac[i].static_dis_reason < TAS_DISABLED_REASON_MAX)
+		if (rsp->tas_status_mac[i].static_dis_reason < TAS_DISABLED_REASON_MAX)
 			pos += scnprintf(pos, endpos - pos, "%s (%d)\n",
 					 tas_dis_reason[rsp->tas_status_mac[i].static_dis_reason],
 					 rsp->tas_status_mac[i].static_dis_reason);
@@ -1533,6 +1600,7 @@ static int _iwl_dbgfs_inject_beacon_ie(struct iwl_mvm *mvm, char *bin, int len)
 	struct sk_buff *beacon;
 	struct ieee80211_tx_info *info;
 	struct iwl_mac_beacon_cmd beacon_cmd = {};
+	unsigned int link_id;
 	u8 rate;
 	int i;
 
@@ -1566,7 +1634,7 @@ static int _iwl_dbgfs_inject_beacon_ie(struct iwl_mvm *mvm, char *bin, int len)
 
 	mvm->hw->extra_beacon_tailroom = len;
 
-	beacon = ieee80211_beacon_get_template(mvm->hw, vif, NULL);
+	beacon = ieee80211_beacon_get_template(mvm->hw, vif, NULL, 0);
 	if (!beacon)
 		goto out_err;
 
@@ -1581,17 +1649,24 @@ static int _iwl_dbgfs_inject_beacon_ie(struct iwl_mvm *mvm, char *bin, int len)
 	info = IEEE80211_SKB_CB(beacon);
 	rate = iwl_mvm_mac_ctxt_get_beacon_rate(mvm, info, vif);
 
-	beacon_cmd.flags =
-		cpu_to_le16(iwl_mvm_mac_ctxt_get_beacon_flags(mvm->fw, rate));
-	beacon_cmd.byte_cnt = cpu_to_le16((u16)beacon->len);
-	beacon_cmd.template_id = cpu_to_le32((u32)mvmvif->id);
+	for_each_mvm_vif_valid_link(mvmvif, link_id) {
+		beacon_cmd.flags =
+			cpu_to_le16(iwl_mvm_mac_ctxt_get_beacon_flags(mvm->fw, rate));
+		beacon_cmd.byte_cnt = cpu_to_le16((u16)beacon->len);
+		if (iwl_fw_lookup_cmd_ver(mvm->fw, BEACON_TEMPLATE_CMD, 0) > 12)
+			beacon_cmd.link_id =
+				cpu_to_le32(mvmvif->link[link_id]->fw_link_id);
+		else
+			beacon_cmd.link_id = cpu_to_le32((u32)mvmvif->id);
 
-	iwl_mvm_mac_ctxt_set_tim(mvm, &beacon_cmd.tim_idx,
-				 &beacon_cmd.tim_size,
-				 beacon->data, beacon->len);
 
-	iwl_mvm_mac_ctxt_send_beacon_cmd(mvm, beacon, &beacon_cmd,
-					 sizeof(beacon_cmd));
+		iwl_mvm_mac_ctxt_set_tim(mvm, &beacon_cmd.tim_idx,
+					 &beacon_cmd.tim_size,
+					 beacon->data, beacon->len);
+
+		iwl_mvm_mac_ctxt_send_beacon_cmd(mvm, beacon, &beacon_cmd,
+						 sizeof(beacon_cmd));
+	}
 	mutex_unlock(&mvm->mutex);
 
 	dev_kfree_skb(beacon);
@@ -1713,17 +1788,127 @@ static ssize_t iwl_dbgfs_dbg_time_point_write(struct iwl_mvm *mvm,
 #define MVM_DEBUGFS_ADD_FILE(name, parent, mode) \
 	MVM_DEBUGFS_ADD_FILE_ALIAS(#name, name, parent, mode)
 
-#define MVM_DEBUGFS_WRITE_STA_FILE_OPS(name, bufsz) \
-	_MVM_DEBUGFS_WRITE_FILE_OPS(name, bufsz, struct ieee80211_sta)
-#define MVM_DEBUGFS_READ_WRITE_STA_FILE_OPS(name, bufsz) \
-	_MVM_DEBUGFS_READ_WRITE_FILE_OPS(name, bufsz, struct ieee80211_sta)
+static ssize_t
+_iwl_dbgfs_link_sta_wrap_write(ssize_t (*real)(struct ieee80211_link_sta *,
+					       struct iwl_mvm_sta *,
+					       struct iwl_mvm *,
+					       struct iwl_mvm_link_sta *,
+					       char *,
+					       size_t, loff_t *),
+			   struct file *file,
+			   char *buf, size_t buf_size, loff_t *ppos)
+{
+	struct ieee80211_link_sta *link_sta = file->private_data;
+	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(link_sta->sta);
+	struct iwl_mvm *mvm = iwl_mvm_vif_from_mac80211(mvmsta->vif)->mvm;
+	struct iwl_mvm_link_sta *mvm_link_sta;
+	ssize_t ret;
 
-#define MVM_DEBUGFS_ADD_STA_FILE_ALIAS(alias, name, parent, mode) do {	\
-		debugfs_create_file(alias, mode, parent, sta,		\
-				    &iwl_dbgfs_##name##_ops);		\
-	} while (0)
-#define MVM_DEBUGFS_ADD_STA_FILE(name, parent, mode) \
-	MVM_DEBUGFS_ADD_STA_FILE_ALIAS(#name, name, parent, mode)
+	mutex_lock(&mvm->mutex);
+
+	mvm_link_sta = rcu_dereference_protected(mvmsta->link[link_sta->link_id],
+						 lockdep_is_held(&mvm->mutex));
+	if (WARN_ON(!mvm_link_sta)) {
+		mutex_unlock(&mvm->mutex);
+		return -ENODEV;
+	}
+
+	ret = real(link_sta, mvmsta, mvm, mvm_link_sta, buf, buf_size, ppos);
+
+	mutex_unlock(&mvm->mutex);
+
+	return ret;
+}
+
+static ssize_t
+_iwl_dbgfs_link_sta_wrap_read(ssize_t (*real)(struct ieee80211_link_sta *,
+					      struct iwl_mvm_sta *,
+					      struct iwl_mvm *,
+					      struct iwl_mvm_link_sta *,
+					      char __user *,
+					      size_t, loff_t *),
+			   struct file *file,
+			   char __user *user_buf, size_t count, loff_t *ppos)
+{
+	struct ieee80211_link_sta *link_sta = file->private_data;
+	struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(link_sta->sta);
+	struct iwl_mvm *mvm = iwl_mvm_vif_from_mac80211(mvmsta->vif)->mvm;
+	struct iwl_mvm_link_sta *mvm_link_sta;
+	ssize_t ret;
+
+	mutex_lock(&mvm->mutex);
+
+	mvm_link_sta = rcu_dereference_protected(mvmsta->link[link_sta->link_id],
+						 lockdep_is_held(&mvm->mutex));
+	if (WARN_ON(!mvm_link_sta)) {
+		mutex_unlock(&mvm->mutex);
+		return -ENODEV;
+	}
+
+	ret = real(link_sta, mvmsta, mvm, mvm_link_sta, user_buf, count, ppos);
+
+	mutex_unlock(&mvm->mutex);
+
+	return ret;
+}
+
+#define MVM_DEBUGFS_LINK_STA_WRITE_WRAPPER(name, buflen)		\
+static ssize_t _iwl_dbgfs_link_sta_##name##_write(struct file *file,	\
+					 const char __user *user_buf,	\
+					 size_t count, loff_t *ppos)	\
+{									\
+	char buf[buflen] = {};						\
+	size_t buf_size = min(count, sizeof(buf) -  1);			\
+									\
+	if (copy_from_user(buf, user_buf, sizeof(buf)))			\
+		return -EFAULT;						\
+									\
+	return _iwl_dbgfs_link_sta_wrap_write(iwl_dbgfs_##name##_write,	\
+					      file,			\
+					      buf, buf_size, ppos);	\
+}									\
+
+#define MVM_DEBUGFS_LINK_STA_READ_WRAPPER(name)		\
+static ssize_t _iwl_dbgfs_link_sta_##name##_read(struct file *file,	\
+					 char __user *user_buf,		\
+					 size_t count, loff_t *ppos)	\
+{									\
+	return _iwl_dbgfs_link_sta_wrap_read(iwl_dbgfs_##name##_read,	\
+					     file,			\
+					     user_buf, count, ppos);	\
+}									\
+
+#define MVM_DEBUGFS_WRITE_LINK_STA_FILE_OPS(name, bufsz)		\
+MVM_DEBUGFS_LINK_STA_WRITE_WRAPPER(name, bufsz)				\
+static const struct file_operations iwl_dbgfs_link_sta_##name##_ops = {	\
+	.write = _iwl_dbgfs_link_sta_##name##_write,			\
+	.open = simple_open,						\
+	.llseek = generic_file_llseek,					\
+}
+
+#define MVM_DEBUGFS_READ_LINK_STA_FILE_OPS(name)			\
+MVM_DEBUGFS_LINK_STA_READ_WRAPPER(name)					\
+static const struct file_operations iwl_dbgfs_link_sta_##name##_ops = {	\
+	.read = _iwl_dbgfs_link_sta_##name##_read,			\
+	.open = simple_open,						\
+	.llseek = generic_file_llseek,					\
+}
+
+#define MVM_DEBUGFS_READ_WRITE_LINK_STA_FILE_OPS(name, bufsz)		\
+MVM_DEBUGFS_LINK_STA_READ_WRAPPER(name)					\
+MVM_DEBUGFS_LINK_STA_WRITE_WRAPPER(name, bufsz)				\
+static const struct file_operations iwl_dbgfs_link_sta_##name##_ops = {	\
+	.read = _iwl_dbgfs_link_sta_##name##_read,			\
+	.write = _iwl_dbgfs_link_sta_##name##_write,			\
+	.open = simple_open,						\
+	.llseek = generic_file_llseek,					\
+}
+
+#define MVM_DEBUGFS_ADD_LINK_STA_FILE_ALIAS(alias, name, parent, mode)		\
+		debugfs_create_file(alias, mode, parent, link_sta,		\
+				    &iwl_dbgfs_link_sta_##name##_ops)
+#define MVM_DEBUGFS_ADD_LINK_STA_FILE(name, parent, mode) \
+	MVM_DEBUGFS_ADD_LINK_STA_FILE_ALIAS(#name, name, parent, mode)
 
 static ssize_t
 iwl_dbgfs_prph_reg_read(struct file *file,
@@ -2306,7 +2491,7 @@ MVM_DEBUGFS_READ_WRITE_FILE_OPS(sram, 64);
 MVM_DEBUGFS_READ_WRITE_FILE_OPS(set_nic_temperature, 64);
 MVM_DEBUGFS_READ_FILE_OPS(nic_temp);
 MVM_DEBUGFS_READ_FILE_OPS(stations);
-MVM_DEBUGFS_READ_FILE_OPS(rs_data);
+MVM_DEBUGFS_READ_LINK_STA_FILE_OPS(rs_data);
 MVM_DEBUGFS_READ_FILE_OPS(bt_notif);
 MVM_DEBUGFS_READ_FILE_OPS(bt_cmd);
 MVM_DEBUGFS_READ_WRITE_FILE_OPS(disable_power_off, 64);
@@ -2344,14 +2529,15 @@ MVM_DEBUGFS_READ_FILE_OPS(uapsd_noagg_bssids);
 
 #ifdef CONFIG_ACPI
 MVM_DEBUGFS_READ_FILE_OPS(sar_geo_profile);
+MVM_DEBUGFS_READ_FILE_OPS(wifi_6e_enable);
 #endif
 
-MVM_DEBUGFS_WRITE_STA_FILE_OPS(fixed_rate, 64);
-MVM_DEBUGFS_WRITE_STA_FILE_OPS(ampdu_size, 64);
-MVM_DEBUGFS_WRITE_STA_FILE_OPS(disable_rts, 8);
-MVM_DEBUGFS_WRITE_STA_FILE_OPS(tlc_dhc, 64);
+MVM_DEBUGFS_WRITE_LINK_STA_FILE_OPS(fixed_rate, 64);
+MVM_DEBUGFS_WRITE_LINK_STA_FILE_OPS(ampdu_size, 64);
+MVM_DEBUGFS_WRITE_LINK_STA_FILE_OPS(disable_rts, 8);
+MVM_DEBUGFS_WRITE_LINK_STA_FILE_OPS(tlc_dhc, 64);
 MVM_DEBUGFS_WRITE_FILE_OPS(iwl_tlc_dhc, 64);
-MVM_DEBUGFS_READ_WRITE_STA_FILE_OPS(amsdu_len, 16);
+MVM_DEBUGFS_READ_WRITE_LINK_STA_FILE_OPS(amsdu_len, 16);
 
 MVM_DEBUGFS_READ_WRITE_FILE_OPS(he_sniffer_params, 32);
 
@@ -2390,6 +2576,11 @@ static ssize_t iwl_dbgfs_mem_read(struct file *file, char __user *user_buf,
 
 	if (ret < 0)
 		return ret;
+
+	if (iwl_rx_packet_payload_len(hcmd.resp_pkt) < sizeof(*rsp)) {
+		ret = -EIO;
+		goto out;
+	}
 
 	rsp = (void *)hcmd.resp_pkt->data;
 	if (le32_to_cpu(rsp->status) != DEBUG_MEM_STATUS_SUCCESS) {
@@ -2467,6 +2658,11 @@ static ssize_t iwl_dbgfs_mem_write(struct file *file,
 	if (ret < 0)
 		return ret;
 
+	if (iwl_rx_packet_payload_len(hcmd.resp_pkt) < sizeof(*rsp)) {
+		ret = -EIO;
+		goto out;
+	}
+
 	rsp = (void *)hcmd.resp_pkt->data;
 	if (rsp->status != DEBUG_MEM_STATUS_SUCCESS) {
 		ret = -ENXIO;
@@ -2488,21 +2684,22 @@ static const struct file_operations iwl_dbgfs_mem_ops = {
 	.llseek = default_llseek,
 };
 
-void iwl_mvm_sta_add_debugfs(struct ieee80211_hw *hw,
-			     struct ieee80211_vif *vif,
-			     struct ieee80211_sta *sta,
-			     struct dentry *dir)
+void iwl_mvm_link_sta_add_debugfs(struct ieee80211_hw *hw,
+				  struct ieee80211_vif *vif,
+				  struct ieee80211_link_sta *link_sta,
+				  struct dentry *dir)
 {
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 
 	if (iwl_mvm_has_tlc_offload(mvm)) {
-		MVM_DEBUGFS_ADD_STA_FILE(rs_data, dir, 0400);
-		MVM_DEBUGFS_ADD_STA_FILE(fixed_rate, dir, 0200);
-		MVM_DEBUGFS_ADD_STA_FILE(ampdu_size, dir, 0400);
-		MVM_DEBUGFS_ADD_STA_FILE(disable_rts, dir, 0400);
-		MVM_DEBUGFS_ADD_STA_FILE(tlc_dhc, dir, 0200);
+		MVM_DEBUGFS_ADD_LINK_STA_FILE(rs_data, dir, 0400);
+		MVM_DEBUGFS_ADD_LINK_STA_FILE(fixed_rate, dir, 0200);
+		MVM_DEBUGFS_ADD_LINK_STA_FILE(ampdu_size, dir, 0400);
+		MVM_DEBUGFS_ADD_LINK_STA_FILE(disable_rts, dir, 0400);
+		MVM_DEBUGFS_ADD_LINK_STA_FILE(tlc_dhc, dir, 0200);
 	}
-	MVM_DEBUGFS_ADD_STA_FILE(amsdu_len, dir, 0600);
+
+	MVM_DEBUGFS_ADD_LINK_STA_FILE(amsdu_len, dir, 0600);
 }
 
 void iwl_mvm_dbgfs_register(struct iwl_mvm *mvm)
@@ -2554,6 +2751,7 @@ void iwl_mvm_dbgfs_register(struct iwl_mvm *mvm)
 	MVM_DEBUGFS_ADD_FILE(tas_get_status, mvm->debugfs_dir, 0400);
 #ifdef CONFIG_ACPI
 	MVM_DEBUGFS_ADD_FILE(sar_geo_profile, mvm->debugfs_dir, 0400);
+	MVM_DEBUGFS_ADD_FILE(wifi_6e_enable, mvm->debugfs_dir, 0400);
 #endif
 #ifdef CPTCFG_IWLMVM_VENDOR_CMDS
 	MVM_DEBUGFS_ADD_FILE(tx_power_status, mvm->debugfs_dir, 0400);

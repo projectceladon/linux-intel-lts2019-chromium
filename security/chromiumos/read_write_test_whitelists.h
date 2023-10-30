@@ -28,7 +28,9 @@
 #include "alt-syscall.h"
 
 static struct syscall_whitelist_entry read_write_test_whitelist[] = {
+	/* Some tests use `exit`, while others use `exit_group`. */
 	SYSCALL_ENTRY(exit),
+	SYSCALL_ENTRY(exit_group),
 	SYSCALL_ENTRY(openat),
 	SYSCALL_ENTRY(close),
 	SYSCALL_ENTRY(read),
@@ -43,7 +45,9 @@ static struct syscall_whitelist_entry read_write_test_whitelist[] = {
 
 #ifdef CONFIG_COMPAT
 static struct syscall_whitelist_entry read_write_test_compat_whitelist[] = {
+	/* Some tests use `exit`, while others use `exit_group`. */
 	COMPAT_SYSCALL_ENTRY(exit),
+	COMPAT_SYSCALL_ENTRY(exit_group),
 	COMPAT_SYSCALL_ENTRY(open),
 	COMPAT_SYSCALL_ENTRY(openat),
 	COMPAT_SYSCALL_ENTRY(close),

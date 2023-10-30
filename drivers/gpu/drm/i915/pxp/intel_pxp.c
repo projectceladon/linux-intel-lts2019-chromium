@@ -190,6 +190,60 @@ static bool pxp_component_bound(struct intel_pxp *pxp)
 	return bound;
 }
 
+static int __pxp_global_teardown_final(struct intel_pxp *pxp)
+{
+       if (!pxp->arb_session.is_valid)
+               return 0;
+       /*
+        * To ensure synchronous and coherent session teardown completion
+        * in response to suspend or shutdown triggers, don't use a worker.
+        */
+       intel_pxp_mark_termination_in_progress(pxp);
+       intel_pxp_terminate(pxp, false);
+
+       if (!wait_for_completion_timeout(&pxp->termination, msecs_to_jiffies(250)))
+               return -ETIMEDOUT;
+
+       return 0;
+}
+
+static int __pxp_global_teardown_restart(struct intel_pxp *pxp)
+{
+       if (pxp->arb_session.is_valid)
+               return 0;
+       /*
+        * The arb-session is currently inactive and we are doing a reset and restart
+        * due to a runtime event. Use the worker that was designed for this.
+        */
+       pxp_queue_termination(pxp);
+
+       if (!wait_for_completion_timeout(&pxp->termination, msecs_to_jiffies(250)))
+               return -ETIMEDOUT;
+
+       return 0;
+}
+
+void intel_pxp_end(struct intel_pxp *pxp)
+{
+	struct drm_i915_private *i915 = pxp_to_gt(pxp)->i915;
+	intel_wakeref_t wakeref;
+
+	if (!intel_pxp_is_enabled(pxp))
+		return;
+
+	wakeref = intel_runtime_pm_get(&i915->runtime_pm);
+
+	mutex_lock(&pxp->arb_mutex);
+
+	if (__pxp_global_teardown_final(pxp))
+		drm_dbg(&(pxp_to_gt(pxp))->i915->drm, "PXP end timed out\n");
+
+	mutex_unlock(&pxp->arb_mutex);
+
+	intel_pxp_fini_hw(pxp);
+	intel_runtime_pm_put(&i915->runtime_pm, wakeref);
+}
+
 /*
  * the arb session is restarted from the irq work when we receive the
  * termination completion interrupt
@@ -206,16 +260,9 @@ int intel_pxp_start(struct intel_pxp *pxp)
 
 	mutex_lock(&pxp->arb_mutex);
 
-	if (pxp->arb_session.is_valid)
+	ret = __pxp_global_teardown_restart(pxp);
+	if (ret)
 		goto unlock;
-
-	pxp_queue_termination(pxp);
-
-	if (!wait_for_completion_timeout(&pxp->termination,
-					msecs_to_jiffies(250))) {
-		ret = -ETIMEDOUT;
-		goto unlock;
-	}
 
 	/* make sure the compiler doesn't optimize the double access */
 	barrier();
@@ -275,10 +322,13 @@ static int pxp_set_session_status(struct intel_pxp *pxp,
 	struct downstream_drm_i915_pxp_set_session_status_params params;
 	struct downstream_drm_i915_pxp_set_session_status_params __user *uparams =
 		u64_to_user_ptr(pxp_ops->params);
+	u32 session_id;
 	int ret = 0;
 
 	if (copy_from_user(&params, uparams, sizeof(params)) != 0)
 		return -EFAULT;
+
+	session_id = params.pxp_tag & DOWNSTREAM_DRM_I915_PXP_TAG_SESSION_ID_MASK;
 
 	switch (params.req_session_state) {
 	case DOWNSTREAM_DRM_I915_PXP_REQ_SESSION_ID_INIT:
@@ -288,11 +338,11 @@ static int pxp_set_session_status(struct intel_pxp *pxp,
 		break;
 	case DOWNSTREAM_DRM_I915_PXP_REQ_SESSION_IN_PLAY:
 		ret = intel_pxp_sm_ioctl_mark_session_in_play(pxp, drmfile,
-							      params.pxp_tag);
+							      session_id);
 		break;
 	case DOWNSTREAM_DRM_I915_PXP_REQ_SESSION_TERMINATE:
 		ret = intel_pxp_sm_ioctl_terminate_session(pxp, drmfile,
-							   params.pxp_tag);
+							   session_id);
 		break;
 	default:
 		ret = -EINVAL;

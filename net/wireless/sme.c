@@ -269,6 +269,15 @@ void cfg80211_conn_work(struct work_struct *work)
 	rtnl_unlock();
 }
 
+static void cfg80211_step_auth_next(struct cfg80211_conn *conn,
+				    struct cfg80211_bss *bss)
+{
+	memcpy(conn->bssid, bss->bssid, ETH_ALEN);
+	conn->params.bssid = conn->bssid;
+	conn->params.channel = bss->channel;
+	conn->state = CFG80211_CONN_AUTHENTICATE_NEXT;
+}
+
 /* Returned bss is reference counted and must be cleaned up appropriately. */
 static struct cfg80211_bss *cfg80211_get_conn_bss(struct wireless_dev *wdev)
 {
@@ -286,10 +295,7 @@ static struct cfg80211_bss *cfg80211_get_conn_bss(struct wireless_dev *wdev)
 	if (!bss)
 		return NULL;
 
-	memcpy(wdev->conn->bssid, bss->bssid, ETH_ALEN);
-	wdev->conn->params.bssid = wdev->conn->bssid;
-	wdev->conn->params.channel = bss->channel;
-	wdev->conn->state = CFG80211_CONN_AUTHENTICATE_NEXT;
+	cfg80211_step_auth_next(wdev->conn, bss);
 	schedule_work(&rdev->conn_work);
 
 	return bss;
@@ -568,7 +574,12 @@ static int cfg80211_sme_connect(struct wireless_dev *wdev,
 	wdev->conn->params.ssid_len = wdev->ssid_len;
 
 	/* see if we have the bss already */
-	bss = cfg80211_get_conn_bss(wdev);
+	bss = cfg80211_get_bss(wdev->wiphy, wdev->conn->params.channel,
+			       wdev->conn->params.bssid,
+			       wdev->conn->params.ssid,
+			       wdev->conn->params.ssid_len,
+			       wdev->conn_bss_type,
+			       IEEE80211_PRIVACY(wdev->conn->params.privacy));
 
 	if (prev_bssid) {
 		memcpy(wdev->conn->prev_bssid, prev_bssid, ETH_ALEN);
@@ -579,6 +590,7 @@ static int cfg80211_sme_connect(struct wireless_dev *wdev,
 	if (bss) {
 		enum nl80211_timeout_reason treason;
 
+		cfg80211_step_auth_next(wdev->conn, bss);
 		err = cfg80211_conn_do_work(wdev, &treason);
 		cfg80211_put_bss(wdev->wiphy, bss);
 	} else {
@@ -1240,6 +1252,13 @@ int cfg80211_connect(struct cfg80211_registered_device *rdev,
 	} else {
 		if (WARN_ON(connkeys))
 			return -EINVAL;
+
+		/* connect can point to wdev->wext.connect which
+		 * can hold key data from a previous connection
+		 */
+		connect->key = NULL;
+		connect->key_len = 0;
+		connect->key_idx = 0;
 	}
 
 	wdev->connect_keys = connkeys;
@@ -1305,13 +1324,23 @@ int cfg80211_disconnect(struct cfg80211_registered_device *rdev,
  */
 void cfg80211_autodisconnect_wk(struct work_struct *work)
 {
-	struct wireless_dev *wdev =
-		container_of(work, struct wireless_dev, disconnect_wk);
-	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
+	struct wireless_dev *wdev;
+	struct cfg80211_registered_device *rdev =
+		container_of(work, struct cfg80211_registered_device,
+			     disconnect_wk);
 
-	wdev_lock(wdev);
+	rtnl_lock();
+	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+		wdev_lock(wdev);
 
-	if (wdev->conn_owner_nlportid) {
+		if (!wdev->auto_disconnect)
+			goto next;
+
+		wdev->auto_disconnect = false;
+
+		if (!wdev->conn_owner_nlportid)
+			goto next;
+
 		switch (wdev->iftype) {
 		case NL80211_IFTYPE_ADHOC:
 			__cfg80211_leave_ibss(rdev, wdev->netdev, false);
@@ -1344,7 +1373,9 @@ void cfg80211_autodisconnect_wk(struct work_struct *work)
 		default:
 			break;
 		}
+next:
+		wdev_unlock(wdev);
 	}
 
-	wdev_unlock(wdev);
+	rtnl_unlock();
 }

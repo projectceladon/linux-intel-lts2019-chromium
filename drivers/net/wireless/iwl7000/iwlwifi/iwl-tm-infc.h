@@ -3,6 +3,7 @@
  * Copyright (C) 2010-2014, 2018-2022 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
+ * Copyright (C) 2023 Intel Corporation
  */
 #ifndef __iwl_tm_infc__
 #define __iwl_tm_infc__
@@ -47,7 +48,9 @@ enum iwl_tm_gnl_cmd_t {
  * differentiate registery access through HBUS_TARG_PRPH_.* and
  * HBUS_TARG_MEM_* accesses.
  */
-#define IWL_ABS_PRPH_START (0xA00000)
+#define IWL_ABS_LMAC1_PRPH_START (0xA00000)
+#define IWL_ABS_LMAC2_PRPH_START (0xB00000)
+#define IWL_ABS_UMAC_PRPH_START (0xD00000)
 
 /* User-Driver interface commands */
 enum {
@@ -143,7 +146,7 @@ enum {
 	IWL_TM_USER_CMD_SV_RD_WR_BUFFER,
 };
 
-/**
+/*
  * User space - driver interface command. These commands will be sent as
  * sub-commands through IWL_XVT_CMD_DRIVER_CMD.
  */
@@ -226,8 +229,8 @@ struct iwl_tm_trace_request {
 
 /**
  * struct iwl_tm_sram_write_request
- * @offest:	Address offset
- * @length:	input data length
+ * @offset:	Address offset
+ * @len:	input data length
  * @buffer:	input data
  */
 struct iwl_tm_sram_write_request {
@@ -238,7 +241,7 @@ struct iwl_tm_sram_write_request {
 
 /**
  * struct iwl_tm_sram_read_request
- * @offest:	Address offset
+ * @offset:	Address offset
  * @length:	data length
  */
 struct iwl_tm_sram_read_request {
@@ -254,14 +257,8 @@ struct iwl_tm_dev_info_req {
 	__u32 read_sv;
 } __packed __aligned(4);
 
-/**
+/*
  * struct iwl_tm_dev_info - Result data for get info request
- * @dev_id:
- * @vendor_id:
- * @silicon:
- * @fw_ver:
- * @driver_ver:
- * @build_ver:
  */
 struct iwl_tm_dev_info {
 	__u32 dev_id;
@@ -272,7 +269,7 @@ struct iwl_tm_dev_info {
 	__u8 driver_ver[];
 } __packed __aligned(4);
 
-/*
+/**
  * struct iwl_tm_thrshld_md - tx packet metadata that crosses a thrshld
  *
  * @monitor_collec_wind: the size of the window to collect the logs
@@ -384,8 +381,13 @@ struct iwl_xvt_user_calib_ctrl {
 #define IWL_USER_FW_IMAGE_IDX_WOWLAN	2
 #define IWL_USER_FW_IMAGE_IDX_TYPE_MAX	3
 
+enum {
+	IWL_XVT_GET_CALIB_TYPE_DEF = 0,
+	IWL_XVT_GET_CALIB_TYPE_RUNTIME
+};
+
 /**
- * iwl_xvt_sw_cfg_request - Data for set SW stack configuration request
+ * struct iwl_xvt_sw_cfg_request - Data for set SW stack configuration request
  * @load_mask: bit[0] = Init FW
  *             bit[1] = Runtime FW
  * @cfg_mask:  Mask for which calibrations to regard
@@ -395,12 +397,8 @@ struct iwl_xvt_user_calib_ctrl {
  *                  0: Get FW original calib ctrl
  *                  1: Get actual calib ctrl
  * @calib_ctrl: Calibration control for each FW
+ * @dbg_flags: firmware debug flags
  */
-enum {
-	IWL_XVT_GET_CALIB_TYPE_DEF = 0,
-	IWL_XVT_GET_CALIB_TYPE_RUNTIME
-};
-
 struct iwl_xvt_sw_cfg_request {
 	__u32 load_mask;
 	__u32 cfg_mask;
@@ -411,7 +409,7 @@ struct iwl_xvt_sw_cfg_request {
 } __packed __aligned(4);
 
 /**
- * iwl_xvt_sw_cfg_request - Data for set SW stack configuration request
+ * struct iwl_xvt_sw_cfg_request - Data for set SW stack configuration request
  * @type:	Type of DB section
  * @chg_id:	Channel Group ID, relevant only when
  *		type is CHG PAPD or CHG TXP calibrations
@@ -465,7 +463,7 @@ struct iwl_xvt_tx_mod_task_data {
 	struct completion *completion;
 } __packed __aligned(4);
 
-/**
+/*
  * error status for status parameter in struct iwl_xvt_tx_mod_done
  */
 enum {
@@ -543,7 +541,6 @@ struct iwl_xvt_chip_id {
 
 /**
  * struct iwl_tm_crash_data - Notifications containing crash data
- * @data_type:	type of the data
  * @size:	data size
  * @data:	data
  */
@@ -554,7 +551,7 @@ struct iwl_tm_crash_data {
 
 /**
  * struct iwl_xvt_curr_mac_addr_info - Current mac address data
- * @curr_mac_addr:	the current mac address
+ * @mac_addr:	the current mac address
  */
 struct iwl_xvt_mac_addr_info {
 	__u8 mac_addr[ETH_ALEN];
@@ -567,9 +564,9 @@ enum iwl_tx_queue_action {
 };
 
 /**
- * iwl_xvt_tx_queue_cfg - add/remove tx queue
- * @ sta_id: station ID associated with queue
- * @ flags: 0 - remove queue, 1 - add queue
+ * struct iwl_xvt_tx_queue_cfg - add/remove tx queue
+ * @sta_id: station ID associated with queue
+ * @operation: 0 - remove queue, 1 - add queue
  */
 struct iwl_xvt_tx_queue_cfg {
 	__u8 sta_id;
@@ -577,11 +574,11 @@ struct iwl_xvt_tx_queue_cfg {
 } __packed __aligned(4);
 
 /**
- * iwl_xvt_driver_command_req - wrapper for general driver command that are sent
- * by IWL_XVT_CMD_DRIVER_CMD
- * @ command_id: sub comamnd ID
- * @ max_out_length: max size in bytes of the sub command's expected response
- * @ input_data: place holder for the sub command's input structure
+ * struct iwl_xvt_driver_command_req - wrapper for general driver commands
+ *	sent by IWL_XVT_CMD_DRIVER_CMD
+ * @command_id: sub comamnd ID
+ * @max_out_length: max size in bytes of the sub command's expected response
+ * @input_data: place holder for the sub command's input structure
  */
 struct iwl_xvt_driver_command_req {
 	__u32 command_id;
@@ -590,10 +587,10 @@ struct iwl_xvt_driver_command_req {
 } __packed __aligned(4);
 
 /**
- * iwl_xvt_driver_command_resp - response of IWL_XVT_CMD_DRIVER_CMD
- * @ command_id: sub command ID
- * @ length: resp_data length in bytes
- * @ resp_data: place holder for the sub command's rseponse data
+ * struct iwl_xvt_driver_command_resp - response of IWL_XVT_CMD_DRIVER_CMD
+ * @command_id: sub command ID
+ * @length: resp_data length in bytes
+ * @resp_data: place holder for the sub command's rseponse data
  */
 struct iwl_xvt_driver_command_resp {
 	__u32 command_id;
@@ -602,7 +599,8 @@ struct iwl_xvt_driver_command_resp {
 } __packed __aligned(4);
 
 /**
- * iwl_xvt_txq_config - add/remove tx queue. IWL_DRV_CMD_CONFIG_TX_QUEUE input.
+ * struct iwl_xvt_txq_config - add/remove tx queue.
+ *	IWL_DRV_CMD_CONFIG_TX_QUEUE input.
  * @sta_id: station id
  * @tid: TID
  * @scd_queue: scheduler queue to configure
@@ -633,7 +631,7 @@ struct iwl_xvt_txq_config {
 } __packed;
 
 /**
- * iwl_xvt_txq_config_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
+ * struct iwl_xvt_txq_config_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
  * @sta_id: taken from command
  * @tid: taken from command
  * @scd_queue: queue number assigned to this RA -TID
@@ -665,7 +663,7 @@ struct iwl_xvt_txq_cfg_mld {
 } __packed;
 
 /**
- * iwl_xvt_txq_cfg_mld_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
+ * struct iwl_xvt_txq_cfg_mld_resp - response from IWL_DRV_CMD_CONFIG_TX_QUEUE
  * @sta_mask: taken from command
  * @tid: taken from command
  * @queue_id: queue number assigned to this RA-TID (add command only,
@@ -720,6 +718,7 @@ struct tx_cmd_commom_data {
  * @tid_tspec: TID tspec
  * @sec_ctl: security control
  * @payload_index: payload buffer index in 'payloads' array in struct iwl_xvt
+ * @reserved: (padding)
  * @key: security key
  * @header: MAC header
  */
@@ -771,6 +770,7 @@ struct iwl_xvt_enhanced_tx_data {
  * struct iwl_xvt_post_tx_data - transmission data per queue
  * @num_of_packets: number of sent packets
  * @queue: queue packets were sent on
+ * @reserved: (padding)
  */
 struct iwl_xvt_post_tx_data {
 	u64 num_of_packets;
@@ -879,7 +879,7 @@ struct iwl_xvt_fw_tlv_data_response {
 
 /**
  * struct iwl_xvt_pnvm_external_file_name - pnvm file name
- * @path: pnvm file system name
+ * @name: pnvm file system name
 */
 struct iwl_xvt_pnvm_external_file_name {
 	u8 name[MAX_PNVM_NAME];

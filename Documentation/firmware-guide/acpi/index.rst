@@ -27,3 +27,4 @@ ACPI Support
    lpit
    video_extension
    extcon-intel-int3496
+   chromeos-acpi-device

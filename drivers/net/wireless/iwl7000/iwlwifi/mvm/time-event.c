@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2023 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2017 Intel Deutschland GmbH
  */
@@ -79,7 +79,8 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 
 		if (!WARN_ON(!mvm->p2p_device_vif)) {
 			mvmvif = iwl_mvm_vif_from_mac80211(mvm->p2p_device_vif);
-			iwl_mvm_flush_sta(mvm, &mvmvif->bcast_sta, true);
+			iwl_mvm_flush_sta(mvm, &mvmvif->deflink.bcast_sta,
+					  true);
 		}
 	}
 
@@ -102,7 +103,7 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 		/* In newer version of this command an aux station is added only
 		 * in cases of dedicated tx queue and need to be removed in end
 		 * of use */
-		if (iwl_fw_lookup_cmd_ver(mvm->fw, ADD_STA, 0) >= 12)
+		if (iwl_mvm_has_new_station_api(mvm->fw))
 			iwl_mvm_rm_aux_sta(mvm);
 	}
 
@@ -176,7 +177,8 @@ static bool iwl_mvm_te_check_disconnect(struct iwl_mvm *mvm,
 		struct iwl_mvm_sta *mvmsta;
 
 		rcu_read_lock();
-		mvmsta = iwl_mvm_sta_from_staid_rcu(mvm, mvmvif->ap_sta_id);
+		mvmsta = iwl_mvm_sta_from_staid_rcu(mvm,
+						    mvmvif->deflink.ap_sta_id);
 		if (!WARN_ON(!mvmsta))
 			iwl_mvm_sta_modify_disable_tx(mvm, mvmsta, false);
 		rcu_read_unlock();
@@ -221,7 +223,7 @@ iwl_mvm_te_handle_notify_csa(struct iwl_mvm *mvm,
 		}
 		iwl_mvm_csa_client_absent(mvm, te_data->vif);
 		cancel_delayed_work(&mvmvif->csa_work);
-		ieee80211_chswitch_done(te_data->vif, true);
+		ieee80211_chswitch_done(te_data->vif, true, 0);
 		break;
 	default:
 		/* should never happen */
@@ -804,6 +806,12 @@ void iwl_mvm_stop_session_protection(struct iwl_mvm *mvm,
 	id = te_data->id;
 	spin_unlock_bh(&mvm->time_event_lock);
 
+#ifdef CPTCFG_IWLWIFI_DEBUG_SESSION_PROT_FAIL
+	if (vif->cfg.assoc) {
+		/* a good assoc, reset session_prot_fail_num */
+		mvmvif->session_prot_fail_num = 2;
+	}
+#endif
 	if (fw_has_capa(&mvm->fw->ucode_capa,
 			IWL_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
 		if (id != SESSION_PROTECT_CONF_ASSOC) {
@@ -870,6 +878,34 @@ void iwl_mvm_rx_session_protect_notif(struct iwl_mvm *mvm,
 			spin_lock_bh(&mvm->time_event_lock);
 			iwl_mvm_te_clear_data(mvm, te_data);
 			spin_unlock_bh(&mvm->time_event_lock);
+#ifdef CPTCFG_IWLWIFI_DEBUG_SESSION_PROT_FAIL
+			/*
+			 * We failed to complete the association, increase the
+			 * debug level so that we'll get more information when
+			 * the userspace will retry to associate.
+			 */
+			iwl_debug_session_prot(true);
+			if (mvmvif->session_prot_fail_num) {
+				mvmvif->session_prot_fail_num--;
+				IWL_ERR(mvm,
+					"Restarting the firmware to collect logs, %d more dumps before asking help from user space\n",
+					mvmvif->session_prot_fail_num);
+				iwl_dbg_tlv_time_point(&mvm->fwrt,
+						       IWL_FW_INI_TIME_POINT_USER_TRIGGER,
+						       NULL);
+			} else {
+				static char *prop[] = {
+					"DRIVER=iwlwifi",
+					"EVENT=cannot_assoc",
+					NULL
+				};
+
+				IWL_ERR(mvm,
+					"Sending udev event to userspace\n");
+				kobject_uevent_env(&mvm->hw->wiphy->dev.kobj,
+						   KOBJ_CHANGE, prop);
+			}
+#endif
 		}
 
 		goto out_unlock;

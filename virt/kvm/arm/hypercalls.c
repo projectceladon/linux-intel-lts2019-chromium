@@ -3,16 +3,59 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/kvm_host.h>
+#include <linux/cpufreq.h>
+#include <linux/sched.h>
+#include <uapi/linux/sched/types.h>
 
 #include <asm/kvm_emulate.h>
 
 #include <kvm/arm_hypercalls.h>
 #include <kvm/arm_psci.h>
 
+static void kvm_sched_get_cur_cpufreq(struct kvm_vcpu *vcpu, long *val)
+{
+	unsigned long ret_freq;
+
+	ret_freq = cpufreq_get(task_cpu(current));
+
+	*(unsigned long *)val = ret_freq;
+}
+
+static void kvm_sched_set_util(struct kvm_vcpu *vcpu, long *val)
+{
+	struct sched_attr attr = {
+		.sched_flags = SCHED_FLAG_UTIL_GUEST,
+	};
+	int ret;
+
+	attr.sched_util_min = smccc_get_arg1(vcpu);
+
+	ret = sched_setattr_nocheck(current, &attr);
+
+	*val = (long)ret;
+}
+
+static void kvm_sched_get_cpufreq_table(struct kvm_vcpu *vcpu,
+					long *val, long *val1)
+{
+	struct cpufreq_policy *policy;
+	u32 idx = smccc_get_arg1(vcpu);
+
+	policy = cpufreq_cpu_get(task_cpu(current));
+
+	if (!policy)
+		return;
+
+	*val = SMCCC_RET_SUCCESS;
+	*val1 = (long)policy->freq_table[idx].frequency;
+
+	cpufreq_cpu_put(policy);
+}
+
 int kvm_hvc_call_handler(struct kvm_vcpu *vcpu)
 {
 	u32 func_id = smccc_get_function(vcpu);
-	long val = SMCCC_RET_NOT_SUPPORTED;
+	long val = SMCCC_RET_NOT_SUPPORTED, val1 = 0, val2 = 0;
 	u32 feature;
 	gpa_t gpa;
 
@@ -74,10 +117,25 @@ int kvm_hvc_call_handler(struct kvm_vcpu *vcpu)
 		if (gpa != GPA_INVALID)
 			val = gpa;
 		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_FEATURES_FUNC_ID:
+		val = BIT(ARM_SMCCC_KVM_FUNC_FEATURES);
+		val2 |= BIT(ARM_SMCCC_KVM_FUNC_GET_CUR_CPUFREQ % 32) |
+			BIT(ARM_SMCCC_KVM_FUNC_UTIL_HINT % 32) |
+			BIT(ARM_SMCCC_KVM_FUNC_GET_CPUFREQ_TBL % 32);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_GET_CUR_CPUFREQ_FUNC_ID:
+		kvm_sched_get_cur_cpufreq(vcpu, &val);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_UTIL_HINT_FUNC_ID:
+		kvm_sched_set_util(vcpu, &val);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_GET_CPUFREQ_TBL_FUNC_ID:
+		kvm_sched_get_cpufreq_table(vcpu, &val, &val1);
+		break;
 	default:
 		return kvm_psci_call(vcpu);
 	}
 
-	smccc_set_retval(vcpu, val, 0, 0, 0);
+	smccc_set_retval(vcpu, val, val1, val2, 0);
 	return 1;
 }
