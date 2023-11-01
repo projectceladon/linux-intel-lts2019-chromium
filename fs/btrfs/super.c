@@ -2481,4 +2481,5 @@ late_initcall(init_btrfs_fs);
 module_exit(exit_btrfs_fs)
 
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_SOFTDEP("pre: crc32c");
