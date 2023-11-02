@@ -51,10 +51,6 @@
 /* from BKL pushdown */
 DEFINE_MUTEX(drm_global_mutex);
 
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-EXPORT_SYMBOL(drm_global_mutex);
-#endif
-
 #define MAX_DRM_OPEN_COUNT		4096
 
 /**

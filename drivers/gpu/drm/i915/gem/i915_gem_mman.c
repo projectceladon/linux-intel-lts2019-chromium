@@ -59,9 +59,6 @@ i915_gem_mmap_ioctl(struct drm_device *dev, void *data,
 	struct drm_i915_gem_mmap *args = data;
 	struct drm_i915_gem_object *obj;
 	unsigned long addr;
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-	int ret;
-#endif
 
 	if (args->flags & ~(I915_MMAP_WC))
 		return -EINVAL;
@@ -111,12 +108,6 @@ i915_gem_mmap_ioctl(struct drm_device *dev, void *data,
 			goto err;
 	}
 	i915_gem_object_put(obj);
-
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-	ret = i915_obj_insert_virt_addr(obj, addr, false, false);
-	if (ret)
-		return ret;
-#endif
 
 	args->addr_ptr = (u64)addr;
 	return 0;
@@ -363,18 +354,11 @@ static vm_fault_t vm_fault_gtt(struct vm_fault *vmf)
 		goto err_unpin;
 
 	/* Finally, remap it using the new GTT offset */
-	ret = remap_io_mapping(
-		area,
-		area->vm_start + (vma->ggtt_view.partial.offset << PAGE_SHIFT),
-		(ggtt->gmadr.start + vma->node.start) >> PAGE_SHIFT,
-		min_t(u64, vma->size, area->vm_end - area->vm_start),
-		&ggtt->iomap);
-
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-	ret = i915_obj_insert_virt_addr(obj, (unsigned long)area->vm_start,
-					true, true);
-#endif
-
+	ret = remap_io_mapping(area,
+			       area->vm_start + (vma->ggtt_view.partial.offset << PAGE_SHIFT),
+			       (ggtt->gmadr.start + vma->node.start) >> PAGE_SHIFT,
+			       min_t(u64, vma->size, area->vm_end - area->vm_start),
+			       &ggtt->iomap);
 	if (ret)
 		goto err_fence;
 

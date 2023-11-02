@@ -156,11 +156,7 @@ struct drm_i915_gem_object {
 	unsigned int cache_coherent:2;
 #define I915_BO_CACHE_COHERENT_FOR_READ BIT(0)
 #define I915_BO_CACHE_COHERENT_FOR_WRITE BIT(1)
-	unsigned int cache_dirty : 1;
-
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-	unsigned int has_backing_pages : 1;
-#endif
+	unsigned int cache_dirty:1;
 
 	/**
 	 * @read_domains: Read memory domains.
@@ -298,9 +294,6 @@ struct drm_i915_gem_object {
 
 		void *gvt_info;
 	};
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-	struct list_head pid_info;
-#endif
 };
 
 static inline struct drm_i915_gem_object *

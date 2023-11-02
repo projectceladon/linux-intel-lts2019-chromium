@@ -63,12 +63,6 @@ void drm_prime_remove_buf_handle(struct drm_prime_file_private *prime_fpriv,
 				 uint32_t handle);
 
 /* drm_drv.c */
-
-#if IS_ENABLED(CONFIG_DRM_I915_MEMTRACK)
-#define DRM_MAGIC_HASH_ORDER                                                   \
-	4 /**< Size of key hash table. Must be power of 2. */
-#endif
-
 struct drm_minor *drm_minor_acquire(unsigned int minor_id);
 void drm_minor_release(struct drm_minor *minor);
 
