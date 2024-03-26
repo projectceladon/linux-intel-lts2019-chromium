@@ -649,8 +649,11 @@ int vmw_fb_init(struct vmw_private *vmw_priv)
 	fb_bpp = 32;
 
 	/* XXX As shouldn't these be as well. */
-	fb_width = min(vmw_priv->fb_max_width, (unsigned)2048);
-	fb_height = min(vmw_priv->fb_max_height, (unsigned)2048);
+	printk("fei hack width/height as 1280/720\n");
+	fb_width = 1280;
+	//fb_width = min(vmw_priv->fb_max_width, (unsigned)2048);
+	fb_height = 720;
+	//fb_height = min(vmw_priv->fb_max_height, (unsigned)2048);
 
 	fb_pitch = fb_width * fb_bpp / 8;
 	fb_size = fb_pitch * fb_height;

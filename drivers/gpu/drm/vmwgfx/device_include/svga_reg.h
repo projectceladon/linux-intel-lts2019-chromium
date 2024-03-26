@@ -57,8 +57,10 @@ typedef uint32 SVGAMobId;
  * Arbitrary and meaningless limits. Please ignore these when writing
  * new drivers.
  */
-#define SVGA_MAX_WIDTH                  2560
-#define SVGA_MAX_HEIGHT                 1600
+//#define SVGA_MAX_WIDTH                  2560
+//#define SVGA_MAX_HEIGHT                 1600
+#define SVGA_MAX_WIDTH                  1280
+#define SVGA_MAX_HEIGHT                 720
 
 
 #define SVGA_MAX_BITS_PER_PIXEL         32
